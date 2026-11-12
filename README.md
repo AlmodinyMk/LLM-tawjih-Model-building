@@ -154,7 +154,4 @@ tests on Windows and on Python 3.9 at every push), real editors driven by a
 person, and real providers. The three network backends were checked only
 against a local mock server that imitates the response formats.
 
-## License
 
-No license has been chosen yet. Until one is added, default copyright applies
-and others have no permission to reuse the code.
