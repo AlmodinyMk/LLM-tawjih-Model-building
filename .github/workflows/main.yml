@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Project data that should not be published:
+# deposited books (usually copyrighted), run logs (contain your prompts and
+# the model's answers), old file versions, and editor scratch files.
+library/
+runs/
+history/
+work/
