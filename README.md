@@ -154,4 +154,4 @@ tests on Windows and on Python 3.9 at every push), real editors driven by a
 person, and real providers. The three network backends were checked only
 against a local mock server that imitates the response formats.
 
-
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24182176.svg)](https://doi.org/10.5281/zenodo.24182176)
