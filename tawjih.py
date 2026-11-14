@@ -9,7 +9,7 @@ A path is an ordered list of files; running it executes their machine
 sides as steps, each step's output feeding the next (a linear workflow).
 The human and reading sides are used only when building a file ('edit').
 
-Standard library only. Python 3.9+.
+Standard library only. Python 3.11+.
 
 Copyright (c) 2026 Mohammed Khalid Almodiny
 SPDX-License-Identifier: CC-BY-NC-SA-4.0

@@ -191,7 +191,7 @@ model), `edit`, the deposit → filter → accept pipeline, and `open` with a
 scripted stand-in editor.
 
 Not yet verified: Windows (the included GitHub Actions workflow runs the same
-tests on Windows and on Python 3.9 at every push), real editors driven by a
+tests on Windows, on Python 3.11 and 3.13, at every push), real editors driven by a
 person, and real providers. The three network backends were checked only
 against a local mock server that imitates the response formats.
 
