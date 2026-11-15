@@ -8,9 +8,10 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.3, experimental.** The test suite passes on Linux. Windows and
-> real AI providers have not been exercised by the author of this version yet;
-> see [What is and is not verified](#what-is-and-is-not-verified).
+> **Status: 0.4, experimental.** The test suite passes on Linux and Windows.
+> No real AI provider has been used with it yet, and the Linux desktop
+> windows have not been used by a person; see
+> [What is and is not verified](#what-is-and-is-not-verified).
 
 ## The idea
 
@@ -113,6 +114,16 @@ and `--allow-code` is missing.
 | `accept BOOK` | append the kept passages to the reading side of their files |
 | `import FILE --parent REF` | split a text on `#` headings into child files, without a model |
 
+## Desktop windows, for Linux users
+
+**For Linux users only.** `linux/tawjih_desk.py` opens four independent
+windows over a project: books and research, the human concept, machine
+language, and search with a task schedule. Each window has a side
+conversation with the AI that cannot change the project. It runs on GTK 3 or
+Tkinter, in English, with optional AI help. Everything else in this
+repository works on Linux and Windows. See
+[linux/README.md](linux/README.md).
+
 ## Editors
 
 `open` writes each side to a scratch file and starts an editor:
@@ -190,9 +201,13 @@ running paths and cross-tree productions with branching, joining, `IF`,
 model), `edit`, the deposit → filter → accept pipeline, and `open` with a
 scripted stand-in editor.
 
-Not yet verified: Windows (the included GitHub Actions workflow runs the same
-tests on Windows, on Python 3.11 and 3.13, at every push), real editors driven by a
-person, and real providers. The three network backends were checked only
+The same tests pass on Windows and Linux, on Python 3.11 and 3.13, in the
+GitHub Actions workflow that runs at every push. The Linux desktop windows
+were driven by a script on a virtual display; see
+[linux/README.md](linux/README.md).
+
+Not yet verified: real editors and the desktop windows used by a person, and
+real providers. The three network backends were checked only
 against a local mock server that imitates the response formats.
 
 ## License

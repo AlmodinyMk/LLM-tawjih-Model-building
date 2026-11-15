@@ -32,7 +32,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -40,9 +40,17 @@ SECTIONS = ["human", "instructions", "code", "reading"]
 MARK = "=== {} ==="
 
 
+class Die(SystemExit):
+    """Exit with status 1; keeps the message for callers that catch it."""
+
+    def __init__(self, msg):
+        super().__init__(1)
+        self.msg = msg
+
+
 def die(msg):
     print("error: " + msg, file=sys.stderr)
-    sys.exit(1)
+    raise Die(msg)
 
 
 def parse_level(text):
@@ -1356,6 +1364,7 @@ def cmd_accept(a):
     if data.get("applied"):
         die("this report was already accepted")
     made = skipped = 0
+    backed_up = set()
     for item in data["items"]:
         if item.get("keep") is not True:
             continue
@@ -1370,6 +1379,9 @@ def cmd_accept(a):
                          for l in item["text"].splitlines())
         block = "## %s\n[source: %s, book %s, passage %d]\n%s" % (
             item["title"], data["name"], bid, item["n"], body)
+        if t.id not in backed_up:
+            _backup(st, t)
+            backed_up.add(t.id)
         t.reading = (t.reading.strip("\n") + "\n\n" + block).strip("\n")
         st.save(t)
         made += 1
