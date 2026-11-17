@@ -6,6 +6,7 @@ __pycache__/
 # the model's answers), old file versions, and editor scratch files.
 library/
 runs/
+cache/
 history/
 work/
 tasks.json

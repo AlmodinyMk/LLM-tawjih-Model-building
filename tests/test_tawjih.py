@@ -383,6 +383,151 @@ class Branching(Base):
         self.assertIn("path g", out)
 
 
+class CacheAndResume(Base):
+    def setUp(self):
+        super().setUp()
+        self._model = os.environ.pop("TAWJIH_MODEL", None)
+        self.make_path()
+
+    def tearDown(self):
+        os.environ.pop("TAWJIH_MODEL", None)
+        if self._model is not None:
+            os.environ["TAWJIH_MODEL"] = self._model
+        super().tearDown()
+
+    def go(self, *extra, replies=()):
+        self.prompts.clear()
+        self.replies = list(replies)
+        code, out, err = self.cli("produce", "p", "--input", "واحد وعشرون",
+                                  "--backend", "fake", "--allow-code", *extra)
+        recs = sorted((self.root / "history").glob("production-p-*.json"),
+                      key=lambda f: f.stat().st_mtime_ns)
+        rec = json.loads(recs[-1].read_text(encoding="utf-8")) if recs else {}
+        return code, out.strip(), err, rec
+
+    def cached(self):
+        return sorted((self.root / "cache").glob("*.json")) \
+            if (self.root / "cache").is_dir() else []
+
+    def test_resume_reuses_unchanged_steps_only(self):
+        code, out, _, rec = self.go(replies=["21", "تم"])
+        self.assertEqual((code, out, len(self.prompts)), (0, "تم", 2))
+        self.assertEqual((len(self.cached()), rec["from_cache"]), (2, 0))
+        # same path, no --resume: the model is asked again
+        code, out, _, rec = self.go(replies=["21", "ثانية"])
+        self.assertEqual((out, len(self.prompts), rec["from_cache"]),
+                         ("ثانية", 2, 0))
+        # --resume: nothing changed, so nothing is asked
+        code, out, err, rec = self.go("--resume")
+        self.assertEqual((code, out, len(self.prompts)), (0, "ثانية", 0))
+        self.assertEqual(rec["from_cache"], 2)
+        self.assertIn("taken from the cache", err)
+        # change the last step's instructions: only that step is asked
+        self.fill("2.1", instructions="اشرح النتيجة بإيجاز")
+        code, out, _, rec = self.go("--resume", replies=["موجز"])
+        self.assertEqual((code, out, len(self.prompts)), (0, "موجز", 1))
+        self.assertEqual([s.get("cached", False) for s in rec["steps"]],
+                         [True, False, False])
+        self.assertIn("42", self.prompts[0])        # code ran again
+
+    def test_resume_after_a_failed_model_call(self):
+        calls = []
+
+        def flaky(prompt):
+            calls.append(prompt)
+            if len(calls) == 2:
+                raise RuntimeError("HTTP 503")
+            return "21" if len(calls) == 1 else "تم"
+        normal = tawjih.BACKENDS["fake"]
+        tawjih.BACKENDS["fake"] = flaky
+        try:
+            code, _, err, rec = self.go()
+            self.assertEqual((code, rec["failed_step"], len(calls)), (1, 3, 2))
+            code, out, _, rec = self.go("--resume")
+        finally:
+            tawjih.BACKENDS["fake"] = normal
+        self.assertEqual((code, out), (0, "تم"))
+        self.assertEqual(len(calls), 3)             # step 1 was not asked again
+        self.assertEqual(rec["from_cache"], 1)
+
+    def test_redo_replaces_the_answer_that_broke_a_later_step(self):
+        code, _, err, rec = self.go(replies=["ليس عدداً"])
+        self.assertEqual((code, rec["failed_step"]), (1, 2))
+        self.assertIn("--resume --redo 1.1.1", err)
+        code, _, err, rec = self.go("--resume")         # same bad answer again
+        self.assertEqual((code, len(self.prompts), rec["from_cache"]),
+                         (1, 0, 1))
+        code, out, _, rec = self.go("--resume", "--redo", "1.1.1",
+                                    replies=["21", "تم"])
+        self.assertEqual((code, out, len(self.prompts)), (0, "تم", 2))
+        code, out, _, rec = self.go("--resume")         # the good one is kept
+        self.assertEqual((code, out, len(self.prompts)), (0, "تم", 0))
+        for extra, msg in ((("--redo", "1.1.1"), "goes with --resume"),
+                           (("--resume", "--redo", "1"), "not in this path")):
+            code, _, err, _ = self.go(*extra)
+            self.assertEqual(code, 1)
+            self.assertIn(msg, err)
+
+    def test_code_output_set_to_empty_stops_but_no_output_passes_on(self):
+        self.fill("2", code="vars['seen'] = input")      # sets no output
+        code, out, _, _ = self.go(replies=["21", "تم"])
+        self.assertEqual(code, 0)
+        self.assertIn("# Input\n21", self.prompts[1])    # input passed on
+        self.fill("2", code="output = ''")
+        code, _, err, rec = self.go(replies=["21"])
+        self.assertEqual((code, rec["failed_step"]), (1, 2))
+        self.assertIn("produced no output", err)
+
+    def test_cache_command(self):
+        self.go(replies=["21", "تم"])
+        code, out, _ = self.cli("cache")
+        self.assertIn("2 kept answer(s)", out)
+        code, out, _ = self.cli("cache", "--clear")
+        self.assertIn("removed 2", out)
+        self.assertEqual(self.cached(), [])
+        code, out, _, _ = self.go("--resume", replies=["21", "تم"])
+        self.assertEqual(len(self.prompts), 2)
+
+    def test_no_cache_and_dry_keep_nothing(self):
+        code, _, _, _ = self.go("--no-cache", replies=["21", "تم"])
+        self.assertEqual((code, self.cached()), (0, []))
+        code, _, err, _ = self.go("--no-cache", "--resume")
+        self.assertEqual(code, 1)
+        self.assertIn("use one of them", err)
+        self.cli("produce", "p", "--input", "7", "--backend", "dry",
+                 "--allow-code")
+        self.assertEqual(self.cached(), [])
+
+    def test_empty_answer_stops_the_run(self):
+        code, _, err, rec = self.go(replies=["   "])
+        self.assertEqual((code, rec["status"], rec["failed_step"]),
+                         (1, "failed", 1))
+        self.assertIn("empty answer", err)
+        self.assertEqual((len(self.prompts), self.cached()), (1, []))
+        self.assertFalse(list((self.root / "runs").glob("*.result.txt")))
+
+    def test_model_option_sets_the_model_and_separates_the_cache(self):
+        code, _, _, rec = self.go("--model", "m1", replies=["21", "تم"])
+        self.assertEqual((code, rec["model"]), (0, "m1"))
+        self.assertEqual(os.environ["TAWJIH_MODEL"], "m1")
+        code, out, _, rec = self.go("--resume", "--model", "m2",
+                                    replies=["21", "من m2"])
+        self.assertEqual((out, len(self.prompts), rec["from_cache"]),
+                         ("من m2", 2, 0))
+        code, out, _, _ = self.go("--resume", "--model", "m1")
+        self.assertEqual((out, len(self.prompts)), ("تم", 0))
+
+    def test_plan_shows_sizes(self):
+        code, out, _ = self.cli("produce", "p", "--plan")
+        self.assertEqual(code, 0)
+        self.assertIn("size: instructions %d characters"
+                      % len("استخرج العدد"), out)
+        self.assertIn("size: code ", out)
+        self.assertIn("sent to the model: %d characters of instructions in "
+                      "2 step(s)" % (len("استخرج العدد") + len("اشرح النتيجة")),
+                      out)
+
+
 class Edit(Base):
     def test_edit_shows_all_sides_and_saves_with_backup(self):
         self.tree()
@@ -474,6 +619,91 @@ class Editors(Base):
         self.assertEqual(n.reading, READING)
         self.assertFalse((self.root / "work").exists())
         self.assertEqual(len(list((self.root / "history").glob("*.md"))), 1)
+
+    def test_vscode_names_and_flags(self):
+        for spec in ("vscode", "code", "code --wait"):
+            cmd, name = tawjih.editor_command(spec)
+            self.assertEqual(name, "code")
+            self.assertEqual(cmd.count("--wait"), 1)
+            self.assertIn("--new-window", cmd)
+        cmd, name = tawjih.editor_command("vim")
+        self.assertEqual((name, len(cmd)), ("vim", 1))
+
+    def test_editor_names_from_full_paths(self):
+        for spec in (r'"C:\\Program Files\\VS Code\\bin\\code.cmd"',
+                     "/usr/share/code/bin/code", "Code.EXE"):
+            cmd, name = tawjih.editor_command(spec)
+            self.assertEqual(name, "code", spec)
+            self.assertIn("--wait", cmd)
+
+    @unittest.skipUnless(os.name == "nt", "Windows starts editors via .cmd")
+    def test_windows_editor_given_as_a_cmd_file_on_the_path(self):
+        self.tree()
+        nid = self.fill("1.1.1", human="old")
+        bindir = self.root / "bin"
+        bindir.mkdir()
+        (bindir / "fakeed.py").write_text(
+            "import sys\n"
+            "for f in sys.argv[1:]:\n"
+            "    if f.endswith('human.txt'):\n"
+            "        open(f, 'w', encoding='utf-8').write('new\\n')\n",
+            encoding="utf-8")
+        (bindir / "fakeed.cmd").write_text(
+            '@"%s" "%s" %%*\r\n' % (sys.executable, bindir / "fakeed.py"))
+        old = os.environ["PATH"]
+        os.environ["PATH"] = str(bindir) + os.pathsep + old
+        try:
+            code, out, err = self.cli("open", "1.1.1", "--editor", "fakeed")
+        finally:
+            os.environ["PATH"] = old
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.store().nodes[nid].human, "new")
+
+    def test_unfinished_edit_is_not_overwritten(self):
+        self.tree()
+        nid = self.fill("1.1.1", human="saved")
+        left = self.root / "work" / nid
+        left.mkdir(parents=True)
+        (left / "human.txt").write_text("unsaved work", encoding="utf-8")
+        editor = '"%s" -c pass' % sys.executable
+        code, _, err = self.cli("open", "1.1.1", "--editor", editor)
+        self.assertEqual(code, 1)
+        self.assertIn("--discard", err)
+        self.assertEqual((left / "human.txt").read_text(encoding="utf-8"),
+                         "unsaved work")
+        code, out, err = self.cli("open", "1.1.1", "--editor", editor,
+                                  "--discard")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.store().nodes[nid].human, "saved")
+
+    def test_split_opens_the_machine_side_as_two_typed_files(self):
+        self.tree()
+        nid = self.fill("1.1.1", human="مفهوم", instructions="تعليمات",
+                        code="output = 1")
+        script = self.root / "fake_code.py"
+        script.write_text(
+            "import sys, os\n"
+            "names = sorted(os.path.basename(f) for f in sys.argv[1:])\n"
+            "open(os.path.join(os.path.dirname(sys.argv[1]), '..', '..',"
+            " 'seen.txt'), 'w').write(' '.join(names))\n"
+            "for f in sys.argv[1:]:\n"
+            "    t = open(f, encoding='utf-8').read()\n"
+            "    if f.endswith('code.py'):\n"
+            "        t = 'output = 2\\n'\n"
+            "    if f.endswith('instructions.md'):\n"
+            "        t = t + 'سطر جديد\\n'\n"
+            "    open(f, 'w', encoding='utf-8').write(t)\n",
+            encoding="utf-8")
+        editor = '"%s" "%s"' % (sys.executable, script)
+        code, out, err = self.cli("open", "1.1.1", "--split", "--editor",
+                                  editor)
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.root / "seen.txt").read_text(),
+                         "code.py human.md instructions.md")
+        n = self.store().nodes[nid]
+        self.assertEqual((n.human, n.instructions, n.code),
+                         ("مفهوم", "تعليمات\nسطر جديد", "output = 2"))
+        self.assertIn("saved: instructions, code", out)
 
     def test_reading_editor_opens_only_when_there_is_a_book(self):
         self.tree()

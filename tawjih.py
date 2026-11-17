@@ -32,7 +32,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.5.1"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -278,8 +278,15 @@ def _post(url, body, headers):
 def _model():
     m = os.environ.get("TAWJIH_MODEL")
     if not m:
-        die("set the TAWJIH_MODEL environment variable to the model name")
+        die("name the model: pass --model NAME or set the TAWJIH_MODEL "
+            "environment variable")
     return m
+
+
+def use_model(a):
+    """--model on the command line wins over the environment variable."""
+    if getattr(a, "model", None):
+        os.environ["TAWJIH_MODEL"] = a.model
 
 
 def backend_dry(prompt):
@@ -355,7 +362,9 @@ def run_code(n, prev, shared, origin=""):
     with contextlib.redirect_stdout(buf):
         exec(compile(n.code, n.id + ".code", "exec"), ns)
     out = ns.get("output")
-    return str(out) if out is not None else buf.getvalue().strip()
+    if out is not None:
+        return str(out)
+    return buf.getvalue().strip() or None    # None: nothing was produced
 
 
 def machine_side(n):
@@ -600,6 +609,7 @@ def plan_steps(store, flow):
                      "tree_title": root.title,
                      "instructions": bool(ins.strip()),
                      "code": bool(code.strip()), "machine_sha": digest,
+                     "instructions_chars": len(ins), "code_chars": len(code),
                      "from": [edge_text(store, e) for e in flow.incoming(nid)]})
     return plan
 
@@ -616,10 +626,18 @@ def print_plan(store, name, plan, out):
         print("%3d  %-14s %-10s [%s]  %-18s %s" % (
             p["step"], p["tree_title"], p["number"], p["id"], kind,
             p["title"]), file=out)
+        size = ["%s %d" % (k, p[k + "_chars"])
+                for k in ("instructions", "code") if p[k]]
+        if size:
+            print("       size: %s characters" % ", ".join(size), file=out)
         for src in p["from"]:
             print("       <- %s" % src, file=out)
         if not p["from"]:
             print("       <- (the original request)", file=out)
+    sent = sum(p["instructions_chars"] for p in plan)
+    print("sent to the model: %d characters of instructions in %d step(s), "
+          "plus the request and each step's input at run time" % (
+              sent, sum(1 for p in plan if p["instructions"])), file=out)
 
 
 def choose_among(store, output, candidates):
@@ -650,11 +668,29 @@ def _stamped(folder, name, suffix):
     return f
 
 
-def run_flow(store, name, text, backend, allow_code, flow):
+def cache_file(store, backend, prompt):
+    """Where the answer to this exact prompt, from this provider and model,
+    is kept. Any change to the instructions, the input or the model gives
+    another file."""
+    key = hashlib.sha256("\0".join((
+        backend, os.environ.get("TAWJIH_MODEL", ""), prompt)).encode(
+            "utf-8")).hexdigest()
+    return store.root / "cache" / (key[:32] + ".json")
+
+
+def run_flow(store, name, text, backend, allow_code, flow, resume=False,
+             use_cache=True, redo=()):
     """Execute the machine sides of the files of a flow. A file runs after
     the files that feed it and receives their outputs; a file none of whose
     connections is active is skipped. Writes the log and the result to runs/
-    and a record of the operation to history/."""
+    and a record of the operation to history/.
+
+    Model answers are kept in cache/ (unless use_cache is False). With
+    resume, a step whose prompt, provider and model are unchanged takes its
+    answer from there instead of calling the model; code always runs again.
+    Steps listed in redo are asked again even with resume.
+    A step that produces no output stops the run."""
+    use_cache = use_cache and backend != "dry"
     plan = plan_steps(store, flow)
     trees = []
     for p in plan:
@@ -675,7 +711,8 @@ def run_flow(store, name, text, backend, allow_code, flow):
                                "if": e["cond"], "among": e["among"]}
                               for e in flow.edges],
               "steps": plan, "status": "running", "log": str(logfile),
-              "result": ""}
+              "result": "", "model": os.environ.get("TAWJIH_MODEL", ""),
+              "resume": bool(resume), "from_cache": 0, "redo": list(redo)}
 
     def document():
         record["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -691,9 +728,18 @@ def run_flow(store, name, text, backend, allow_code, flow):
         record.update(status="failed", failed_step=p["step"],
                       error="%s: %s: %s" % (what, type(e).__name__, e))
         rec = document()
-        die("step %d [%s] %s failed in %s: %s: %s (log: %s, record: %s)"
+        # a kept answer may be what broke this step: say how to replace it
+        suspects = [n.id] if what == "AMONG" else p.get("received_from", [])
+        suspects = [x for x in suspects if use_cache
+                    and store.nodes[x].instructions.strip()]
+        hint = ""
+        if suspects and what in ("code", "AMONG", "output"):
+            hint = ("\nIf a model answer caused this, ask for it again and "
+                    "keep the rest: --resume " + " ".join(
+                        "--redo " + store.number(x) for x in suspects))
+        die("step %d [%s] %s failed in %s: %s: %s (log: %s, record: %s)%s"
             % (p["step"], n.id, n.title, what, type(e).__name__, e, logfile,
-               rec))
+               rec, hint))
 
     outputs, chosen, shared = {}, {}, {}
 
@@ -738,13 +784,17 @@ def run_flow(store, name, text, backend, allow_code, flow):
                 print("  handoff from tree: %s" % store.ancestors(f)[0].title,
                       file=sys.stderr)
         p["received_from"] = feeders
-        code_out, out = "", prev
+        code_out, out, emptied = "", prev, False
         if code.strip():
             if allow_code:
                 try:
-                    code_out = run_code(n, prev, shared, text)
+                    produced = run_code(n, prev, shared, text)
                 except Exception as e:
                     fail(p, n, "code", e)
+                # no output at all passes the input on; an output that was
+                # set but is empty is the step's (empty) output
+                emptied = produced is not None and not produced.strip()
+                code_out = produced or ""
             else:
                 print("  code skipped (pass --allow-code to execute it)",
                       file=sys.stderr)
@@ -752,12 +802,43 @@ def run_flow(store, name, text, backend, allow_code, flow):
             prompt = build_prompt(store, n, prev, code_out, text)
             print("  prompt: %d characters" % len(prompt), file=sys.stderr)
             log.append("### Prompt\n" + prompt)
-            try:
-                out = BACKENDS[backend](prompt)
-            except Exception as e:
-                fail(p, n, "model call", e)
+            cfile = cache_file(store, backend, prompt) if use_cache else None
+            kept = None
+            if resume and cfile is not None and cfile.is_file() \
+                    and n.id not in redo:
+                try:
+                    kept = json.loads(cfile.read_text(encoding="utf-8"))["answer"]
+                except (ValueError, KeyError, TypeError):
+                    kept = None                 # unreadable: ask again
+            if isinstance(kept, str) and kept.strip():
+                out = kept
+                p["cached"] = True
+                record["from_cache"] += 1
+                print("  answer taken from the cache", file=sys.stderr)
+                log.append("(answer taken from the cache: %s)" % cfile.name)
+            else:
+                try:
+                    out = BACKENDS[backend](prompt) or ""
+                except Exception as e:
+                    fail(p, n, "model call", e)
+                if not out.strip():
+                    fail(p, n, "model call",
+                         ValueError("the model returned an empty answer"))
+                if cfile is not None:
+                    cfile.parent.mkdir(exist_ok=True)
+                    cfile.write_text(json.dumps({
+                        "answer": out, "backend": backend,
+                        "model": os.environ.get("TAWJIH_MODEL", ""),
+                        "step": n.id, "machine_sha": p["machine_sha"],
+                        "saved": time.strftime("%Y-%m-%d %H:%M:%S")},
+                        ensure_ascii=False, indent=2), encoding="utf-8")
         elif code_out:
             out = code_out
+        elif emptied:
+            out = ""
+        if not out.strip():
+            fail(p, n, "output", ValueError(
+                "the step produced no output, so nothing can be passed on"))
         outputs[n.id] = out
         log.append("### Output\n" + out)
         groups = {}
@@ -892,10 +973,26 @@ def cmd_run(a):
         if coded:
             die("not started: these steps have code, pass --allow-code after "
                 "reading it: " + ", ".join(coded))
+    print(_run_from_args(st, a, flow))
+
+
+def _run_from_args(st, a, flow):
+    if a.resume and a.no_cache:
+        die("--resume reads the cache and --no-cache turns it off; "
+            "use one of them")
+    use_model(a)
     text = a.input
     if a.input_file:
         text = Path(a.input_file).read_text(encoding="utf-8")
-    print(run_flow(st, a.name, text, a.backend, a.allow_code, flow))
+    redo = [st.resolve(r) for r in a.redo or []]
+    stray = [st.number(r) for r in redo if r not in flow.nodes]
+    if stray:
+        die("--redo names a file that is not in this path: " + ", ".join(stray))
+    if redo and not a.resume:
+        die("--redo goes with --resume (without --resume every step is "
+            "asked again anyway)")
+    return run_flow(st, a.name, text, a.backend, a.allow_code, flow,
+                    resume=a.resume, use_cache=not a.no_cache, redo=redo)
 
 
 def cmd_trees(a):
@@ -941,10 +1038,7 @@ def cmd_produce(a):
         die("production not started:\n  " + "\n  ".join(problems))
     if a.plan:
         return
-    text = a.input
-    if a.input_file:
-        text = Path(a.input_file).read_text(encoding="utf-8")
-    print(run_flow(st, a.name, text, a.backend, a.allow_code, flow))
+    print(_run_from_args(st, a, flow))
 
 
 def cmd_import(a):
@@ -1021,6 +1115,7 @@ def cmd_edit(a):
                      + Path(a.source).read_text(encoding="utf-8"))
     parts.append("# Request\n" + a.ask)
     prompt = "\n\n".join(parts)
+    use_model(a)
     if a.backend == "dry":
         print(prompt)
         print("\n[dry run: %d characters; choose --backend to send it]"
@@ -1061,7 +1156,9 @@ def cmd_edit(a):
 GUI_PARALLEL = {"notepad", "notepad++", "gedit", "kate", "mousepad", "xed",
                 "pluma"}                       # one window per side
 SPLIT_FLAGS = {"vim": ["-O"], "nvim": ["-O"]}  # sides shown side by side
-NEEDS_WAIT = {"code", "subl"}
+NEEDS_WAIT = {"code", "code-insiders", "codium", "subl"}
+VSCODE = {"code", "code-insiders", "codium"}    # one file per part, by type
+EDITOR_ALIASES = {"vscode": "code", "vs-code": "code", "vscodium": "codium"}
 
 
 def editor_command(arg):
@@ -1069,6 +1166,7 @@ def editor_command(arg):
             or os.environ.get("EDITOR"))
     if spec:
         cmd = [c.strip('"') for c in shlex.split(spec, posix=(os.name != "nt"))]
+        cmd[0] = EDITOR_ALIASES.get(cmd[0].lower(), cmd[0])
     elif os.name == "nt":
         cmd = ["notepad"]
     else:
@@ -1076,9 +1174,14 @@ def editor_command(arg):
         if not found:
             die("no editor found; set TAWJIH_EDITOR or pass --editor")
         cmd = [found]
-    name = Path(cmd[0]).name.lower()
-    if name.endswith(".exe"):
-        name = name[:-4]
+    name = re.split(r"[\\/]", cmd[0])[-1].lower()
+    for ext in (".exe", ".cmd", ".bat"):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+    # Windows starts "code" through code.cmd: find the real file first
+    cmd[0] = shutil.which(cmd[0]) or cmd[0]
+    if name in VSCODE and "--new-window" not in cmd and "-n" not in cmd:
+        cmd.append("--new-window")      # closing that window ends the edit
     if name in NEEDS_WAIT and "--wait" not in cmd and "-w" not in cmd:
         cmd.append("--wait")
     return cmd, name
@@ -1096,25 +1199,44 @@ def _backup(st, n):
     return bak
 
 
-def open_editors(st, nid, editor=None, force_reading=False):
+def open_editors(st, nid, editor=None, force_reading=False, split=False,
+                 discard=False):
     """Open one editor per side: human, machine, and reading when the file
-    has deposited-book passages. Changes are saved when the editors close."""
+    has deposited-book passages. Changes are saved when the editors close.
+
+    With split (always on for VS Code), the machine side is opened as two
+    files, instructions.md and code.py, and the text sides as .md, so the
+    editor's own support for Python and Markdown applies."""
     n = st.nodes[nid]
+    cmd, ename = editor_command(editor)
+    split = split or ename in VSCODE
     m_ins, m_code = MARK.format("instructions"), MARK.format("code")
-    sides = [("human", n.human),
-             ("machine", "%s\n%s\n%s\n%s" % (m_ins, n.instructions, m_code,
-                                             n.code))]
+    if split:
+        sides = [("human", "human.md", n.human),
+                 ("instructions", "instructions.md", n.instructions),
+                 ("code", "code.py", n.code)]
+    else:
+        sides = [("human", "human.txt", n.human),
+                 ("machine", "machine.txt", "%s\n%s\n%s\n%s" % (
+                     m_ins, n.instructions, m_code, n.code))]
     if n.reading.strip() or force_reading:
-        sides.append(("reading", n.reading))
+        sides.append(("reading", "reading.md" if split else "reading.txt",
+                      n.reading))
     wdir = st.root / "work" / nid
+    if wdir.is_dir() and any(wdir.iterdir()):
+        if not discard:
+            die("an earlier edit of this file did not finish, or it is open "
+                "in another terminal. Its text is in %s. Copy what you need "
+                "from there, then run again with --discard" % wdir)
+        shutil.rmtree(str(wdir))
     wdir.mkdir(parents=True, exist_ok=True)
-    enc = "utf-8-sig" if os.name == "nt" else "utf-8"   # BOM helps Notepad
-    files = []
-    for name, text in sides:
-        f = wdir / (name + ".txt")
+    enc = "utf-8-sig" if os.name == "nt" and not split else "utf-8"
+    files = []                      # the BOM helps Notepad, not code.py
+    for name, fname, text in sides:
+        f = wdir / fname
         f.write_text(text.strip("\n") + "\n", encoding=enc)
         files.append(f)
-    cmd, ename = editor_command(editor)
+    sides = [(name, text) for name, _, text in sides]
     print("%s [%s] %s: opening %s with '%s'" % (
         st.number(nid), nid, n.title, ", ".join(x[0] for x in sides),
         " ".join(cmd)))
@@ -1142,12 +1264,15 @@ def open_editors(st, nid, editor=None, force_reading=False):
             die("%s was not saved as UTF-8; nothing changed (your text is "
                 "still in %s)" % (f.name, f))
     marks = {MARK.format(sec) for sec in SECTIONS}
-    for name in ("human", "reading"):
+    for name in ("human", "reading") + (("instructions", "code") if split
+                                        else ()):
         if any(l.strip() in marks for l in new.get(name, "").splitlines()):
             die("the %s side contains a '=== ... ===' marker line; nothing "
                 "changed (your text is still in %s)" % (name, wdir))
     ins, code, cur = [], [], None
-    for line in new["machine"].splitlines():
+    if split:
+        ins, code = new["instructions"].splitlines(), new["code"].splitlines()
+    for line in new.get("machine", "").splitlines():
         if line.strip() == m_ins:
             cur = ins
         elif line.strip() == m_code:
@@ -1182,7 +1307,23 @@ def open_editors(st, nid, editor=None, force_reading=False):
 
 def cmd_open(a):
     st = Store(a.project)
-    open_editors(st, st.resolve(a.ref), a.editor, a.reading)
+    open_editors(st, st.resolve(a.ref), a.editor, a.reading, a.split,
+                 a.discard)
+
+
+def cmd_cache(a):
+    """Show how much is kept in cache/, or empty it."""
+    st = Store(a.project)
+    files = sorted((st.root / "cache").glob("*.json")) \
+        if (st.root / "cache").is_dir() else []
+    size = sum(f.stat().st_size for f in files)
+    if a.clear:
+        for f in files:
+            f.unlink()
+        print("removed %d kept answer(s), %d bytes" % (len(files), size))
+    else:
+        print("%d kept answer(s), %d bytes, in %s" % (len(files), size,
+                                                      st.root / "cache"))
 
 
 # ------------------------------------------------ library: deposit + filter
@@ -1300,6 +1441,7 @@ def cmd_filter(a):
     ok_targets = {n.id for n in rows}
     table = "\n".join("%s | %s | %s | %s" % (n.id, st.number(n.id),
                        LEVELS[n.level - 1], n.title) for n in rows)
+    use_model(a)
     head = FILTER_HEAD % ((" Extra criteria: " + a.ask) if a.ask else "")
     chunks = split_chunks(text, Path(info["name"]).stem, a.size)
 
@@ -1442,6 +1584,11 @@ def main():
                    "VISUAL, EDITOR, then notepad on Windows or nano/vim)")
     s.add_argument("--reading", action="store_true",
                    help="open the reading side even when it is empty")
+    s.add_argument("--discard", action="store_true",
+                   help="throw away the text left by an unfinished edit")
+    s.add_argument("--split", action="store_true",
+                   help="open the machine side as two files, instructions.md "
+                   "and code.py (always done for VS Code)")
     s.set_defaults(fn=cmd_open)
 
     s = sub.add_parser("tree", help="show all trees (H/I/C/R = sides filled)")
@@ -1473,7 +1620,20 @@ def main():
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
     s.add_argument("--allow-code", action="store_true",
                    help="execute Python in the code sections (not sandboxed)")
+    s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
+                   "environment variable)")
+    s.add_argument("--resume", action="store_true",
+                   help="reuse kept answers for steps whose prompt, provider "
+                   "and model are unchanged")
+    s.add_argument("--redo", action="append", metavar="REF",
+                   help="with --resume: ask this step again (repeatable)")
+    s.add_argument("--no-cache", action="store_true",
+                   help="do not keep the model's answers in cache/")
     s.set_defaults(fn=cmd_run)
+
+    s = sub.add_parser("cache", help="show or empty the kept model answers")
+    s.add_argument("--clear", action="store_true", help="remove them all")
+    s.set_defaults(fn=cmd_cache)
 
     s = sub.add_parser("trees", help="list the available trees")
     s.set_defaults(fn=cmd_trees)
@@ -1491,6 +1651,15 @@ def main():
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
     s.add_argument("--allow-code", action="store_true",
                    help="execute Python in the code sections (not sandboxed)")
+    s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
+                   "environment variable)")
+    s.add_argument("--resume", action="store_true",
+                   help="reuse kept answers for steps whose prompt, provider "
+                   "and model are unchanged")
+    s.add_argument("--redo", action="append", metavar="REF",
+                   help="with --resume: ask this step again (repeatable)")
+    s.add_argument("--no-cache", action="store_true",
+                   help="do not keep the model's answers in cache/")
     s.set_defaults(fn=cmd_produce)
 
     s = sub.add_parser("import", help="split a text file on '#' headings into child "
@@ -1505,6 +1674,8 @@ def main():
     s.add_argument("--ask", required=True, help="what the model should do")
     s.add_argument("--source", help="text file given to the model as material")
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
+                   "environment variable)")
     s.add_argument("--yes", action="store_true", help="save without asking")
     s.set_defaults(fn=cmd_edit)
 
@@ -1522,6 +1693,8 @@ def main():
     s.add_argument("--size", type=int, default=2000,
                    help="passage size when the book has no '#' headings")
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
+                   "environment variable)")
     s.set_defaults(fn=cmd_filter)
 
     s = sub.add_parser("accept", help="add the kept passages to reading sides")

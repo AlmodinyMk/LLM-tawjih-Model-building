@@ -8,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.4, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.5, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -89,7 +89,17 @@ Files written with no connecting word are a plain sequence.
 produce review 1.1 TO 1.2 IF error / 1.1 TO 1.3 IF NOT error / 1.2 AND 1.3 TO 2.1
 ```
 
-`produce --plan` shows each step and what feeds it, without running.
+`produce --plan` shows each step, its size in characters and what feeds it,
+without running.
+
+A step that returns nothing stops the production. After a failure, run the
+same command with `--resume`: steps whose prompt, provider and model are
+unchanged take their answer from `cache/` and the model is not called again
+for them. When a kept answer is itself the cause (a model replied in prose
+where the next step expected JSON), the error names the step to ask again:
+`--resume --redo REF`. `--no-cache` keeps no answers, `cache` shows what is
+kept and `cache --clear` empties it. `--model NAME` chooses the model for
+one command.
 `produce` will not start if a step has an empty machine side, or has code
 and `--allow-code` is missing.
 
@@ -105,6 +115,7 @@ and `--allow-code` is missing.
 | `link SRC DST [--type T]` | record a link between any two files |
 | `check` | validate parents, levels, cycles, links, paths, code syntax |
 | `trees` | list the available trees |
+| `cache [--clear]` | show or empty the kept model answers |
 | `produce NAME [WORDS ...] [--plan] --input TEXT [--backend B] [--allow-code]` | cross-tree production: select, order, validate, run, save, document |
 | `path NAME [WORDS ...]` | define a path without running it, or show a saved one |
 | `run NAME --input TEXT [--backend B] [--allow-code]` | run a saved path |
@@ -131,7 +142,14 @@ repository works on Linux and Windows. See
 - Windows: Notepad, one window per side.
 - Linux: nano, else vim, inside the terminal. With vim the sides appear side
   by side.
-- Anything else: `--editor "code --wait"` or the `TAWJIH_EDITOR` variable.
+- VS Code: `--editor vscode`. The machine side opens as two files,
+  `instructions.md` and `code.py`, next to `human.md`, so Python and
+  Markdown support apply; close the window to save. `--split` does the same
+  with any editor.
+- Anything else: `--editor "COMMAND"` or the `TAWJIH_EDITOR` variable.
+
+If an edit is interrupted, its text stays in `work/` and the next `open` of
+that file refuses to overwrite it until you pass `--discard`.
 
 The machine side is one document with two parts, instructions above the
 `=== code ===` line and Python below it. The reading editor opens only when
@@ -147,7 +165,8 @@ the file already has passages, or with `--reading`.
 | `openai` | any OpenAI-compatible `/chat/completions` endpoint | `TAWJIH_BASE_URL`, `TAWJIH_API_KEY` |
 | `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY` |
 
-Set the model name in `TAWJIH_MODEL` for all three network backends. Keys are
+Name the model with `--model NAME` or the `TAWJIH_MODEL` variable, for all
+three network backends. Keys are
 read from the environment and never written to disk.
 
 ## Code steps
@@ -167,6 +186,7 @@ files/    one .md file per tree file (header + four marked sections)
 paths/    one .path file per path (ordered ids)
 library/  deposited books and filter reports   (git-ignored)
 runs/     log and result of every production   (git-ignored)
+cache/    kept model answers, for --resume     (git-ignored)
 history/  production records, and previous
           versions of edited files             (git-ignored)
 ```
@@ -174,7 +194,9 @@ history/  production records, and previous
 ## Limitations
 
 - Branches run one after another, not in parallel. There are no loops or
-  retries, and a failed production restarts from step 1.
+  automatic retries. A failed production is run again with `--resume`.
+- A kept answer is reused as it is. Models answer differently each time, so
+  `--resume` freezes the first answer until the prompt changes.
 - `IF` only tests whether a word appears in the output, and `AMONG` only
   finds a candidate's number, id or title in it. Both depend on the model
   wording its answer as the instructions ask.

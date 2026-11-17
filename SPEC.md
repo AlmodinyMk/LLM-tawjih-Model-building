@@ -1,4 +1,4 @@
-# Tawjih specification (0.3)
+# Tawjih specification (0.5)
 
 This is the contract the program and the tests follow.
 
@@ -73,7 +73,25 @@ A path must not contain a loop, and a file appears in it once.
 6. A connection between files of different trees is a **handoff**.
 7. The result is the output of the files that feed nothing and did run;
    several are joined, each under its title.
-8. A failing step stops the production.
+8. A failing step stops the production. A step that produces no output is
+   a failing step: an empty answer from the model, or an empty result with
+   nothing to pass on, stops the production at that step. Code that sets no
+   `output` and prints nothing passes its input on unchanged; code that
+   sets `output` to an empty value has produced an empty output.
+
+## Answer cache
+
+Each answer from a model is kept in `cache/`, in a file named by the
+SHA-256 of the provider name, the model name and the exact prompt. With
+`--resume`, a step whose file exists takes its answer from it and the model
+is not called; any change to the instructions, the input, the provider or
+the model gives another name, so that step is asked again. Code always runs
+again. Without `--resume` the model is always called. `--no-cache` keeps
+nothing, and the `dry` back end is never kept.
+
+`--resume --redo REF` asks the named step again and replaces its kept
+answer. This is the way out when a kept answer is the cause of a later
+failure: resuming alone would reuse it and fail the same way.
 
 `produce` refuses to start if any step has no machine side, or has code
 while `--allow-code` is absent.
@@ -87,5 +105,6 @@ while `--allow-code` is absent.
   status (done, skipped, failed) and the files it received from, the
   backend, a digest of the input, and where the log and result are. Written
   for failed runs too.
+- `cache/<hash>.json`: one kept model answer (see Answer cache).
 - `history/<id>-<time>.md`: the previous version of a file, saved whenever
   `open` or `edit` changes it.
