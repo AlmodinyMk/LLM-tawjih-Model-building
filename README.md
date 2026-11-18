@@ -1,5 +1,7 @@
 # tawjih — توجيه أوامر الآلة
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24332793.svg)](https://doi.org/10.5281/zenodo.24332793)
+
 A personal, file-based way to direct a language model. Knowledge is kept in
 trees of small files; each file has three sides; a *path* strings files
 together into a workflow that the model and your own code execute step by step.
@@ -359,6 +361,18 @@ were driven by a script on a virtual display; see
 Not yet verified: real editors and the desktop windows used by a person, and
 real providers. The three network backends were checked only
 against a local mock server that imitates the response formats.
+
+## Paper and citation
+
+The working paper for this version describes the method, version 0.6.1 and a
+trial on two chapters of an open algebra textbook:
+
+> Almodiny, M. K. (2026). *Tawjih: Directing a Language Model with Three-Sided
+> Files and Cross-Tree Production Paths* (working paper, software version
+> 0.6.1). Zenodo. https://doi.org/10.5281/zenodo.24332793
+
+GitHub's "Cite this repository" button gives the same reference from
+[`CITATION.cff`](CITATION.cff).
 
 ## License
 

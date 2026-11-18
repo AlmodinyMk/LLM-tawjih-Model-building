@@ -2,6 +2,8 @@
 
 # tawjih — توجيه أوامر الآلة
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24332793.svg)](https://doi.org/10.5281/zenodo.24332793)
+
 طريقة شخصية قائمة على الملفات لتوجيه نموذج لغوي. المعرفة تُحفظ في أشجار من
 ملفات صغيرة، ولكل ملف ثلاثة وجوه، و«المسار» يصل ملفات ببعضها لتصبح خطوات
 ينفذها النموذج والكود واحدة بعد الأخرى.
@@ -291,6 +293,22 @@ GTK 3 أو Tkinter بواجهة إنجليزية ومساعدة اختيارية
 [linux/README.md](linux/README.md).
 
 لم يتم بعد: المحررات والنوافذ بيد مستخدم حقيقي، والمزوّدون الحقيقيون.
+
+## الورقة والاستشهاد
+
+ورقة العمل لهذه النسخة تشرح الطريقة والإصدار 0.6.1 وتجربةً على فصلين من كتاب
+جبر مفتوح:
+
+<div dir="ltr">
+
+> Almodiny, M. K. (2026). *Tawjih: Directing a Language Model with Three-Sided
+> Files and Cross-Tree Production Paths* (working paper, software version
+> 0.6.1). Zenodo. https://doi.org/10.5281/zenodo.24332793
+
+</div>
+
+وزر «Cite this repository» في GitHub يعطي المرجع نفسه من ملف
+[`CITATION.cff`](CITATION.cff).
 
 ## الترخيص
 

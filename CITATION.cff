@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use Tawjih, please cite the working paper below."
+title: "Tawjih: machine command directing (توجيه أوامر الآلة)"
+type: software
+version: 0.6.1
+date-released: 2026-11-18
+authors:
+  - family-names: Almodiny
+    given-names: Mohammed Khalid
+    affiliation: Independent Researcher
+repository-code: "https://github.com/AlmodinyMk/LLM-tawjih-Model-building"
+license: CC-BY-NC-SA-4.0
+keywords:
+  - LLM orchestration
+  - prompt engineering
+  - hierarchical knowledge organization
+  - prompt chaining
+  - reproducibility
+  - data contracts
+preferred-citation:
+  type: report
+  title: "Tawjih: Directing a Language Model with Three-Sided Files and Cross-Tree Production Paths"
+  authors:
+    - family-names: Almodiny
+      given-names: Mohammed Khalid
+      affiliation: Independent Researcher
+  year: 2026
+  month: 11
+  publisher:
+    name: Zenodo
+  doi: 10.5281/zenodo.24332793
+  notes: "Working paper, software version 0.6.1"
