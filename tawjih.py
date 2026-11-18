@@ -35,7 +35,7 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -103,6 +103,25 @@ def _json_in(text):
         except ValueError:
             continue
     return None, None
+
+
+FALSE_WORDS = {"", "false", "no", "0", "none", "null", "لا", "خطأ"}
+
+
+def condition_holds(text, word):
+    """Whether 'IF word' holds for a step's output. When the output is a JSON
+    object with 'word' as a top-level key, the key's value decides: true,
+    non-zero and non-empty hold; false, 0, null, empty, and the strings
+    "false", "no", "0", "none", "null", "لا" and "خطأ" do not. Otherwise
+    the word must appear in the text (case-insensitive)."""
+    obj, _ = _json_in(text)
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.casefold() == word.casefold():
+                if isinstance(v, str):      # models write "false" as text too
+                    return v.strip().casefold() not in FALSE_WORDS
+                return bool(v)
+    return word.casefold() in text.casefold()
 
 
 def conform(text, spec, label):
@@ -389,6 +408,8 @@ class Store:
                                      "side" % (f.stem, nid))
                 errors += ["path %s: %s" % (f.stem, m)
                            for m in flow_contract_errors(self, flow)]
+                warns += ["path %s: %s" % (f.stem, m)
+                          for m in flow_condition_notes(self, flow)]
         return errors, warns
 
 
@@ -535,8 +556,40 @@ class StepOutputs(Mapping):
         return sum(1 for k in self._out if k in self._up)
 
 
+CODE_TIMEOUT = 60.0
+
+
+class CodeTimeout(BaseException):
+    """Raised inside step code that runs too long. A BaseException, so the
+    code's own 'except Exception' cannot swallow it."""
+
+
+def _exec_limited(code_obj, ns, seconds):
+    """exec with a time limit: a trace function checks the clock on every
+    line and call. It stops Python loops; a single long call into C code
+    (a huge pow, a blocking read) ends only when that call returns."""
+    if not seconds or seconds <= 0:
+        exec(code_obj, ns)
+        return
+    deadline = time.monotonic() + seconds
+
+    def tracer(frame, event, arg):
+        if time.monotonic() > deadline:
+            raise CodeTimeout("the code ran longer than %g seconds (change "
+                              "the limit with --code-timeout; 0 for none)"
+                              % seconds)
+        return tracer
+
+    before = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        exec(code_obj, ns)
+    finally:
+        sys.settrace(before)
+
+
 def run_code(n, prev, shared, origin="", steps=None, store=None, run_dir=None,
-             upstream=None):
+             upstream=None, timeout=CODE_TIMEOUT):
     """Execute a node's Python code. It sees input, origin, vars, steps
     (outputs upstream of it), meta and linked(), and sets output."""
     outputs = steps or {}
@@ -584,7 +637,7 @@ def run_code(n, prev, shared, origin="", steps=None, store=None, run_dir=None,
     }
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        exec(compile(n.code, n.id + ".code", "exec"), ns)
+        _exec_limited(compile(n.code, n.id + ".code", "exec"), ns, timeout)
     out = ns.get("output")
     if out is not None:
         return str(out)
@@ -835,11 +888,29 @@ def flow_contract_errors(store, flow):
     return out
 
 
+def flow_condition_notes(store, flow):
+    """IF words that will be looked for in the text of a JSON output
+    because they are not among the keys its file promises: often a slip,
+    since the word may also occur inside a key or a value."""
+    out = []
+    for e in flow.edges:
+        if not e["cond"]:
+            continue
+        kind, keys = _parse_contract(store.nodes[e["src"]].produces) or ("", [])
+        word = e["cond"][1]
+        if kind == "json" and keys and word.casefold() not in (
+                k.casefold() for k in keys):
+            out.append("IF %s on %s: not one of its JSON keys (%s), so it is "
+                       "looked for anywhere in the output text" % (
+                           word, e["src"], ", ".join(keys)))
+    return out
+
+
 def flow_text(store, flow):
     lines = []
     for norm in flow.lines:
-        titles = [store.nodes[t].title for t in norm if t in store.nodes]
-        lines.append("%s  # %s" % (" ".join(norm), ", ".join(titles)))
+        words = [store.nodes[t].title if t in store.nodes else t for t in norm]
+        lines.append("%s  # %s" % (" ".join(norm), " | ".join(words)))
     return "\n".join(lines) + "\n"
 
 
@@ -962,7 +1033,8 @@ def cache_file(store, backend, model, prompt):
 
 
 def run_flow(store, name, text, backend, allow_code, flow, resume=False,
-             use_cache=True, redo=(), model_override=""):
+             use_cache=True, redo=(), model_override="",
+             code_timeout=CODE_TIMEOUT):
     """Execute the machine sides of the files of a flow. A file runs after
     the files that feed it and receives their outputs; a file none of whose
     connections is active is skipped. Writes the log, state snapshot and
@@ -1039,7 +1111,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             return chosen.get((e["src"], e["among"])) == e["dst"]
         if e["cond"]:
             neg, word = e["cond"]
-            return (word.casefold() in outputs[e["src"]].casefold()) != neg
+            return condition_holds(outputs[e["src"]], word) != neg
         return True
 
     for p in plan:
@@ -1089,8 +1161,9 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 try:
                     produced = run_code(n, prev, shared, text, steps=outputs,
                                         store=store, run_dir=store.rdir,
-                                        upstream=flow.upstream(n.id))
-                except Exception as e:
+                                        upstream=flow.upstream(n.id),
+                                        timeout=code_timeout)
+                except (Exception, CodeTimeout) as e:
                     fail(p, n, "code", e, outputs)
                 emptied = produced is not None and not produced.strip()
                 code_out = produced or ""
@@ -1290,6 +1363,58 @@ def cmd_link(a):
     print("linked %s -> %s (%s)" % (src, dst, a.type))
 
 
+def cmd_contract(a):
+    """Show or set a file's contracts (expects, produces) and model."""
+    st = Store(a.project)
+    n = st.nodes[st.resolve(a.ref)]
+    changes = {k: v for k, v in (("expects", a.expects),
+                                 ("produces", a.produces),
+                                 ("model", a.model)) if v is not None}
+    for k in ("expects", "produces"):
+        v = changes.get(k)
+        if v is None or v.strip().lower() in ("", "none"):
+            continue
+        kind, keys = _parse_contract(v)
+        if kind == "unknown":
+            die("%s: unknown contract '%s' (%s)" % (k, v, CONTRACT_HELP))
+        changes[k] = "json(%s)" % ", ".join(keys) if kind == "json" and keys \
+            else kind
+    if changes:
+        _backup(st, n)
+        for k, v in changes.items():
+            setattr(n, k, "" if v.strip().lower() in ("", "none") else v)
+        st.save(n)
+    print("%s [%s] %s" % (st.number(n.id), n.id, n.title))
+    for k in ("expects", "produces", "model"):
+        print("  %-9s %s" % (k + ":", getattr(n, k) or "-"))
+    if changes:                 # what the change does to the saved paths
+        for pf in sorted((st.root / "paths").glob("*.path")):
+            try:
+                flow = st.load_flow(pf.stem)
+            except FlowError:
+                continue
+            if n.id in flow.nodes:
+                for err in flow_contract_errors(st, flow):
+                    print("warning: path %s: %s" % (pf.stem, err))
+
+
+def cmd_confirm(a):
+    """Record that a machine side was reviewed against the current human
+    and reading sides and still fits them: it is no longer stale."""
+    st = Store(a.project)
+    for ref in a.refs:
+        n = st.nodes[st.resolve(ref)]
+        if not (n.instructions.strip() or n.code.strip()):
+            die("%s %s has no machine side to confirm" % (st.number(n.id),
+                                                          n.title))
+        was = n.is_stale()
+        n.built_sha = n.source_digest()
+        st.save(n)
+        print("%s [%s] %s: %s" % (st.number(n.id), n.id, n.title,
+                                  "confirmed, no longer stale" if was else
+                                  "confirmed"))
+
+
 def cmd_check(a):
     st = Store(a.project)
     branch_id = st.resolve(a.branch) if getattr(a, "branch", None) else ""
@@ -1440,7 +1565,8 @@ def _run_from_args(st, a, flow):
             "asked again anyway)")
     return run_flow(st, a.name, text, a.backend, a.allow_code, flow,
                     resume=a.resume, use_cache=not a.no_cache, redo=redo,
-                    model_override=getattr(a, "model", None) or "")
+                    model_override=getattr(a, "model", None) or "",
+                    code_timeout=a.code_timeout)
 
 
 def cmd_trees(a):
@@ -1627,7 +1753,10 @@ def cmd_graph(a):
             die("path %s: %s" % (a.path, e))
     if not st.nodes:
         die("the project has no files yet")
-    text = graph_source(st, a.format, flow, a.branch or "", a.path or "")
+    fmt = a.format or {".mmd": "mermaid", ".mermaid": "mermaid", ".dot": "dot",
+                       ".gv": "dot"}.get(Path(a.out or "").suffix.lower(), "md")
+    a.format = fmt
+    text = graph_source(st, fmt, flow, a.branch or "", a.path or "")
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(text, encoding="utf-8")
@@ -1643,8 +1772,9 @@ GENERATE_HEAD = (
     "  A TO B            A's output goes to B\n"
     "  A TO B AND C      to both (branching)\n"
     "  B AND C TO D      D receives both outputs (joining)\n"
-    "  A TO B IF word    only when A's output contains the word "
-    "(IF NOT word for the opposite)\n"
+    "  A TO B IF word    only when the word holds for A's output: for a JSON "
+    "output with that key, when its value is true or non-empty; otherwise when "
+    "the output contains the word (IF NOT word for the opposite)\n"
     "  A AMONG B C       A's output names one of B, C; only that one runs\n"
     "  A TO D THROUGH B C   A, then B, then C, then D\n"
     "Use only files from the list. A file's 'expects' must fit what the "
@@ -1822,6 +1952,8 @@ def cmd_generate(a):
     else:
         body = flow_text(st, flow)
     head += ["# PROBLEM: " + p for p in problems]
+    notes = flow_condition_notes(st, flow) if flow is not None else []
+    head += ["# NOTE: " + m for m in notes]
     prop.write_text("\n".join(head) + "\n" + body, encoding="utf-8")
     if flow is not None:
         print_plan(st, a.name + " (proposed)", plan_steps(st, flow),
@@ -1829,6 +1961,8 @@ def cmd_generate(a):
     if problems:
         die("the proposal has problems (kept in %s for you to edit):\n  %s"
             % (prop, "\n  ".join(problems)))
+    for m in notes:
+        print("note: " + m)
     print("proposal written to %s; nothing was run. Accept it with: "
           "generate %s --accept" % (prop, a.name))
 
@@ -1946,7 +2080,15 @@ def cmd_edit(a):
     if any(l.strip() == MARK.format(sec) for l in new.splitlines() for sec in SECTIONS):
         die("the answer contains a section marker line; file unchanged")
     if new == old:
-        print("no change")
+        if a.side in ("instructions", "code") and n.is_stale():
+            # asked to rebuild from the current sides, the model kept it:
+            # that is a rebuild, so the file is no longer stale
+            n.built_sha = n.source_digest()
+            st.save(n)
+            print("no change; the machine side is now recorded as built "
+                  "from the current human and reading sides")
+        else:
+            print("no change")
         return
     for line in difflib.unified_diff(old.splitlines(), new.splitlines(),
                                      "before", "after", lineterm=""):
@@ -2157,14 +2299,568 @@ def _book(st, ref):
     return ldir, hits[0], books[hits[0]]
 
 
+# ------------------------------------------------------------ source formats
+# deposit turns a source file into plain text with '#' headings (one '#' per
+# level), which is what filter splits on. Mathematics is kept as LaTeX
+# ($...$ inline, $$...$$ displayed). Standard library only.
+
+def _tidy(text):
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip() + "\n"
+
+
+def _heading(level, title):
+    title = " ".join(title.split())
+    return "\n\n%s %s\n\n" % ("#" * max(1, min(level, 6)), title)
+
+
+def from_markdown(text, path=None):
+    """Markdown already uses '#' headings. Setext headings become '#', and
+    '#' lines inside code fences are protected."""
+    out, fence = [], None
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"\s*(```+|~~~+)", line)
+        if m:
+            mark = m.group(1)[0] * 3
+            fence = None if fence and mark == fence else (fence or mark)
+            out.append(line)
+        elif fence:
+            out.append(" " + line if line.startswith("#") else line)
+        elif (i + 1 < len(lines) and line.strip()
+              and re.fullmatch(r"\s*(=+|-+)\s*", lines[i + 1])
+              and not line.lstrip().startswith(("-", "*", "#", ">"))):
+            out.append("%s %s" % ("#" if "=" in lines[i + 1] else "##",
+                                  line.strip()))
+            i += 1
+        else:
+            m = re.match(r"(#{1,6})\s+(.*?)\s*#*\s*$", line)
+            out.append("%s %s" % (m.group(1), m.group(2)) if m else line)
+        i += 1
+    return _tidy("\n".join(out))
+
+
+TEX_LEVELS = ["part", "chapter", "section", "subsection", "subsubsection",
+              "paragraph"]
+TEX_BLOCKS = ["theorem", "lemma", "proposition", "corollary", "definition",
+              "example", "remark", "proof", "exercise", "conjecture", "note",
+              "axiom", "claim", "fact", "problem", "solution"]
+TEX_DROP = ["tikzpicture", "figure", "comment", "thebibliography", "verbatim"]
+
+
+def _tex_arg(s, i):
+    """The {...} group starting at s[i] (after optional spaces): (text, end)."""
+    while i < len(s) and s[i] in " \t\n":
+        i += 1
+    if i >= len(s) or s[i] != "{":
+        return "", i
+    depth, j = 0, i
+    while j < len(s):
+        if s[j] == "\\":
+            j += 2
+            continue
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[i + 1:j], j + 1
+        j += 1
+    return s[i + 1:], len(s)
+
+
+def from_latex(text, path=None, _seen=None):
+    """LaTeX: \\part ... \\subsubsection become headings, \\input and
+    \\include are read in, theorem-like environments get a label, lists
+    become '- ' lines; mathematics stays as written."""
+    seen = _seen if _seen is not None else set()
+    text = re.sub(r"(?<!\\)%.*", "", text)                 # comments
+
+    def include(m):
+        if not path:
+            return ""
+        f = (Path(path).parent / m.group(2)).resolve()
+        if not f.suffix:
+            f = f.with_suffix(".tex")
+        if f in seen or not f.is_file():
+            return ""
+        seen.add(f)
+        return from_latex(f.read_text(encoding="utf-8", errors="replace"),
+                          f, seen)
+    text = re.sub(r"\\(input|include)\s*\{([^}]*)\}", include, text)
+    if _seen is not None:                                  # an included part
+        return text
+    m = re.search(r"\\begin\{document\}(.*?)(\\end\{document\}|$)", text, re.S)
+    if m:
+        text = m.group(1)
+    for env in TEX_DROP:
+        text = re.sub(r"\\begin\{%s\*?\}.*?\\end\{%s\*?\}" % (env, env), "",
+                      text, flags=re.S)
+    used = [k for k in TEX_LEVELS if re.search(r"\\%s\*?\s*[\[{]" % k, text)]
+    out, i = [], 0
+    pat = re.compile(r"\\(%s)\*?\s*(\[[^\]]*\])?\s*(?=\{)" % "|".join(TEX_LEVELS))
+    for m in pat.finditer(text):
+        if m.start() < i:
+            continue
+        title, end = _tex_arg(text, m.end())
+        out.append(text[i:m.start()])
+        out.append(_heading(used.index(m.group(1)) + 1, title))
+        i = end
+    text = "".join(out) + text[i:]
+    blocks = "|".join(TEX_BLOCKS)
+    text = re.sub(r"\\begin\{(%s)\*?\}(\[([^\]]*)\])?" % blocks,
+                  lambda m: "\n\n%s%s. " % (m.group(1).capitalize(),
+                                            " (%s)" % m.group(3)
+                                            if m.group(3) else ""), text)
+    text = re.sub(r"\\end\{(%s)\*?\}" % blocks, "\n\n", text)
+    text = re.sub(r"\\begin\{(itemize|enumerate|description)\}|"
+                  r"\\end\{(itemize|enumerate|description)\}", "\n", text)
+    text = re.sub(r"\\item\s*(\[[^\]]*\])?", lambda m: "\n- " + (
+        m.group(1)[1:-1] + " " if m.group(1) else ""), text)
+    text = re.sub(r"\\(label|index)\s*\{[^}]*\}", "", text)
+    text = re.sub(r"\\(eqref|ref|cref|Cref|autoref)\s*\{([^}]*)\}",
+                  r"[ref: \2]", text)
+    text = re.sub(r"\\cite[pt]?\s*(\[[^\]]*\])?\s*\{([^}]*)\}", r"[cite: \2]",
+                  text)
+    for _ in range(3):              # nested text styling
+        text = re.sub(r"\\(emph|textbf|textit|textsf|texttt|underline)"
+                      r"\s*\{([^{}]*)\}", r"\2", text)
+    text = text.replace("~", " ").replace("``", "\u201c").replace("''", "\u201d")
+    text = text.replace("---", "\u2014").replace("\\\\\n", "\n")
+    return _tidy(_guard_hashes_body(text))
+
+
+def _guard_hashes_body(text):
+    """Like _guard_hashes, but keeps the headings this module wrote, which
+    always stand alone between blank lines."""
+    lines = text.split("\n")
+    out = []
+    for k, l in enumerate(lines):
+        alone = ((k == 0 or not lines[k - 1].strip())
+                 and (k + 1 == len(lines) or not lines[k + 1].strip()))
+        out.append(l if not l.startswith("#") or (alone and re.match(
+            r"#{1,6} \S", l)) else " " + l)
+    return "\n".join(out)
+
+
+class _HTMLText:
+    """Collect the text of an HTML page with '#' headings."""
+    SKIP = {"script", "style", "nav", "header", "footer", "noscript", "svg",
+            "button", "form", "template"}
+    BLOCK = {"p", "div", "section", "article", "blockquote", "pre", "table",
+             "tr", "ul", "ol", "dl", "dd", "dt", "figure", "figcaption",
+             "main", "aside", "br", "hr"}
+
+    def __init__(self):
+        import html.parser
+        outer = self
+
+        class P(html.parser.HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                outer.start(tag, dict(attrs))
+
+            def handle_endtag(self, tag):
+                outer.end(tag)
+
+            def handle_data(self, data):
+                outer.data(data)
+
+        self.parser = P(convert_charrefs=True)
+        self.out, self.skip, self.head, self.math = [], 0, None, None
+
+    def start(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip += 1
+        elif tag == "math":
+            self.math = {"tex": attrs.get("alttext"), "text": [],
+                         "display": attrs.get("display") == "block",
+                         "ann": False}
+        elif self.math is not None and tag == "annotation" and \
+                "tex" in (attrs.get("encoding") or ""):
+            self.math["ann"], self.math["tex"] = True, ""
+        elif re.fullmatch(r"h[1-6]", tag):
+            self.head = (int(tag[1]), [])
+        elif tag == "li":
+            self.out.append("\n- ")
+        elif tag in self.BLOCK:
+            self.out.append("\n\n" if tag != "br" else "\n")
+
+    def end(self, tag):
+        if tag in self.SKIP:
+            self.skip = max(0, self.skip - 1)
+        elif tag == "math" and self.math is not None:
+            m, self.math = self.math, None
+            tex = (m["tex"] or "".join(m["text"])).strip()
+            self.out.append(("\n$$%s$$\n" if m["display"] else "$%s$") % tex)
+        elif tag == "annotation" and self.math is not None:
+            self.math["ann"] = False
+        elif self.head and tag == "h%d" % self.head[0]:
+            level, words = self.head
+            self.head = None
+            self.out.append(_heading(level, "".join(words)))
+        elif tag in self.BLOCK:
+            self.out.append("\n\n")
+
+    def data(self, data):
+        if self.skip:
+            return
+        if self.math is not None:
+            if self.math["ann"]:
+                self.math["tex"] += data
+            elif not self.math["tex"]:
+                self.math["text"].append(data)
+            return
+        (self.head[1] if self.head else self.out).append(data)
+
+
+def from_html(text, path=None):
+    """HTML: <h1>-<h6> become headings; scripts, styles and navigation are
+    left out; MathML is replaced by its TeX annotation or alttext; MathJax
+    source (\\( \\), $$ $$) is text already."""
+    h = _HTMLText()
+    h.parser.feed(text)
+    h.parser.close()
+    raw = "".join(h.out)
+    lines = []
+    for l in raw.split("\n"):
+        lines.append(l if re.match(r"#{1,6} \S", l) else " ".join(l.split()))
+    return _tidy(_guard_hashes_body("\n".join(lines)))
+
+
+PTX_DIVISIONS = {"part": 1, "chapter": 1, "appendix": 1, "section": 2,
+                 "exercises": 2, "references": 2, "reading-questions": 2,
+                 "glossary": 2, "solutions": 2, "worksheet": 2,
+                 "subsection": 3, "subsubsection": 4, "paragraphs": 5}
+PTX_BLOCKS = {"theorem", "lemma", "proposition", "corollary", "definition",
+              "example", "remark", "proof", "exercise", "algorithm", "claim",
+              "fact", "axiom", "conjecture", "note", "observation", "warning",
+              "insight", "question", "problem", "activity", "exploration",
+              "hint", "answer", "solution", "assumption", "principle",
+              "identity", "heuristic", "hypothesis", "objectives",
+              "outcomes", "project", "investigation", "computation",
+              "technology", "data", "convention", "notation-block"}
+PTX_SKIP = {"sage", "idx", "notation", "latex-image", "image", "index",
+            "docinfo", "macros", "latex-image-preamble", "video",
+            "interactive", "program", "console", "sageplot", "asymptote",
+            "frontmatter", "backmatter", "bookinfo"}
+PTX_EMPTY = {"mdash": "\u2014", "ndash": "\u2013", "ellipsis": "\u2026",
+             "nbsp": " ", "tex": "TeX", "latex": "LaTeX", "pretext": "PreTeXt",
+             "xetex": "XeTeX", "ie": "i.e.", "eg": "e.g.", "etc": "etc.",
+             "vs": "vs.", "copyright": "\u00a9", "times": "\u00d7",
+             "lsq": "\u2018", "rsq": "\u2019", "lq": "\u201c", "rq": "\u201d",
+             "today": "", "timeofday": "", "midpoint": "\u00b7",
+             "swungdash": "\u2053", "permille": "\u2030", "pilcrow": "\u00b6",
+             "section-mark": "\u00a7", "minus": "\u2212", "solidus": "/",
+             "obelus": "\u00f7", "plusminus": "\u00b1", "degree": "\u00b0",
+             "prime": "\u2032", "dblprime": "\u2033", "icon": ""}
+
+
+def _xml_load(path, seen=None):
+    """Parse an XML file and read its xi:include files in (relative to it)."""
+    import xml.etree.ElementTree as ET
+    seen = seen or set()
+    path = Path(path).resolve()
+    seen.add(path)
+    root = ET.parse(path).getroot()
+    xi = "{http://www.w3.org/2001/XInclude}include"
+
+    def expand(el):
+        kids = list(el)
+        for k, ch in enumerate(kids):
+            if ch.tag == xi:
+                f = (path.parent / ch.get("href", "")).resolve()
+                if ch.get("parse") == "text":
+                    new = ET.Element("pre")
+                    new.text = f.read_text(encoding="utf-8") if f.is_file() \
+                        else ""
+                elif f.is_file() and f not in seen:
+                    new = _xml_load(f, seen)
+                else:
+                    new = ET.Element("skipped")
+                new.tail = ch.tail
+                el.remove(ch)
+                el.insert(k, new)
+            else:
+                expand(ch)
+    expand(root)
+    return root
+
+
+PTX_IDS = {}            # xml:id -> label, filled by from_xml
+PTX_NUM = {}            # id(element) -> its number, filled by from_xml
+PTX_NUMBERED = {"theorem", "lemma", "proposition", "corollary", "definition",
+                "example", "remark", "algorithm", "claim", "fact", "axiom",
+                "conjecture", "note", "observation", "principle", "identity",
+                "insight", "assumption", "heuristic", "hypothesis",
+                "question", "problem", "activity", "exploration",
+                "investigation", "project", "computation", "technology",
+                "data", "convention", "warning", "figure", "table",
+                "listing", "list"}
+
+
+def _ptx_number(root):
+    """Number blocks as PreTeXt does by default: one counter per chapter
+    shared by theorems, examples, figures and the like (Example 3.8,
+    Table 3.10); exercises in an exercises division count on their own.
+    The numbers are right only when the whole book is deposited."""
+    nums, state = {}, {"ch": 0, "blk": 0}
+
+    def walk(el, in_ex):
+        tag = el.tag.split("}")[-1] if isinstance(el.tag, str) else ""
+        if tag in PTX_SKIP:
+            return
+        if tag == "chapter":
+            state["ch"] += 1
+            state["blk"] = 0
+            nums[id(el)] = str(state["ch"])
+        elif tag in ("exercises", "reading-questions", "worksheet"):
+            in_ex = [0]
+        elif tag == "exercise" and in_ex:
+            in_ex[0] += 1
+            nums[id(el)] = str(in_ex[0])
+        elif tag in PTX_NUMBERED or (tag == "exercise" and not in_ex):
+            state["blk"] += 1
+            nums[id(el)] = ("%d.%d" % (state["ch"], state["blk"])
+                            if state["ch"] else str(state["blk"]))
+        for ch in el:
+            walk(ch, in_ex)
+    walk(root, None)
+    return nums
+
+
+def _ptx_label(el):
+    tag = el.tag.split("}")[-1]
+    t = el.find("title")
+    title = " ".join("".join(_ptx_inline(t)).split()) if t is not None else ""
+    kind = tag.replace("-", " ").capitalize()
+    num = PTX_NUM.get(id(el))
+    if num:
+        kind += " " + num
+    xid = el.get("{http://www.w3.org/XML/1998/namespace}id")
+    # an untitled, unnumbered block is named by its id, so a reference to
+    # it can still be followed
+    return "%s: %s" % (kind, title) if title else \
+        (kind if num or not xid else "%s %s" % (kind, xid))
+
+
+def _ptx_text(el, out, level_shift=0):
+    tag = el.tag.split("}")[-1] if isinstance(el.tag, str) else ""
+    if not tag:                                       # comment
+        if el.tail:
+            out.append(el.tail)
+        return
+
+    def kids():
+        if el.text:
+            out.append(el.text)
+        for ch in el:
+            _ptx_text(ch, out, level_shift)
+
+    if tag in PTX_SKIP:
+        pass
+    elif tag in PTX_EMPTY and not len(el) and not (el.text or "").strip():
+        out.append(PTX_EMPTY[tag])
+    elif tag in PTX_DIVISIONS:
+        t = el.find("title")
+        title = "".join(_ptx_inline(t)) if t is not None else \
+            tag.replace("-", " ").title()
+        out.append(_heading(PTX_DIVISIONS[tag] + level_shift, title))
+        if el.text:
+            out.append(el.text)
+        for ch in el:
+            if ch is not t:
+                _ptx_text(ch, out, level_shift)
+    elif tag in ("title", "subtitle", "shorttitle", "plaintitle"):
+        pass                                          # used by its parent
+    elif tag == "m":
+        out.append("$%s$" % (el.text or "").strip())
+    elif tag in ("me", "men"):
+        out.append("\n$$%s$$" % " ".join((el.text or "").split()))
+    elif tag in ("md", "mdn"):
+        rows = [" ".join((r.text or "").split()) for r in el.findall("mrow")]
+        if len(rows) <= 1:
+            out.append("\n$$%s$$" % (rows[0] if rows else
+                                       " ".join((el.text or "").split())))
+        else:
+            body = " \\\\\n".join(rows) if rows else (el.text or "").strip()
+            out.append("\n$$\\begin{aligned}\n%s\n\\end{aligned}$$" % body)
+    elif tag == "c":
+        out.append("`%s`" % (el.text or ""))
+    elif tag == "q":
+        out.append("\u201c")
+        kids()
+        out.append("\u201d")
+    elif tag == "xref":
+        ref = el.get("ref") or el.get("provisional") or ""
+        out.append("[%s]" % ", ".join(PTX_IDS.get(r, "ref: " + r)
+                                      for r in ref.replace(",", " ").split()))
+    elif tag in ("url", "dataurl"):
+        out.append(el.text or el.get("href") or "")
+    elif tag == "li":
+        out.append("\n- ")
+        kids()
+    elif tag in ("figure", "table", "listing", "list"):
+        out.append("\n\n%s.\n" % _ptx_label(el))
+        kids()
+        out.append("\n\n")
+    elif tag == "cell":
+        kids()
+        out.append(" | ")
+    elif tag == "row":
+        out.append("\n| ")
+        kids()
+        out.append("\n")
+    elif tag in ("p", "ol", "ul", "dl", "statement", "introduction",
+                 "conclusion", "blockquote", "pre", "cd", "tabular",
+                 "biblio", "task", "sidebyside", "caption"):
+        out.append("\n\n")
+        kids()
+        out.append("\n\n")
+    elif tag in PTX_BLOCKS:
+        t = el.find("title")
+        label = _ptx_label(el)
+        out.append("\n\n%s.\n" % label)
+        if el.text:
+            out.append(el.text)
+        for ch in el:
+            if ch is not t:
+                _ptx_text(ch, out, level_shift)
+        out.append("\n\n")
+    else:
+        kids()
+    if el.tail:
+        out.append(el.tail)
+
+
+def _ptx_inline(el):
+    out = []
+    if el.text:
+        out.append(el.text)
+    for ch in el:
+        _ptx_text(ch, out)
+    return out
+
+
+def from_xml(text, path=None):
+    """XML. PreTeXt (and its older name, MathBook XML): chapters, sections and
+    subsections become headings, xi:include files are read in, <m>, <me> and
+    <md> become LaTeX, theorems, definitions and examples get a label, and
+    Sage cells, index entries and pictures are left out. Other XML: its text."""
+    import xml.etree.ElementTree as ET
+    root = _xml_load(path) if path else ET.fromstring(text)
+    out = []
+    names = {e.tag.split("}")[-1] for e in root.iter() if isinstance(e.tag, str)}
+    if names & {"pretext", "mathbook", "chapter", "section", "subsection"} \
+            or "m" in names:
+        xid = "{http://www.w3.org/XML/1998/namespace}id"
+        PTX_NUM.clear()
+        PTX_NUM.update(_ptx_number(root))
+        PTX_IDS.clear()
+        PTX_IDS.update((e.get(xid), _ptx_label(e)) for e in root.iter()
+                       if isinstance(e.tag, str) and e.get(xid))
+        _ptx_text(root, out)
+        raw = "".join(out)
+    else:
+        raw = "\n\n".join(" ".join(t.split()) for t in root.itertext()
+                          if t.strip())
+    return _tidy(_guard_hashes_body(_unwrap(raw)))
+
+
+def _unwrap(raw):
+    """Join the lines of each paragraph; keep headings, '- ' items and
+    displayed mathematics on lines of their own."""
+    lines = [l if re.match(r"#{1,6} \S", l) else " ".join(l.split())
+             for l in raw.split("\n")]
+    text = re.sub(r"\n-\n+", "\n- ", "\n".join(lines))
+    paras = []
+    for para in re.split(r"\n\s*\n", text):
+        out, in_math = [], False
+        for l in para.split("\n"):
+            if not l:
+                continue
+            starts = l.startswith("$$")
+            if in_math or starts or l.startswith(("- ", "#")) or not out \
+                    or out[-1].endswith("$$") and not l[:1] in ".,;:)":
+                out.append(l)
+            else:
+                out[-1] += ("" if l[:1] in ".,;:)" else " ") + l
+            if l.count("$$") % 2:
+                in_math = not in_math
+        paras.append("\n".join(out))
+    return "\n\n".join(p for p in paras if p)
+
+
+SOURCE_FORMATS = {".txt": None, ".text": None, ".md": from_markdown,
+                  ".markdown": from_markdown, ".tex": from_latex,
+                  ".latex": from_latex, ".html": from_html, ".htm": from_html,
+                  ".xhtml": from_html, ".xml": from_xml, ".ptx": from_xml}
+
+
+def source_to_text(path):
+    """Read a book for deposit: (text, format name)."""
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext in (".pdf", ".docx", ".doc", ".epub", ".odt", ".rtf"):
+        die("%s is not a source format. Look for the book's source first "
+            "(LaTeX, PreTeXt XML, HTML or Markdown: arXiv and open textbooks "
+            "often publish it); otherwise convert it to text or Markdown with "
+            "a tool of your choice and deposit that." % ext)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        die("not a UTF-8 text file")
+    conv = SOURCE_FORMATS.get(ext)
+    if conv is None:
+        return text, "text"
+    try:
+        return conv(text, path), ext.lstrip(".")
+    except Exception as e:          # malformed XML and the like
+        die("could not read %s as %s: %s" % (path.name, ext, e))
+
+
+def select_parts(text, parts):
+    """Keep only the top-level ('# ') divisions named in parts, by their
+    position (1, 2, ...) or their title (case-insensitive)."""
+    pieces, cur = [], None
+    for line in text.split("\n"):
+        if line.startswith("# "):
+            cur = [line[2:].strip(), [line]]
+            pieces.append(cur)
+        elif cur:
+            cur[1].append(line)
+    if not pieces:
+        die("--part needs '#' headings, and this book has none")
+    keep, missing = [], []
+    for want in parts:
+        hit = [k for k, (title, _) in enumerate(pieces, 1)
+               if want.strip() == str(k)
+               or want.strip().casefold() == title.casefold()]
+        if not hit:
+            missing.append(want)
+        keep += [k for k in hit if k not in keep]
+    if missing:
+        die("no top-level division %s; the book has: %s" % (
+            ", ".join(repr(m) for m in missing), "; ".join(
+                "%d %s" % (k, t) for k, (t, _) in enumerate(pieces, 1))))
+    return "\n".join("\n".join(pieces[k - 1][1]) for k in sorted(keep)), \
+        [pieces[k - 1][0] for k in sorted(keep)]
+
+
 def cmd_deposit(a):
-    """Store a text book in the library; identical content is refused."""
+    """Store a book in the library as text with '#' headings, converted
+    from its source format; identical content is refused."""
     st = Store(a.project)
     src = Path(a.file)
-    try:
-        text = src.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        die("not a UTF-8 text file (convert PDF or Word to plain text first)")
+    if not src.is_file():
+        die("no such file: %s" % src)
+    text, fmt = source_to_text(src)
+    name = src.name
+    if getattr(a, "part", None):
+        text, titles = select_parts(text, a.part)
+        name = "%s [%s]" % (src.name, "; ".join(titles))
     if not text.strip():
         die("the file is empty")
     sha = hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
@@ -2174,11 +2870,13 @@ def cmd_deposit(a):
             die("same content already deposited as %s (%s)" % (b, info["name"]))
     bid = sha[:8]
     (ldir / (bid + ".txt")).write_text(text, encoding="utf-8")
-    books[bid] = {"name": src.name, "sha256": sha, "chars": len(text),
-                  "date": time.strftime("%Y-%m-%d")}
+    books[bid] = {"name": name, "sha256": sha, "chars": len(text),
+                  "format": fmt, "date": time.strftime("%Y-%m-%d")}
     idx.write_text(json.dumps(books, ensure_ascii=False, indent=2),
                    encoding="utf-8")
-    print("deposited %s  %s  (%d characters)" % (bid, src.name, len(text)))
+    heads = sum(1 for l in text.split("\n") if re.match(r"#{1,6} \S", l))
+    print("deposited %s  %s  (%s, %d characters, %d headings)"
+          % (bid, name, fmt, len(text), heads))
 
 
 def cmd_library(a):
@@ -2198,12 +2896,16 @@ def split_chunks(text, name, size):
     lines = text.splitlines()
     chunks = []
     if any(l.startswith("#") for l in lines):
-        title, body = name, []
+        title, body, stack = name, [], []
         for line in lines:
             if line.startswith("#"):
                 if "\n".join(body).strip():
                     chunks.append((title, "\n".join(body).strip()))
-                title, body = line.lstrip("#").strip() or name, []
+                depth = len(line) - len(line.lstrip("#"))
+                stack = [h for h in stack if h[0] < depth]
+                stack.append((depth, line.lstrip("#").strip() or name))
+                # the headings above it too: two sections may share a title
+                title, body = " > ".join(h[1] for h in stack), []
             else:
                 body.append(line)
         if "\n".join(body).strip():
@@ -2420,6 +3122,20 @@ def main():
     s.add_argument("--type", default="related")
     s.set_defaults(fn=cmd_link)
 
+    s = sub.add_parser("contract", help="show or set a file's contracts and "
+                       "model (expects, produces: json, json(a, b), text; "
+                       "'none' clears)")
+    s.add_argument("ref")
+    s.add_argument("--expects", help="contract on the step's input")
+    s.add_argument("--produces", help="contract on the step's output")
+    s.add_argument("--model", help="the model this file's step uses")
+    s.set_defaults(fn=cmd_contract)
+
+    s = sub.add_parser("confirm", help="record that a machine side still fits "
+                       "its human and reading sides (clears the stale mark)")
+    s.add_argument("refs", nargs="+", metavar="REF")
+    s.set_defaults(fn=cmd_confirm)
+
     s = sub.add_parser("check", help="validate trees, contracts, links and paths")
     s.add_argument("--branch", help="limit check to a specific branch")
     s.set_defaults(fn=cmd_check)
@@ -2441,6 +3157,9 @@ def main():
     s.add_argument("--input", default="")
     s.add_argument("--input-file")
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
+                   metavar="SECONDS", help="stop a code step that runs longer "
+                   "(default %g; 0 for no limit)" % CODE_TIMEOUT)
     s.add_argument("--allow-code", action="store_true",
                    help="execute Python in the code sections (not sandboxed)")
     s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
@@ -2472,6 +3191,9 @@ def main():
     s.add_argument("--input", default="")
     s.add_argument("--input-file")
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
+                   metavar="SECONDS", help="stop a code step that runs longer "
+                   "(default %g; 0 for no limit)" % CODE_TIMEOUT)
     s.add_argument("--allow-code", action="store_true",
                    help="execute Python in the code sections (not sandboxed)")
     s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
@@ -2489,9 +3211,10 @@ def main():
                        "Markdown or Graphviz DOT)")
     s.add_argument("--path", help="draw this saved path instead of the trees")
     s.add_argument("--branch", help="draw only this branch of the trees")
-    s.add_argument("--format", choices=GRAPH_FORMATS, default="md",
+    s.add_argument("--format", choices=GRAPH_FORMATS,
                    help="md (Mermaid in Markdown, shown as a picture on "
-                   "GitHub), mermaid, or dot")
+                   "GitHub), mermaid, or dot; default: from the -o "
+                   "extension (.mmd, .dot or .gv), else md")
     s.add_argument("-o", "--out", help="write to this file")
     s.set_defaults(fn=cmd_graph)
 
@@ -2527,8 +3250,13 @@ def main():
     s.add_argument("--yes", action="store_true", help="save without asking")
     s.set_defaults(fn=cmd_edit)
 
-    s = sub.add_parser("deposit", help="add a text book to the library")
+    s = sub.add_parser("deposit", help="add a book to the library: text, "
+                       "Markdown, LaTeX, HTML or XML (PreTeXt)")
     s.add_argument("file")
+    s.add_argument("--part", action="append", metavar="N|TITLE",
+                   help="keep only this top-level division (chapter), by "
+                   "number or title; repeat for more. Depositing the whole "
+                   "book this way keeps its own numbering")
     s.set_defaults(fn=cmd_deposit)
 
     s = sub.add_parser("library", help="list deposited books and their state")

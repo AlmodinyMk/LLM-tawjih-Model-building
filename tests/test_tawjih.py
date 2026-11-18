@@ -801,6 +801,307 @@ def test_license_identifier_is_valid():
         tawjih.__file__, encoding="utf-8").read()
 
 
+class Fixes061(Base):
+    """What the trial on an algebra book found (0.6.1)."""
+    def setUp(self):
+        super().setUp()
+        self.tree()
+        for name in ("check", "yes", "no"):
+            self.cli("new", name, "--parent", "2")
+        st = self.store()
+        self.c, self.y, self.n = (st.resolve(r) for r in ("2.1", "2.2", "2.3"))
+        self.fill("2.2", code="output = 'YES'")
+        self.fill("2.3", code="output = 'NO'")
+
+    def branch(self, out_json, cond="is_group", produces=""):
+        self.fill("2.1", code="output = %r" % out_json, produces=produces)
+        return self.cli("produce", "b", "2.1", "TO", "2.2", "IF", cond, ",",
+                        "2.1", "TO", "2.3", "IF", "NOT", cond, "--input", "x",
+                        "--backend", "fake", "--allow-code")
+
+    def test_if_on_a_json_key_reads_its_value(self):
+        self.assertEqual(self.branch('{"is_group": false}')[1].strip(), "NO")
+        self.assertEqual(self.branch('{"is_group": true}')[1].strip(), "YES")
+        self.assertEqual(self.branch('{"is_group": []}')[1].strip(), "NO")
+
+    def test_if_on_a_json_output_without_the_key_looks_for_the_word(self):
+        self.assertEqual(self.branch('{"ok": true}', "violated")[1].strip(), "NO")
+        self.assertEqual(self.branch('{"ok": false, "violated": ["x"]}',
+                                     "violated")[1].strip(), "YES")
+
+    def test_if_on_plain_text_still_looks_for_the_word(self):
+        self.assertEqual(self.branch("Is_Group: maybe")[1].strip(), "YES")
+        self.assertEqual(self.branch("nothing here")[1].strip(), "NO")
+
+    def test_condition_holds_directly(self):
+        h = tawjih.condition_holds
+        self.assertTrue(h('```json\n{"a": 1}\n```', "A"))
+        self.assertFalse(h('{"a": 0, "b": "a"}', "a"))
+        self.assertFalse(h('{"a": null}', "a"))
+        self.assertTrue(h('{"b": "has a"}', "a"))         # no key: the text
+        self.assertFalse(h('{"a": "False"}', "a"))
+        self.assertFalse(h('{"a": "لا"}', "a"))
+        self.assertTrue(h('{"a": "yes"}', "a"))
+
+    def test_if_word_that_is_not_a_promised_key_is_noted(self):
+        self.fill("2.1", code="output = '{}'", produces="json(is_group)")
+        self.cli("produce", "n", "2.1", "TO", "2.2", "IF", "group", "--plan")
+        out = self.cli("check")[1]
+        self.assertIn("IF group on %s: not one of its JSON keys" % self.c, out)
+        self.cli("produce", "k", "2.1", "TO", "2.2", "IF", "is_group", "--plan")
+        self.assertNotIn("path k:", self.cli("check")[1])
+
+    def test_generate_prompt_explains_if_on_json(self):
+        self.assertIn("JSON output with that key", tawjih.GENERATE_HEAD)
+
+    def test_code_that_never_ends_is_stopped(self):
+        self.fill("2.1", code="while True:\n    try:\n        pass\n"
+                  "    except Exception:\n        pass")
+        code, out, err = self.cli("produce", "t", "2.1", "--input", "x",
+                                  "--backend", "fake", "--allow-code",
+                                  "--code-timeout", "0.3")
+        self.assertEqual(code, 1)
+        self.assertIn("CodeTimeout", err)
+        self.assertIn("longer than 0.3 seconds", err)
+        self.assertIsNone(sys.gettrace())
+
+    def test_time_limit_leaves_quick_code_and_no_limit_alone(self):
+        self.fill("2.1", code="output = str(sum(range(1000)))")
+        for t in ("5", "0"):
+            code, out, err = self.cli("produce", "t", "2.1", "--input", "x",
+                                      "--backend", "fake", "--allow-code",
+                                      "--code-timeout", t)
+            self.assertEqual((code, out.strip()), (0, "499500"), err)
+
+    def test_contract_command_sets_shows_and_clears(self):
+        code, out, err = self.cli("contract", "2.1", "--expects", "JSON( a,b )",
+                                  "--produces", "text", "--model", "m1")
+        self.assertEqual(code, 0, err)
+        n = self.store().nodes[self.c]
+        self.assertEqual((n.expects, n.produces, n.model),
+                         ("json(a, b)", "text", "m1"))
+        self.assertTrue(list((self.root / "history").glob(self.c + "-*.md")))
+        self.assertIn("expects:  json(a, b)", self.cli("contract", "2.1")[1])
+        self.cli("contract", "2.1", "--expects", "none", "--model", "")
+        n = self.store().nodes[self.c]
+        self.assertEqual((n.expects, n.model), ("", ""))
+
+    def test_contract_command_rejects_a_typo_and_warns_on_paths(self):
+        code, out, err = self.cli("contract", "2.1", "--produces", "jsn")
+        self.assertEqual(code, 1)
+        self.assertIn("unknown contract", err)
+        self.assertEqual(self.store().nodes[self.c].produces, "")
+        self.fill("2.1", code="output = '{}'")
+        self.cli("produce", "q", "2.1", "TO", "2.2", "--plan")
+        self.cli("contract", "2.2", "--expects", "json(x)")
+        out = self.cli("contract", "2.1", "--produces", "text")[1]
+        self.assertIn("warning: path q: contract mismatch", out)
+
+    def stale_file(self):
+        self.fill("2.1", human="old", code="output = 1")
+        st = self.store()
+        n = st.nodes[self.c]
+        n.built_sha = n.source_digest()
+        st.save(n)
+        self.fill("2.1", reading="a new passage")
+        self.assertTrue(self.store().nodes[self.c].is_stale())
+
+    def test_confirm_clears_the_stale_mark(self):
+        self.stale_file()
+        code, out, err = self.cli("confirm", "2.1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("no longer stale", out)
+        self.assertFalse(self.store().nodes[self.c].is_stale())
+        self.assertEqual(self.cli("confirm", "2.2", "1")[0], 1)   # 1: no machine side
+
+    def test_unchanged_rebuild_by_edit_clears_the_stale_mark(self):
+        self.stale_file()
+        self.replies = ["output = 1"]
+        code, out, err = self.cli("edit", "2.1", "--side", "code", "--ask",
+                                  "rebuild", "--backend", "fake", "--yes")
+        self.assertIn("recorded as built", out)
+        self.assertFalse(self.store().nodes[self.c].is_stale())
+
+    def test_proposal_comment_follows_the_statement(self):
+        st = self.store()
+        flow = tawjih.build_flow([[self.c, "TO", self.n, "THROUGH", self.y]],
+                                 lambda r: r)
+        line = tawjih.flow_text(st, flow).strip()
+        self.assertTrue(line.endswith("# check | TO | no | THROUGH | yes"), line)
+
+    def test_graph_format_follows_the_file_extension(self):
+        for ext, start in ((".mmd", "flowchart"), (".dot", "digraph"),
+                           (".md", "# Tawjih network")):
+            f = self.root / ("g" + ext)
+            self.assertEqual(self.cli("graph", "-o", str(f))[0], 0)
+            self.assertTrue(f.read_text(encoding="utf-8").lstrip()
+                            .startswith(start), ext)
+
+    def test_passages_carry_the_headings_above_them(self):
+        text = ("# Ch 3\nintro\n## 3.2 Defs\n### Definitions and Examples\n"
+                "a\n## 3.3 Subgroups\n### Definitions and Examples\nb\n")
+        titles = [t for t, _ in tawjih.split_chunks(text, "book", 100)]
+        self.assertEqual(titles, [
+            "Ch 3", "Ch 3 > 3.2 Defs > Definitions and Examples",
+            "Ch 3 > 3.3 Subgroups > Definitions and Examples"])
+
+
+class SourceFormats(Base):
+    """deposit reads Markdown, LaTeX, HTML and XML (PreTeXt) sources."""
+    def write(self, name, text):
+        f = self.root / name
+        f.write_text(text, encoding="utf-8")
+        return f
+
+    def deposited(self, name, text, *extra):
+        f = self.write(name, text)
+        code, out, err = self.cli("deposit", str(f), *extra)
+        self.assertEqual(code, 0, err)
+        bid = out.split()[1]
+        return (self.root / "library" / (bid + ".txt")).read_text(
+            encoding="utf-8"), out
+
+    def heads(self, text):
+        return [l for l in text.split("\n") if l.startswith("#")]
+
+    def test_markdown_setext_headings_and_code_fences(self):
+        text, out = self.deposited("b.md", "Groups\n======\n\nText.\n\n"
+                                   "Sub\n---\n\n```python\n# not a heading\n"
+                                   "x = 1\n```\n\n## Next ##\n")
+        self.assertEqual(self.heads(text), ["# Groups", "## Sub", "## Next"])
+        self.assertIn(" # not a heading", text)
+        self.assertIn("(md,", out)
+
+    def test_latex_sections_math_environments_and_input(self):
+        self.write("ch.tex", "\\section{Subgroups}\nA subgroup $H \\le G$.\n")
+        text, _ = self.deposited("book.tex", r"""\documentclass{book}
+\newcommand{\Z}{\mathbb Z}  % a comment that goes
+\begin{document}
+\chapter{Groups}\label{ch}
+\section*{Definitions}
+A \emph{group} is a set; see Theorem~\ref{t1} and \cite{judson}.
+\begin{theorem}[Lagrange]\label{t1}
+$|H|$ divides $|G|$, and
+\[ a^{-1} \circ a = e \]
+\end{theorem}
+\begin{itemize}\item one \item two\end{itemize}
+\begin{tikzpicture}\draw (0,0);\end{tikzpicture}
+\input{ch}
+\end{document}""")
+        self.assertEqual(self.heads(text), ["# Groups", "## Definitions",
+                                            "## Subgroups"])
+        self.assertIn("Theorem (Lagrange).", text)
+        self.assertIn("\\[ a^{-1} \\circ a = e \\]", text)
+        self.assertIn("[ref: t1]", text)
+        self.assertIn("[cite: judson]", text)
+        self.assertIn("- one", text)
+        self.assertIn("$H \\le G$", text)
+        self.assertNotIn("draw", text)
+        self.assertNotIn("comment", text)
+        self.assertNotIn("newcommand", text)
+
+    def test_html_headings_mathml_and_skipped_parts(self):
+        text, _ = self.deposited("p.html", """<html><head><style>p{}</style>
+<script>var x = "# no";</script></head><body><nav>Home</nav>
+<h1>Groups</h1><p>The inverse <math alttext="a^{-1}"><mi>a</mi></math> and
+<math display="block"><semantics><mi>e</mi><annotation encoding="application/x-tex">
+e\\circ a=a</annotation></semantics></math> hold &amp; more.</p>
+<h3>Orders</h3><ul><li>first</li><li>second</li></ul>
+<p>#hashtag line</p></body></html>""")
+        self.assertEqual(self.heads(text), ["# Groups", "### Orders"])
+        self.assertIn("$a^{-1}$", text)
+        self.assertIn("$$e\\circ a=a$$", text)
+        self.assertIn("& more", text)
+        self.assertIn("- first", text)
+        self.assertIn(" #hashtag line", text)
+        for gone in ("Home", "var x", "p{}"):
+            self.assertNotIn(gone, text)
+
+    PTX_CH = """<chapter xml:id="g"><title>Groups</title>
+<introduction><p>Intro with <m>\\mathbb Z</m>.</p></introduction>
+<section xml:id="s"><title>Definitions</title>
+<definition xml:id="d1"><statement><p>A <term>group</term> is a set.</p></statement></definition>
+<example xml:id="e1"><p>See <xref ref="d1"/> and <xref ref="t1"/>.<idx>group</idx></p>
+<md><mrow>a &amp;= b</mrow><mrow>c &amp;= d</mrow></md></example>
+<figure xml:id="t1"><caption>A table</caption><tabular><row><cell>+</cell><cell>0</cell></row></tabular></figure>
+<theorem><title>Lagrange</title><statement><p><m>|H|</m> divides <m>|G|</m><mdash/>always.</p></statement>
+<proof><p>Count cosets.</p></proof></theorem>
+<sage><input>G = groups.presentation.Cyclic(3)</input></sage>
+</section>
+<exercises><title>Exercises</title><exercise><p>One.</p></exercise><exercise><p>Two.</p></exercise></exercises>
+</chapter>"""
+
+    def test_pretext_structure_math_numbers_and_references(self):
+        self.write("ch1.xml", "<chapter><title>Sets</title><p>x</p></chapter>")
+        self.write("ch2.xml", self.PTX_CH)
+        text, out = self.deposited("book.ptx", """<?xml version="1.0"?>
+<pretext xmlns:xi="http://www.w3.org/2001/XInclude"><book><title>B</title>
+<xi:include href="ch1.xml"/><xi:include href="ch2.xml"/></book></pretext>""")
+        self.assertEqual(self.heads(text), ["# Sets", "# Groups",
+                                            "## Definitions", "## Exercises"])
+        self.assertIn("$\\mathbb Z$", text)
+        self.assertIn("Definition 2.1.", text)
+        self.assertIn("Example 2.2.", text)
+        self.assertIn("See [Definition 2.1] and [Figure 2.3].", text)
+        self.assertIn("Figure 2.3.", text)
+        self.assertIn("| + | 0 |", text)
+        self.assertIn("Theorem 2.4: Lagrange.", text)
+        self.assertIn("$|H|$ divides $|G|$\u2014always.", text)
+        self.assertIn("a &= b \\\\", text)
+        self.assertIn("Exercise 2.", text)
+        self.assertNotIn("presentation", text)        # Sage cells left out
+        self.assertNotIn("].group", text)                    # no index text
+        self.assertIn("(ptx,", out)
+
+    def test_part_keeps_chosen_chapters_with_the_book_numbers(self):
+        self.write("ch1.xml", "<chapter><title>Sets</title><example><p>x</p>"
+                   "</example></chapter>")
+        self.write("ch2.xml", self.PTX_CH)
+        book = """<pretext xmlns:xi="http://www.w3.org/2001/XInclude"><book>
+<xi:include href="ch1.xml"/><xi:include href="ch2.xml"/></book></pretext>"""
+        text, out = self.deposited("b.xml", book, "--part", "2")
+        self.assertEqual(self.heads(text)[0], "# Groups")
+        self.assertNotIn("# Sets", text)
+        self.assertIn("Definition 2.1.", text)
+        self.assertIn("b.xml [Groups]", out)
+        code, _, err = self.cli("deposit", str(self.root / "b.xml"),
+                                "--part", "groups")
+        self.assertEqual(code, 1)           # same content as before
+        code, _, err = self.cli("deposit", str(self.root / "b.xml"),
+                                "--part", "Rings")
+        self.assertIn("1 Sets; 2 Groups", err)
+
+    def test_other_xml_gives_its_text_and_bad_xml_an_error(self):
+        text, _ = self.deposited("d.xml", "<doc><a>First part</a><b>Second</b></doc>")
+        self.assertIn("First part", text)
+        self.write("bad.xml", "<doc><a></doc>")
+        code, _, err = self.cli("deposit", str(self.root / "bad.xml"))
+        self.assertEqual(code, 1)
+        self.assertIn("could not read bad.xml", err)
+
+    def test_pdf_and_word_are_refused_with_advice(self):
+        f = self.write("book.pdf", "%PDF-1.4")
+        code, _, err = self.cli("deposit", str(f))
+        self.assertEqual(code, 1)
+        self.assertIn("Look for the book's source", err)
+
+    def test_converted_book_filters_on_its_headings(self):
+        self.tree()
+        self.write("ch1.xml", "<chapter><title>Sets</title><p>x</p></chapter>")
+        self.write("ch2.xml", self.PTX_CH)
+        self.deposited("book.ptx", """<pretext xmlns:xi="http://www.w3.org/2001/XInclude">
+<book><xi:include href="ch1.xml"/><xi:include href="ch2.xml"/></book></pretext>""")
+        bid = list(json.loads((self.root / "library" / "index.json")
+                              .read_text(encoding="utf-8")))[0]
+        code, out, err = self.cli("filter", bid, "--backend", "dry")
+        self.assertIn("4 passages", out + err)
+        text = (self.root / "library" / (bid + ".txt")).read_text(
+            encoding="utf-8")
+        self.assertEqual([t for t, _ in tawjih.split_chunks(text, "b", 99)],
+                         ["Sets", "Groups", "Groups > Definitions",
+                          "Groups > Exercises"])
+
+
 class License(unittest.TestCase):
     def test_spdx(self):
         test_license_identifier_is_valid()

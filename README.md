@@ -8,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.6, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.6.1, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -92,7 +92,7 @@ Use `-p FOLDER` before the command to work on a project elsewhere.
 | `A TO B` | A's output goes to B |
 | `A TO B AND C` | ... to both B and C (branching) |
 | `B AND C TO D` | D receives both outputs (joining) |
-| `A TO B IF word` | only when A's output contains the word; `IF NOT word` for the opposite |
+| `A TO B IF word` | when A's output is JSON with that key: only when its value is true or non-empty; otherwise only when the output contains the word. `IF NOT word` for the opposite |
 | `A AMONG B C D` | A's output names one of them; only that one runs |
 | `A TO D THROUGH B C` | A → B → C → D |
 
@@ -120,7 +120,9 @@ and `--allow-code` is missing.
 
 ## Contracts, models and staleness
 
-A file's header may carry three optional lines:
+A file's header may carry three optional lines, set with
+`contract REF --expects SPEC --produces SPEC --model NAME` (`none` clears
+one; without options it shows them):
 
 ```
 model: llama3.1:8b        the model this step uses
@@ -142,7 +144,15 @@ The model of a step is `--model` if given, else the file's `model`, else
 When you rebuild a machine side (with `open`, `edit` or the Linux windows)
 the program records the state of the human and reading sides. If either
 changes afterwards, the file is marked **stale**: `!` in `tree`, a warning in
-`check` and `produce`, and in `graph`.
+`check` and `produce`, and in `graph`. If you review a stale file and its
+machine side still fits, `confirm REF` records that; an `edit` asked to
+rebuild a side that comes back unchanged records it too.
+
+`IF` and JSON: when a step's output is a JSON object, `IF is_group` tests the
+value of the key `is_group` (true, non-zero, non-empty; the strings
+`"false"`, `"no"` and `"لا"` count as false), not whether the
+letters appear somewhere in the text. `check` and `generate` add a note when
+an `IF` word is not one of the keys the source file promises in `produces`.
 
 ## The network: drawing and generating paths
 
@@ -177,6 +187,25 @@ a contract mismatch). Read it, edit it if you like, and `--accept` saves it
 as a path after checking it again. `--scope REF` limits the files to one
 branch.
 
+## Books and their sources
+
+`deposit` reads a book from its source, which keeps its structure and its
+mathematics. PDF is refused: it records where letters sit on a page, so
+exponents, arrows and fractions come out broken (`271³²¹` becomes `271321`).
+
+| Source | What deposit does |
+|---|---|
+| `.txt` | kept as it is; `#` lines are headings |
+| `.md` | `#` and underlined headings; `#` lines inside code blocks are protected |
+| `.tex` | `\part` … `\subsubsection` become headings, `\input` and `\include` are read in, theorem-like environments are labelled, lists become `- ` lines, mathematics stays LaTeX; pictures and comments are left out |
+| `.html` | `<h1>`–`<h6>` become headings; scripts, styles and navigation are left out; MathML is replaced by its TeX |
+| `.xml`, `.ptx` | PreTeXt: chapters and sections become headings, `xi:include` files are read in, `<m>` and `<md>` become `$…$` and `$$…$$`, theorems, examples and figures get the book's numbers (Example 3.8) and references point to them; Sage cells, index entries and pictures are left out. Other XML: its text |
+
+`deposit BOOK --part 3 --part 4` keeps only those chapters (by number or
+title). Deposit the whole book this way rather than a single chapter file,
+so the numbering is the book's own. Many open textbooks (PreTeXt, LaTeX on
+arXiv) publish their source; look for it before using a PDF.
+
 ## Commands
 
 | Command | Purpose |
@@ -188,18 +217,20 @@ branch.
 | `search QUERY [--branch REF] [--side S]` | search titles and sides |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
+| `contract REF [--expects S] [--produces S] [--model M]` | show or set a file's contracts and model |
 | `check [--branch REF]` | validate parents, levels, cycles, links, paths, code syntax, contracts, staleness |
 | `trees` | list the available trees |
 | `cache [--clear]` | show or empty the kept model answers |
-| `produce NAME [WORDS ...] [--plan] --input TEXT [--backend B] [--allow-code]` | cross-tree production: select, order, validate, run, save, document |
+| `produce NAME [WORDS ...] [--plan] --input TEXT [--backend B] [--allow-code] [--code-timeout S]` | cross-tree production: select, order, validate, run, save, document |
 | `path NAME [WORDS ...]` | define a path without running it, or show a saved one |
 | `run NAME --input TEXT [--backend B] [--allow-code]` | run a saved path |
 | `edit REF --side S --ask TEXT [--source FILE] [--backend B]` | have a model rewrite one side; shows a diff and asks before saving |
-| `deposit FILE` / `library` | add a text book to the library / list books |
+| `deposit FILE [--part N\|TITLE]` / `library` | add a book (text, Markdown, LaTeX, HTML, XML/PreTeXt) to the library / list books |
+| `confirm REF ...` | record that a machine side still fits its human and reading sides (clears the stale mark) |
 | `filter BOOK [--parent REF] [--ask TEXT] [--backend B]` | have a model decide, passage by passage, what to keep and for which file; writes a report only |
 | `accept BOOK` | append the kept passages to the reading side of their files |
 | `import FILE --parent REF` | split a text on `#` headings into child files, without a model |
-| `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path |
+| `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path; the format follows the `-o` extension (`.mmd`, `.dot`, `.gv`) unless given |
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
 
@@ -260,6 +291,11 @@ upstream is an error: its output might not exist yet.
 **Code is executed with `exec`, without any sandbox, with your user's full
 permissions.** It runs only when you pass `--allow-code`. Do not run paths
 whose code you have not read, including code a model wrote through `edit`.
+A code step that runs longer than 60 seconds is stopped
+(`--code-timeout SECONDS`, `0` for no limit). The limit is checked between
+Python lines, so it stops a loop that never ends but not one long call into
+C code, and it makes pure-Python loops several times slower while it is on.
+It is a safeguard against mistakes, not a sandbox.
 
 ## Project layout
 
@@ -279,7 +315,8 @@ history/  production records, and previous
   automatic retries. A failed production is run again with `--resume`.
 - A kept answer is reused as it is. Models answer differently each time, so
   `--resume` freezes the first answer until the prompt changes.
-- `IF` only tests whether a word appears in the output, and `AMONG` only
+- `IF` only tests a key of a JSON output or whether a word appears in the
+  text, and `AMONG` only
   finds a candidate's number, id or title in it. Both depend on the model
   wording its answer as the instructions ask.
 - A JSON contract tolerates a code fence and sentences around the JSON, but
@@ -290,7 +327,9 @@ history/  production records, and previous
   the model; it is checked, not trusted.
 - `tangle` exports code only: instructions need a model, and the exported
   module does not run the path.
-- Books must be plain UTF-8 text; PDF and Word need converting first.
+- Books are read from text, Markdown, LaTeX, HTML or XML (PreTeXt). PDF
+  and Word are refused; the LaTeX and HTML readers handle common markup, not
+  every package or page layout.
 - Filtering makes one model call per passage, and copies kept passages
   verbatim; it does not summarise.
 - Staleness is recorded only when a machine side is written through

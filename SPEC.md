@@ -1,4 +1,4 @@
-# Tawjih specification (0.6)
+# Tawjih specification (0.6.1)
 
 This is the contract the program and the tests follow.
 
@@ -26,6 +26,10 @@ built_sha: ...        optional, written by the program (see Staleness)
 === reading ===       passages filtered from deposited books
 ```
 
+`model`, `expects` and `produces` are set with `contract REF [--expects S]
+[--produces S] [--model M]`, which validates the contract, keeps the previous
+version in `history/`, and warns about saved paths it now breaks.
+
 A **tree** is a root file (empty parent) and everything below it. A child's
 level must be deeper than its parent's. Files without the optional header
 lines are read as before.
@@ -41,7 +45,9 @@ Whenever the machine side is written through `open`, `edit` or the Linux
 windows, `built_sha` records a digest of the `human` and `reading` sides.
 If either changes later, the file is **stale**: `!` in `tree`, a warning in
 `check` and `produce`, and a mark in `graph`. A file without `built_sha` is
-never stale.
+never stale. `confirm REF` records the current digest without changing the
+machine side (it was reviewed and still fits); so does `edit` on
+`instructions` or `code` when the model returns the side unchanged.
 
 ## Contracts
 
@@ -78,7 +84,7 @@ in brackets.
 | `A TO B` [إلى] | A's output is B's input |
 | `A TO B AND C` [و] | A's output goes to both B and C |
 | `B AND C TO D` | D receives the outputs of B and C together |
-| `A TO B IF word` [إذا] | the connection is active only if A's output contains `word` (case-insensitive); `IF NOT word` [ليس] for the opposite |
+| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite |
 | `A AMONG B C D` [بين] | A decides: the candidate named first in A's output (by number, id or title) is the only one that runs; if none is named and exactly one candidate's `expects` accepts the output, that one runs |
 | `A TO D THROUGH B C` [عبر] | A → B → C → D |
 
@@ -87,7 +93,9 @@ and both to D. `IF` applies to the connections of the `TO` just before it.
 A file listed without any connecting word in a file that has none is the
 old form: a plain sequence, one file per line.
 
-A path must not contain a loop, and a file appears in it once.
+A path must not contain a loop, and a file appears in it once. `check` and
+`generate` note an `IF` word that is not one of the keys its source file
+promises in a `json(...)` contract, since it will be looked for in the text.
 
 ## Production
 
@@ -109,7 +117,9 @@ A path must not contain a loop, and a file appears in it once.
    - `linked(type="")`: the files this one links to, each with its output
      when that file is upstream, else `None`;
 
-   and sets `output`. Code that sets no `output` and prints nothing passes
+   and sets `output`. Code that runs longer than the limit (`--code-timeout`,
+   60 seconds by default, `0` for none; checked between Python lines) fails
+   with `CodeTimeout`. Code that sets no `output` and prints nothing passes
    its input on unchanged; code that sets `output` to an empty value has
    produced an empty output. If the file has instructions, the model
    receives the instructions, the code result if any, the original request
@@ -137,6 +147,8 @@ replaces its kept answer.
 
 `graph` draws the network as Mermaid, Markdown (Mermaid inside a
 `mermaid` code block, which GitHub shows as a picture) or Graphviz DOT.
+Without `--format` the format follows the `-o` extension: `.mmd` and
+`.mermaid` give Mermaid, `.dot` and `.gv` DOT, anything else Markdown.
 
 - Without `--path`: the trees, parent to child, optionally one branch.
 - With `--path NAME`: the path's files grouped by tree, each with its
@@ -146,6 +158,8 @@ replaces its kept answer.
 
 `generate NAME` proposes a path and runs nothing:
 
+- In the proposal each statement is followed by a comment that repeats it
+  with titles in place of ids.
 - `--start REF --end REF`: the shortest chain of files with a machine side
   in which each file's `produces` fits the next file's `expects`. Both
   contracts must be declared; no model is used.
@@ -185,3 +199,22 @@ it as `paths/NAME.path`, refusing to replace an existing path without
 - `history/<id>-<time>.md`: the previous version of a file, saved whenever
   `open`, `edit`, `accept` or the Linux windows change it.
 - `paths/<name>.proposed`: a path proposed by `generate`, until accepted.
+
+## Library
+
+`deposit FILE [--part N|TITLE ...]` converts the source to text with `#`
+headings, by extension: `.txt` as is; `.md` (setext headings, code fences
+protected); `.tex` (sectioning commands, `\input`/`\include`, labelled
+theorem-like environments, `- ` items, mathematics kept); `.html` (`h1`-`h6`,
+MathML replaced by its TeX annotation or `alttext`); `.xml`/`.ptx`
+(PreTeXt: divisions, `xi:include`, `<m>` → `$…$`, `<me>`/`<md>` → `$$…$$`,
+blocks numbered per chapter with one shared counter, `xref` replaced by the
+target's label; Sage, index and images left out; other XML gives its text).
+PDF, Word, EPUB, ODT and RTF are refused. A body line that would start with
+`#` is indented by one space. `--part` keeps the top-level divisions named
+by position or title. The index records the format.
+
+`filter` splits a book on its `#` headings. Each passage is titled with the
+headings above it, joined by ` > ` (`Chapter 3 > 3.3 Subgroups > Definitions
+and Examples`), since two sections may share a title. A book without
+headings is cut into passages of about `--size` characters.
