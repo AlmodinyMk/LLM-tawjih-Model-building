@@ -13,6 +13,21 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
 
+![How Tawjih is built: interfaces, build time, the three-sided file, run time, the network, and the project on disk](docs/images/architecture-en.png)
+
+## Screenshots
+
+The example path run in the terminal, then run again with `--resume`:
+
+![The terminal program running the example path across two trees](docs/images/running-terminal-en.png)
+
+The four Linux windows and a side conversation:
+
+![The four Linux windows and a side conversation](docs/images/running-windows-en.png)
+
+In these screenshots the model's answers came over HTTP from a stand-in that
+imitates Ollama; everything else is the program's real output.
+
 ## The idea
 
 Every file has three sides:
