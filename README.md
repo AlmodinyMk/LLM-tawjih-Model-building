@@ -8,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.5, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.6, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -103,6 +103,65 @@ one command.
 `produce` will not start if a step has an empty machine side, or has code
 and `--allow-code` is missing.
 
+## Contracts, models and staleness
+
+A file's header may carry three optional lines:
+
+```
+model: llama3.1:8b        the model this step uses
+expects: json(a, b, c)    what its input must be
+produces: json(roots)     what its output must be
+```
+
+A contract is `json`, `json(key, ...)` or `text`. A JSON answer is accepted
+when it is wrapped in a code fence or has a sentence around it, as models
+often write; the bare JSON is what goes to the next step. An answer that
+breaks the contract stops the run, is not kept in the cache, and the error
+names the step to ask again. `check` compares the contracts of connected
+files before anything runs, and reports an unknown contract (a typo) as an
+error.
+
+The model of a step is `--model` if given, else the file's `model`, else
+`TAWJIH_MODEL`.
+
+When you rebuild a machine side (with `open`, `edit` or the Linux windows)
+the program records the state of the human and reading sides. If either
+changes afterwards, the file is marked **stale**: `!` in `tree`, a warning in
+`check` and `produce`, and in `graph`.
+
+## The network: drawing and generating paths
+
+`graph` draws your trees or a path:
+
+```
+python tawjih.py graph -o trees.md                       # the trees
+python tawjih.py graph --path branch -o branch.md        # one path
+python tawjih.py graph --path branch --format dot -o branch.dot
+```
+
+The `.md` file holds a Mermaid diagram that GitHub shows as a picture;
+`--format mermaid` gives the diagram alone and `--format dot` gives Graphviz.
+In a path, files are grouped by tree, `IF` conditions label the arrows,
+`AMONG` choices are dashed, handoffs between trees are thick, and stale
+files are marked.
+
+`generate` proposes a path, and runs nothing:
+
+```
+python tawjih.py generate solve2 --start 1.1.1.1.1 --end 1.1.1.1.3
+python tawjih.py generate review --goal "check and explain a solution" --backend ollama
+python tawjih.py generate review --accept
+```
+
+With `--start` and `--end` it finds the shortest chain of files whose
+`produces` fits the next one's `expects`, without a model. With `--goal` a
+model reads the path language, your files and their contracts, and replies
+with statements. Either way the proposal goes to `paths/NAME.proposed` with
+any problem listed in it (unknown file, loop, a file without a machine side,
+a contract mismatch). Read it, edit it if you like, and `--accept` saves it
+as a path after checking it again. `--scope REF` limits the files to one
+branch.
+
 ## Commands
 
 | Command | Purpose |
@@ -110,10 +169,11 @@ and `--allow-code` is missing.
 | `init` | create a project in the current folder |
 | `new TITLE [--parent REF] [--level L] [--open]` | create a file |
 | `open REF [--editor CMD] [--reading]` | open one editor per side; save on close |
-| `tree` | show all trees; `H I C R` mark the sides that have content |
+| `tree [--branch REF]` | show the trees; `H I C R` mark the sides that have content, `!` a stale machine side |
+| `search QUERY [--branch REF] [--side S]` | search titles and sides |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
-| `check` | validate parents, levels, cycles, links, paths, code syntax |
+| `check [--branch REF]` | validate parents, levels, cycles, links, paths, code syntax, contracts, staleness |
 | `trees` | list the available trees |
 | `cache [--clear]` | show or empty the kept model answers |
 | `produce NAME [WORDS ...] [--plan] --input TEXT [--backend B] [--allow-code]` | cross-tree production: select, order, validate, run, save, document |
@@ -124,6 +184,9 @@ and `--allow-code` is missing.
 | `filter BOOK [--parent REF] [--ask TEXT] [--backend B]` | have a model decide, passage by passage, what to keep and for which file; writes a report only |
 | `accept BOOK` | append the kept passages to the reading side of their files |
 | `import FILE --parent REF` | split a text on `#` headings into child files, without a model |
+| `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path |
+| `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
+| `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
 
 ## Desktop windows, for Linux users
 
@@ -172,8 +235,12 @@ read from the environment and never written to disk.
 ## Code steps
 
 Code on the machine side runs as one step of a path. It sees `input` (the
-previous step's output), `origin` (the original request) and `vars` (a dict
-shared by all steps), and sets `output`.
+previous step's output), `origin` (the original request), `vars` (a dict
+shared by all steps), `steps` (the outputs of the files upstream of it in the
+path, by id or number), `meta` (this file's id, title, number and tree) and
+`linked(type="")` (the files it links to, with their output when they are
+upstream), and sets `output`. Reading `steps` for a file that is not
+upstream is an error: its output might not exist yet.
 
 **Code is executed with `exec`, without any sandbox, with your user's full
 permissions.** It runs only when you pass `--allow-code`. Do not run paths
@@ -183,9 +250,9 @@ whose code you have not read, including code a model wrote through `edit`.
 
 ```
 files/    one .md file per tree file (header + four marked sections)
-paths/    one .path file per path (ordered ids)
+paths/    one .path file per path, and .proposed files from generate
 library/  deposited books and filter reports   (git-ignored)
-runs/     log and result of every production   (git-ignored)
+runs/     log, result and state of every run   (git-ignored)
 cache/    kept model answers, for --resume     (git-ignored)
 history/  production records, and previous
           versions of edited files             (git-ignored)
@@ -200,14 +267,19 @@ history/  production records, and previous
 - `IF` only tests whether a word appears in the output, and `AMONG` only
   finds a candidate's number, id or title in it. Both depend on the model
   wording its answer as the instructions ask.
-- A step that expects structured output from the model fails if the model
-  does not follow the format.
-- Links are stored and checked but do not affect anything yet.
+- A JSON contract tolerates a code fence and sentences around the JSON, but
+  a step still fails when the model gives no JSON at all.
+- Links matter only to code that calls `linked()`.
+- `generate --start/--end` finds only straight chains, and only through
+  files that declare both contracts. A model's proposal is only as good as
+  the model; it is checked, not trusted.
+- `tangle` exports code only: instructions need a model, and the exported
+  module does not run the path.
 - Books must be plain UTF-8 text; PDF and Word need converting first.
 - Filtering makes one model call per passage, and copies kept passages
   verbatim; it does not summarise.
-- Nothing warns you that a file's reading or human side changed after its
-  machine side was last built.
+- Staleness is recorded only when a machine side is written through
+  `open`, `edit` or the Linux windows, not when you edit a file by hand.
 - A line consisting only of `=== human ===` (or another section marker)
   inside your text will be read as a section boundary.
 - External providers receive whatever you send them: with `edit`, the file's
@@ -220,8 +292,10 @@ Verified by the test suite (`python -m unittest discover -s tests -v`), on
 Linux with Python 3.12: file format, trees and numbering, structural checks,
 running paths and cross-tree productions with branching, joining, `IF`,
 `AMONG` and `THROUGH` (including that the human and reading sides never reach the
-model), `edit`, the deposit → filter → accept pipeline, and `open` with a
-scripted stand-in editor.
+model), `edit`, the deposit → filter → accept pipeline, `open` with a
+scripted stand-in editor, contracts, model choice, staleness, `steps` and
+`linked`, `tangle`, `graph` and `generate`. The diagrams from `graph` were
+rendered with the Mermaid command-line tool and with Graphviz.
 
 The same tests pass on Windows and Linux, on Python 3.11 and 3.13, in the
 GitHub Actions workflow that runs at every push. The Linux desktop windows

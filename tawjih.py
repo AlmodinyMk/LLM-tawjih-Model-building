@@ -5,9 +5,10 @@ A project is a folder of three-sided files arranged as trees:
     human side   : the expressive human concept (context)
     machine side : instructions for the model + optional Python code
     reading side : filtered passages of deposited books and research
-A path is an ordered list of files; running it executes their machine
-sides as steps, each step's output feeding the next (a linear workflow).
-The human and reading sides are used only when building a file ('edit').
+A path connects files across trees into a directed acyclic workflow (DAG);
+running it executes their machine sides step by step.
+The human and reading sides are build-time material and never reach the model
+at run time.
 
 Standard library only. Python 3.11+.
 
@@ -26,13 +27,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -64,21 +67,116 @@ def parse_level(text):
     die("unknown level '%s' (use 1-6, %s)" % (text, ", ".join(LEVELS)))
 
 
+CONTRACT_HELP = "use json, json(key, ...) or text"
+
+
+def _parse_contract(spec):
+    """Parse a contract: 'json', 'json(a, b)' or 'text'. Anything else is
+    returned as ('unknown', [spec]) so that a typo is reported, not ignored."""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    m = re.fullmatch(r"json\s*(?:\(([^)]*)\))?", spec, re.I)
+    if m:
+        keys = [k.strip() for k in (m.group(1) or "").split(",") if k.strip()]
+        return ("json", keys)
+    if spec.lower() == "text":
+        return ("text", [])
+    return ("unknown", [spec])
+
+
+def _json_in(text):
+    """The JSON object in an answer: the whole text, the inside of a code
+    fence, or the span from the first '{' to the last '}' (models often add
+    a sentence before or after). Returns (object, its JSON text)."""
+    t = text.strip()
+    cands = [t]
+    m = re.search(r"```[^\n]*\n(.*?)\n?```", t, re.S)
+    if m:
+        cands.append(m.group(1).strip())
+    i, j = t.find("{"), t.rfind("}")
+    if 0 <= i < j:
+        cands.append(t[i:j + 1])
+    for c in cands:
+        try:
+            return json.loads(c), c
+        except ValueError:
+            continue
+    return None, None
+
+
+def conform(text, spec, label):
+    """Check text against a contract. Returns (text to pass on, error).
+    For a JSON contract the text passed on is the bare JSON, without the
+    fence or the sentences around it."""
+    parsed = _parse_contract(spec)
+    if not parsed:
+        return text, None
+    kind, keys = parsed
+    if kind == "unknown":
+        return text, "%s has an unknown contract '%s' (%s)" % (
+            label, keys[0], CONTRACT_HELP)
+    if kind == "text":
+        return text, None
+    obj, raw = _json_in(text)
+    if raw is None:
+        return text, "%s expected JSON and none was found" % label
+    if not isinstance(obj, dict):
+        return text, "%s expected a JSON object" % label
+    missing = [k for k in keys if k not in obj]
+    if missing:
+        return text, "%s is missing JSON key(s): %s" % (label, ", ".join(missing))
+    return raw, None
+
+
+def _validate_contract(text, spec, label):
+    """The error of conform(), or None."""
+    return conform(text, spec, label)[1]
+
+
 # ---------------------------------------------------------------- file model
 class Node:
     def __init__(self, id="", title="", level=1, parent="", order=0,
-                 links=None, human="", instructions="", code="", reading=""):
+                 links=None, model="", expects="", produces="", built_sha="",
+                 human="", instructions="", code="", reading=""):
         self.id, self.title, self.level = id, title, int(level)
         self.parent, self.order = parent, int(order)
         self.links = links or []          # [(target_id, type)]
+        self.model = model.strip()
+        self.expects = expects.strip()
+        self.produces = produces.strip()
+        self.built_sha = built_sha.strip()
         self.human, self.instructions, self.code = human, instructions, code
         self.reading = reading
+
+    def source_digest(self):
+        """SHA-256 prefix of build-time material (human + reading)."""
+        blob = (self.human.strip("\n") + "\n" + MARK.format("reading") + "\n"
+                + self.reading.strip("\n"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def is_stale(self):
+        """True if human/reading changed after machine side was built."""
+        if not self.built_sha:
+            return False
+        if not (self.instructions.strip() or self.code.strip()):
+            return False
+        return self.source_digest() != self.built_sha
 
     def dump(self):
         links = ", ".join("%s:%s" % (t, ty) for t, ty in self.links)
         out = ["---", "id: " + self.id, "title: " + self.title,
                "level: %d" % self.level, "parent: " + self.parent,
-               "order: %d" % self.order, "links: " + links, "---"]
+               "order: %d" % self.order, "links: " + links]
+        if self.model:
+            out.append("model: " + self.model)
+        if self.expects:
+            out.append("expects: " + self.expects)
+        if self.produces:
+            out.append("produces: " + self.produces)
+        if self.built_sha:
+            out.append("built_sha: " + self.built_sha)
+        out.append("---")
         for s in SECTIONS:
             out += [MARK.format(s), getattr(self, s).strip("\n")]
         return "\n".join(out) + "\n"
@@ -115,6 +213,10 @@ class Node:
                     level=meta.get("level", "1") or 1,
                     parent=meta.get("parent", ""),
                     order=meta.get("order", "0") or 0, links=links,
+                    model=meta.get("model", ""),
+                    expects=meta.get("expects", ""),
+                    produces=meta.get("produces", ""),
+                    built_sha=meta.get("built_sha", ""),
                     **{s: "\n".join(sec[s]).strip("\n") for s in SECTIONS})
 
 
@@ -148,6 +250,20 @@ class Store:
     def children(self, pid):
         return sorted((n for n in self.nodes.values() if n.parent == pid),
                       key=lambda n: (n.order, n.id))
+
+    def subtree_ids(self, root_id=""):
+        """All node ids in preorder under root_id (inclusive if root_id given)."""
+        out = []
+
+        def walk(pid):
+            for k in self.children(pid):
+                out.append(k.id)
+                walk(k.id)
+
+        if root_id:
+            out.append(root_id)
+        walk(root_id)
+        return out
 
     def number(self, nid):
         """Positional number such as 1.2.3 (changes when files move)."""
@@ -218,9 +334,11 @@ class Store:
             raise FlowError("unreadable line (%s)" % e)
         return build_flow(stmts, known)
 
-    def check(self):
+    def check(self, branch_id=""):
         errors, warns = [], []
-        for n in self.nodes.values():
+        scope = set(self.subtree_ids(branch_id)) if branch_id else set(self.nodes)
+        for nid in scope:
+            n = self.nodes[nid]
             tag = "%s (%s)" % (n.id, n.title)
             if n.parent:
                 p = self.nodes.get(n.parent)
@@ -241,6 +359,14 @@ class Store:
                     errors.append(tag + ": link target %s does not exist" % t)
             if not n.human.strip():
                 warns.append(tag + ": human side is empty")
+            if n.is_stale():
+                warns.append(tag + ": machine side is stale (human/reading "
+                             "changed since last build)")
+            for field in ("expects", "produces"):
+                pc = _parse_contract(getattr(n, field))
+                if pc and pc[0] == "unknown":
+                    errors.append(tag + ": unknown %s contract '%s' (%s)" % (
+                        field, pc[1][0], CONTRACT_HELP))
             if n.code.strip():
                 try:
                     compile(n.code, n.id + ".code", "exec")
@@ -254,11 +380,15 @@ class Store:
                 except FlowError as e:
                     errors.append("path %s: %s" % (f.stem, e))
                     continue
+                if branch_id and not (set(flow.nodes) & scope):
+                    continue
                 for nid in flow.nodes:
                     n = self.nodes[nid]
                     if not n.instructions.strip() and not n.code.strip():
                         warns.append("path %s: step %s has an empty machine "
                                      "side" % (f.stem, nid))
+                errors += ["path %s: %s" % (f.stem, m)
+                           for m in flow_contract_errors(self, flow)]
         return errors, warns
 
 
@@ -273,13 +403,15 @@ def _post(url, body, headers):
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:500]
         raise RuntimeError("HTTP %d from %s: %s" % (e.code, url, detail))
+    except urllib.error.URLError as e:
+        raise RuntimeError("Connection failed to %s: %s" % (url, e.reason))
 
 
-def _model():
-    m = os.environ.get("TAWJIH_MODEL")
+def _model(override=""):
+    m = (override or "").strip() or os.environ.get("TAWJIH_MODEL")
     if not m:
-        die("name the model: pass --model NAME or set the TAWJIH_MODEL "
-            "environment variable")
+        die("name the model: pass --model NAME, set model in node header, "
+            "or set the TAWJIH_MODEL environment variable")
     return m
 
 
@@ -289,43 +421,47 @@ def use_model(a):
         os.environ["TAWJIH_MODEL"] = a.model
 
 
-def backend_dry(prompt):
-    return "[dry run: no model was called; prompt was %d characters]" % len(prompt)
+def backend_dry(prompt, model=""):
+    m_tag = (" [model: %s]" % model) if model else ""
+    return "[dry run%s: no model was called; prompt was %d characters]" % (
+        m_tag, len(prompt))
 
 
-def backend_ollama(prompt):
+def backend_ollama(prompt, model=""):
     host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     data = _post(host + "/api/chat",
-                 {"model": _model(), "stream": False,
+                 {"model": _model(model), "stream": False,
                   "messages": [{"role": "user", "content": prompt}]}, {})
     return data["message"]["content"]
 
 
-def backend_anthropic(prompt):
+def backend_anthropic(prompt, model=""):
     key = os.environ.get("ANTHROPIC_API_KEY") or die("set ANTHROPIC_API_KEY")
     base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
     data = _post(base.rstrip("/") + "/v1/messages",
-                 {"model": _model(),
+                 {"model": _model(model),
                   "max_tokens": int(os.environ.get("TAWJIH_MAX_TOKENS", "4096")),
                   "messages": [{"role": "user", "content": prompt}]},
                  {"x-api-key": key, "anthropic-version": "2023-06-01"})
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
-def backend_openai(prompt):
+def backend_openai(prompt, model=""):
     """Any provider exposing the OpenAI-style /chat/completions endpoint."""
     base = os.environ.get("TAWJIH_BASE_URL", "https://api.openai.com/v1")
     key = os.environ.get("TAWJIH_API_KEY", "")
     headers = {"Authorization": "Bearer " + key} if key else {}
     data = _post(base.rstrip("/") + "/chat/completions",
-                 {"model": _model(),
+                 {"model": _model(model),
                   "messages": [{"role": "user", "content": prompt}]}, headers)
     return data["choices"][0]["message"]["content"]
 
 
-def backend_manual(prompt):
+def backend_manual(prompt, model=""):
     """A person (or any chat model) plays the model: paste the answer."""
     bar = "=" * 60
+    if model:
+        print("\n[suggested model: %s]" % model, file=sys.stderr)
     print("\n%s\n%s\n%s" % (bar, prompt, bar), file=sys.stderr)
     print("answer (finish with a line containing only '.'):", file=sys.stderr)
     lines = []
@@ -356,8 +492,96 @@ def build_prompt(store, n, prev, code_out, origin=""):
     return "\n\n".join(parts)
 
 
-def run_code(n, prev, shared, origin=""):
-    ns = {"input": prev, "origin": origin, "vars": shared, "output": None}
+class StepOutputs(Mapping):
+    """The 'steps' a code step can read: outputs of the files upstream of
+    it in the path, by id or number. Asking for any other file is an error,
+    because its output might not exist yet and the result would then depend
+    on the order of execution. An upstream file that was skipped has no
+    output: steps.get() gives None and steps[...] raises KeyError."""
+
+    def __init__(self, outputs, upstream, store=None):
+        self._out, self._up, self._st = outputs, set(upstream), store
+
+    def _key(self, key):
+        if self._st is not None and key not in self._st.nodes \
+                and re.fullmatch(r"\d+(\.\d+)*", str(key)):
+            try:
+                key = self._st.resolve(key)
+            except SystemExit:
+                pass
+        if key not in self._up:
+            raise LookupError(
+                "steps[%r]: that file is not upstream of this step in the "
+                "path, so its output may not exist yet. Connect it to this "
+                "step (TO) to read its output." % key)
+        return key
+
+    def __getitem__(self, key):
+        return self._out[self._key(key)]
+
+    def get(self, key, default=None):
+        return self._out.get(self._key(key), default)
+
+    def __contains__(self, key):
+        try:
+            return self._key(key) in self._out
+        except LookupError:
+            return False
+
+    def __iter__(self):
+        return iter([k for k in self._out if k in self._up])
+
+    def __len__(self):
+        return sum(1 for k in self._out if k in self._up)
+
+
+def run_code(n, prev, shared, origin="", steps=None, store=None, run_dir=None,
+             upstream=None):
+    """Execute a node's Python code. It sees input, origin, vars, steps
+    (outputs upstream of it), meta and linked(), and sets output."""
+    outputs = steps or {}
+    if upstream is None:
+        upstream = set(outputs)
+    steps_view = StepOutputs(outputs, upstream, store)
+
+    def linked_info(rel_type=""):
+        if not store:
+            return []
+        res = []
+        for tid, ty in n.links:
+            if rel_type and ty != rel_type:
+                continue
+            tn = store.nodes.get(tid)
+            if tn:
+                res.append({
+                    "id": tn.id,
+                    "number": store.number(tn.id),
+                    "title": tn.title,
+                    "type": ty,
+                    # only an upstream output is certain to be there
+                    "output": outputs.get(tn.id) if tn.id in upstream else None,
+                    "upstream": tn.id in upstream,
+                    "expects": tn.expects,
+                    "produces": tn.produces,
+                })
+        return res
+
+    meta = {
+        "id": n.id,
+        "title": n.title,
+        "number": store.number(n.id) if store else "",
+        "tree": store.ancestors(n.id)[0].title if store else "",
+        "run_dir": str(run_dir) if run_dir else "",
+    }
+    ns = {
+        "input": prev,
+        "origin": origin,
+        "vars": shared,
+        "steps": steps_view,
+        "meta": meta,
+        "linked": linked_info,
+        "output": None,
+    }
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         exec(compile(n.code, n.id + ".code", "exec"), ns)
@@ -376,14 +600,6 @@ def machine_side(n):
 
 
 # ---------------------------------------------------------------------- flow
-# A path is written with connecting words between files:
-#   A TO B                 A's output goes to B
-#   A TO B AND C           ... to both B and C (branching)
-#   B AND C TO D           D receives both outputs (joining)
-#   A TO B IF word         only when A's output contains the word
-#   A TO B IF NOT word     only when it does not
-#   A AMONG B C D          A's output names one of them; only that one runs
-#   A TO D THROUGH B C     A -> B -> C -> D
 class FlowError(Exception):
     pass
 
@@ -536,6 +752,19 @@ class Flow:
     def incoming(self, nid):
         return [e for e in self.edges if e["dst"] == nid]
 
+    def upstream(self, nid):
+        """Every file whose output can reach nid, directly or through
+        others: exactly the files certain to have run (or been skipped)
+        before it."""
+        seen, todo = set(), [nid]
+        while todo:
+            cur = todo.pop()
+            for e in self.edges:
+                if e["dst"] == cur and e["src"] not in seen:
+                    seen.add(e["src"])
+                    todo.append(e["src"])
+        return seen
+
     def terminals(self):
         return [n for n in self.nodes
                 if not any(e["src"] == n for e in self.edges)]
@@ -577,14 +806,47 @@ def build_flow(statements, resolve):
     return flow
 
 
-def write_flow(store, name, flow):
-    store.pdir.mkdir(exist_ok=True)
+def contract_fits(produces, expects):
+    """None if an output under contract `produces` may go to a step that
+    expects `expects`, else the reason it may not. Undeclared or unknown
+    contracts give no evidence either way (None)."""
+    sp, de = _parse_contract(produces), _parse_contract(expects)
+    if not (sp and de) or "unknown" in (sp[0], de[0]) or de[0] == "text":
+        return None                         # any output is text
+    if sp[0] != de[0]:
+        return "produces '%s' but the next step expects '%s'" % (produces,
+                                                                expects)
+    if sp[0] == "json" and de[1] and sp[1]:
+        missing = [k for k in de[1] if k not in sp[1]]
+        if missing:
+            return "produces %s but the next step expects keys %s" % (
+                produces, ", ".join(missing))
+    return None
+
+
+def flow_contract_errors(store, flow):
+    out = []
+    for e in flow.edges:
+        src, dst = store.nodes[e["src"]], store.nodes[e["dst"]]
+        why = contract_fits(src.produces, dst.expects)
+        if why:
+            out.append("contract mismatch %s -> %s: %s %s" % (
+                src.id, dst.id, src.id, why))
+    return out
+
+
+def flow_text(store, flow):
     lines = []
     for norm in flow.lines:
         titles = [store.nodes[t].title for t in norm if t in store.nodes]
         lines.append("%s  # %s" % (" ".join(norm), ", ".join(titles)))
+    return "\n".join(lines) + "\n"
+
+
+def write_flow(store, name, flow):
+    store.pdir.mkdir(exist_ok=True)
     f = store.pdir / (name + ".path")
-    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    f.write_text(flow_text(store, flow), encoding="utf-8")
     return f
 
 
@@ -607,6 +869,10 @@ def plan_steps(store, flow):
         plan.append({"step": i, "id": nid, "number": store.number(nid),
                      "title": n.title, "tree": root.id,
                      "tree_title": root.title,
+                     "model": n.model,
+                     "expects": n.expects,
+                     "produces": n.produces,
+                     "stale": n.is_stale(),
                      "instructions": bool(ins.strip()),
                      "code": bool(code.strip()), "machine_sha": digest,
                      "instructions_chars": len(ins), "code_chars": len(code),
@@ -623,9 +889,15 @@ def print_plan(store, name, plan, out):
         name, len(plan), len(trees), " | ".join(trees)), file=out)
     for p in plan:
         kind = "+".join(k for k in ("instructions", "code") if p[k]) or "EMPTY"
-        print("%3d  %-14s %-10s [%s]  %-18s %s" % (
+        flags = []
+        if p["model"]:
+            flags.append("model=" + p["model"])
+        if p["stale"]:
+            flags.append("STALE")
+        extra = ("  [%s]" % ", ".join(flags)) if flags else ""
+        print("%3d  %-14s %-10s [%s]  %-18s %s%s" % (
             p["step"], p["tree_title"], p["number"], p["id"], kind,
-            p["title"]), file=out)
+            p["title"], extra), file=out)
         size = ["%s %d" % (k, p[k + "_chars"])
                 for k in ("instructions", "code") if p[k]]
         if size:
@@ -641,7 +913,8 @@ def print_plan(store, name, plan, out):
 
 
 def choose_among(store, output, candidates):
-    """The candidate named first in the output (by id, number or title)."""
+    """The candidate named first in the output (by id, number or title),
+    falling back to contract compatibility if a single candidate matches."""
     low, best = output.casefold(), None
     for nid in candidates:
         n = store.nodes[nid]
@@ -649,13 +922,24 @@ def choose_among(store, output, candidates):
             r"(?<![\d.])%s(?![\d.])" % re.escape(store.number(nid)), output)]
         for key in (nid, n.title.strip()):
             if key:
-                m = re.search(r"(?<!\w)%s(?!\w)" % re.escape(key.casefold()),
-                              low)
+                m = re.search(
+                    r"(?:^|[\s\W])%s(?:$|[\s\W])" % re.escape(key.casefold()),
+                    low)
                 if m:
                     hits.append(m.start())
         if hits and (best is None or min(hits) < best[0]):
             best = (min(hits), nid)
-    return best[1] if best else None
+    if best:
+        return best[1]
+    # Contract-aware branch selection fallback
+    contract_hits = [
+        nid for nid in candidates
+        if store.nodes[nid].expects
+        and _validate_contract(output, store.nodes[nid].expects, "") is None
+    ]
+    if len(contract_hits) == 1:
+        return contract_hits[0]
+    return None
 
 
 def _stamped(folder, name, suffix):
@@ -668,28 +952,21 @@ def _stamped(folder, name, suffix):
     return f
 
 
-def cache_file(store, backend, prompt):
+def cache_file(store, backend, model, prompt):
     """Where the answer to this exact prompt, from this provider and model,
     is kept. Any change to the instructions, the input or the model gives
     another file."""
     key = hashlib.sha256("\0".join((
-        backend, os.environ.get("TAWJIH_MODEL", ""), prompt)).encode(
-            "utf-8")).hexdigest()
+        backend, model, prompt)).encode("utf-8")).hexdigest()
     return store.root / "cache" / (key[:32] + ".json")
 
 
 def run_flow(store, name, text, backend, allow_code, flow, resume=False,
-             use_cache=True, redo=()):
+             use_cache=True, redo=(), model_override=""):
     """Execute the machine sides of the files of a flow. A file runs after
     the files that feed it and receives their outputs; a file none of whose
-    connections is active is skipped. Writes the log and the result to runs/
-    and a record of the operation to history/.
-
-    Model answers are kept in cache/ (unless use_cache is False). With
-    resume, a step whose prompt, provider and model are unchanged takes its
-    answer from there instead of calling the model; code always runs again.
-    Steps listed in redo are asked again even with resume.
-    A step that produces no output stops the run."""
+    connections is active is skipped. Writes the log, state snapshot and
+    result to runs/ and a record of the operation to history/."""
     use_cache = use_cache and backend != "dry"
     plan = plan_steps(store, flow)
     trees = []
@@ -700,6 +977,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     log = ["# Run of path '%s'" % name]
     logfile = _stamped(store.rdir, name, ".md")
     resfile = logfile.with_name(logfile.stem + ".result.txt")
+    statefile = logfile.with_name(logfile.stem + ".state.json")
+    default_model = os.environ.get("TAWJIH_MODEL", "")
     record = {"tawjih": __version__, "name": name,
               "started": time.strftime("%Y-%m-%d %H:%M:%S"),
               "backend": backend, "allow_code": bool(allow_code),
@@ -711,8 +990,16 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                                "if": e["cond"], "among": e["among"]}
                               for e in flow.edges],
               "steps": plan, "status": "running", "log": str(logfile),
-              "result": "", "model": os.environ.get("TAWJIH_MODEL", ""),
+              "state": str(statefile),
+              "result": "", "model": default_model,
               "resume": bool(resume), "from_cache": 0, "redo": list(redo)}
+
+    def save_state(outputs_map):
+        statefile.write_text(json.dumps({
+            "path": name,
+            "origin": text,
+            "steps": outputs_map,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def document():
         record["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -721,19 +1008,21 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                        encoding="utf-8")
         return rec
 
-    def fail(p, n, what, e):
+    def fail(p, n, what, e, outputs_map):
         log.append("### FAILED (%s)\n%s: %s" % (what, type(e).__name__, e))
         logfile.write_text("\n".join(log) + "\n", encoding="utf-8")
+        save_state(outputs_map)
         p["status"] = "failed"
         record.update(status="failed", failed_step=p["step"],
                       error="%s: %s: %s" % (what, type(e).__name__, e))
         rec = document()
-        # a kept answer may be what broke this step: say how to replace it
-        suspects = [n.id] if what == "AMONG" else p.get("received_from", [])
+        suspects = [n.id] if what in ("AMONG", "contract") \
+            else p.get("received_from", [])
         suspects = [x for x in suspects if use_cache
                     and store.nodes[x].instructions.strip()]
         hint = ""
-        if suspects and what in ("code", "AMONG", "output"):
+        if suspects and what in ("code", "AMONG", "output", "contract",
+                                 "input contract"):
             hint = ("\nIf a model answer caused this, ask for it again and "
                     "keep the rest: --resume " + " ".join(
                         "--redo " + store.number(x) for x in suspects))
@@ -756,8 +1045,13 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     for p in plan:
         n = store.nodes[p["id"]]
         ins, code, _ = machine_side(n)
+        # --model on the command line > the file's model: header > TAWJIH_MODEL
+        step_model = model_override or n.model or default_model
         head = "step %d/%d  %s [%s] %s" % (p["step"], len(plan), p["number"],
                                            n.id, n.title)
+        if n.is_stale():
+            print("  warning: %s [%s] machine side is stale" % (n.title, n.id),
+                  file=sys.stderr)
         log.append("\n## Step %d: %s [%s] (tree: %s, machine %s)" % (
             p["step"], n.title, n.id, p["tree_title"], p["machine_sha"]))
         incoming = flow.incoming(n.id)
@@ -777,6 +1071,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 prev = "\n\n".join("## from: %s [%s]\n%s" % (
                     store.nodes[f].title, f, outputs[f]) for f in feeders)
         print(head, file=sys.stderr)
+        p["received_from"] = feeders
+        if n.expects:
+            prev, cerr = conform(prev, n.expects, "input")
+            if cerr:
+                fail(p, n, "input contract", ValueError(cerr), outputs)
         for f in feeders:
             log.append("input from: %s [%s]" % (store.nodes[f].title, f))
             if tree_of[f] != p["tree"]:
@@ -788,11 +1087,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
         if code.strip():
             if allow_code:
                 try:
-                    produced = run_code(n, prev, shared, text)
+                    produced = run_code(n, prev, shared, text, steps=outputs,
+                                        store=store, run_dir=store.rdir,
+                                        upstream=flow.upstream(n.id))
                 except Exception as e:
-                    fail(p, n, "code", e)
-                # no output at all passes the input on; an output that was
-                # set but is empty is the step's (empty) output
+                    fail(p, n, "code", e, outputs)
                 emptied = produced is not None and not produced.strip()
                 code_out = produced or ""
             else:
@@ -802,14 +1101,15 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             prompt = build_prompt(store, n, prev, code_out, text)
             print("  prompt: %d characters" % len(prompt), file=sys.stderr)
             log.append("### Prompt\n" + prompt)
-            cfile = cache_file(store, backend, prompt) if use_cache else None
+            cfile = (cache_file(store, backend, step_model, prompt)
+                     if use_cache else None)
             kept = None
             if resume and cfile is not None and cfile.is_file() \
                     and n.id not in redo:
                 try:
                     kept = json.loads(cfile.read_text(encoding="utf-8"))["answer"]
                 except (ValueError, KeyError, TypeError):
-                    kept = None                 # unreadable: ask again
+                    kept = None
             if isinstance(kept, str) and kept.strip():
                 out = kept
                 p["cached"] = True
@@ -818,17 +1118,22 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 log.append("(answer taken from the cache: %s)" % cfile.name)
             else:
                 try:
-                    out = BACKENDS[backend](prompt) or ""
+                    out = BACKENDS[backend](prompt, model=step_model) or ""
                 except Exception as e:
-                    fail(p, n, "model call", e)
+                    fail(p, n, "model call", e, outputs)
                 if not out.strip():
                     fail(p, n, "model call",
-                         ValueError("the model returned an empty answer"))
+                         ValueError("the model returned an empty answer"),
+                         outputs)
+                if n.produces:      # never keep an answer the contract rejects
+                    _, cerr = conform(out, n.produces, "output")
+                    if cerr:
+                        fail(p, n, "contract", ValueError(cerr), outputs)
                 if cfile is not None:
                     cfile.parent.mkdir(exist_ok=True)
                     cfile.write_text(json.dumps({
                         "answer": out, "backend": backend,
-                        "model": os.environ.get("TAWJIH_MODEL", ""),
+                        "model": step_model,
                         "step": n.id, "machine_sha": p["machine_sha"],
                         "saved": time.strftime("%Y-%m-%d %H:%M:%S")},
                         ensure_ascii=False, indent=2), encoding="utf-8")
@@ -838,7 +1143,12 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             out = ""
         if not out.strip():
             fail(p, n, "output", ValueError(
-                "the step produced no output, so nothing can be passed on"))
+                "the step produced no output, so nothing can be passed on"),
+                outputs)
+        if n.produces:
+            out, cerr = conform(out, n.produces, "output")
+            if cerr:
+                fail(p, n, "contract", ValueError(cerr), outputs)
         outputs[n.id] = out
         log.append("### Output\n" + out)
         groups = {}
@@ -851,7 +1161,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 fail(p, n, "AMONG", ValueError(
                     "the output names none of: " + ", ".join(
                         "%s %s" % (store.number(c), store.nodes[c].title)
-                        for c in cands)))
+                        for c in cands)), outputs)
             chosen[(n.id, gid)] = pick
             print("  chose: %s %s" % (store.number(pick),
                                       store.nodes[pick].title), file=sys.stderr)
@@ -868,10 +1178,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
               file=sys.stderr)
     logfile.write_text("\n".join(log) + "\n", encoding="utf-8")
     resfile.write_text(result + "\n", encoding="utf-8")
+    save_state(outputs)
     record.update(status="done", result=str(resfile), final_steps=ends)
     rec = document()
-    print("log: %s\nresult: %s\nrecord: %s" % (logfile, resfile, rec),
-          file=sys.stderr)
+    print("log: %s\nstate: %s\nresult: %s\nrecord: %s" % (
+        logfile, statefile, resfile, rec), file=sys.stderr)
     return result
 
 
@@ -895,6 +1206,9 @@ def cmd_new(a):
     if parent and level <= st.nodes[parent].level:
         die("level must be deeper than the parent's level")
     n = st.new_node(a.title, level, parent)
+    if getattr(a, "model", None):
+        n.model = a.model.strip()
+        st.save(n)
     print("%s  [%s]  %s" % (st.number(n.id), n.id, st.file_of(n.id)))
     if a.open:
         open_editors(st, n.id)
@@ -902,15 +1216,60 @@ def cmd_new(a):
 
 def cmd_tree(a):
     st = Store(a.project)
+    root = st.resolve(a.branch) if getattr(a, "branch", None) else ""
+
+    def show_node(n, depth):
+        flags = "".join(c if getattr(n, s).strip() else "-"
+                        for c, s in zip("HICR", SECTIONS))
+        stale = "!" if n.is_stale() else " "
+        m_tag = ("  (%s)" % n.model) if n.model else ""
+        print("%s%-8s [%s] %-8s %s%s %s%s" % (
+            "  " * depth, st.number(n.id), n.id, LEVELS[n.level - 1],
+            flags, stale, n.title, m_tag))
 
     def walk(pid, depth):
         for n in st.children(pid):
-            flags = "".join(c if getattr(n, s).strip() else "-"
-                            for c, s in zip("HICR", SECTIONS))
-            print("%s%-8s [%s] %-8s %s  %s" % ("  " * depth, st.number(n.id),
-                  n.id, LEVELS[n.level - 1], flags, n.title))
+            show_node(n, depth)
             walk(n.id, depth + 1)
-    walk("", 0)
+
+    if root:
+        show_node(st.nodes[root], 0)
+        walk(root, 1)
+    else:
+        walk("", 0)
+
+
+def cmd_search(a):
+    """Search across trees or within a specific branch and side."""
+    st = Store(a.project)
+    root = st.resolve(a.branch) if a.branch else ""
+    ids = st.subtree_ids(root)
+    side_map = {"h": "human", "human": "human",
+                "i": "instructions", "instructions": "instructions",
+                "c": "code", "code": "code",
+                "r": "reading", "reading": "reading"}
+    target_sides = [side_map[a.side.lower()]] if a.side else SECTIONS
+    q = a.query.casefold()
+    hits = 0
+    for nid in ids:
+        n = st.nodes[nid]
+        matched = []
+        if q in n.title.casefold() or q in nid.casefold():
+            matched.append(("title", n.title))
+        for sec in target_sides:
+            text = getattr(n, sec)
+            if q in text.casefold():
+                line = next((l.strip() for l in text.splitlines()
+                             if q in l.casefold()), "")
+                matched.append((sec, line[:90]))
+        if matched:
+            hits += 1
+            num = st.number(nid)
+            print("%-8s [%s] %-8s %s" % (num, nid, LEVELS[n.level - 1],
+                                         n.title))
+            for sec, snippet in matched:
+                print("         (%s) %s" % (sec, snippet))
+    print("%d matching file(s)" % hits)
 
 
 def cmd_show(a):
@@ -932,13 +1291,101 @@ def cmd_link(a):
 
 
 def cmd_check(a):
-    errors, warns = Store(a.project).check()
+    st = Store(a.project)
+    branch_id = st.resolve(a.branch) if getattr(a, "branch", None) else ""
+    errors, warns = st.check(branch_id=branch_id)
     for w in warns:
         print("warning: " + w)
     for e in errors:
         print("ERROR:   " + e)
     print("%d error(s), %d warning(s)" % (len(errors), len(warns)))
     sys.exit(1 if errors else 0)
+
+
+TANGLE_HEAD = '''"""Generated by tawjih tangle from %s.
+
+Each code side is a function step_<id>(input, origin="", vars=None,
+steps=None, meta=None, linked=None) that returns the step's output, as
+Tawjih would pass it on (None if the code sets no output). STEPS lists them
+in %s order. Instructions sides are not included: they need a model. These
+functions do not run the path; call them yourself, for example to test one
+step on its own.
+"""
+'''
+
+
+def tangle_source(st, ids, label, order_word):
+    """The Python module text for the code sides of ids, and its count."""
+    parts, names = [TANGLE_HEAD % (label, order_word)], []
+    for nid in ids:
+        n = st.nodes[nid]
+        code = n.code.strip("\n")
+        if not code.strip():
+            continue
+        fname = "step_" + nid
+        doc = "%s (%s)" % (n.title, st.number(nid))
+        if n.human.strip():
+            doc += "\n\n" + n.human.strip()
+        doc = doc.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+        parts.append("")
+        parts.append("def %s(input, origin=\"\", vars=None, steps=None, "
+                     "meta=None, linked=None):" % fname)
+        parts.append(textwrap.indent('"""%s\n"""' % doc, "    "))
+        parts.append("    vars = {} if vars is None else vars\n"
+                     "    steps = {} if steps is None else steps\n"
+                     "    meta = {} if meta is None else meta\n"
+                     "    linked = linked or (lambda rel_type=\"\": [])\n"
+                     "    output = None")
+        if '"""' in code or "'''" in code:
+            # indenting would change the text inside multi-line strings
+            parts.append("    _ns = dict(input=input, origin=origin, vars=vars,"
+                         " steps=steps, meta=meta, linked=linked, output=None)")
+            parts.append("    exec(%r, _ns)" % code)
+            parts.append("    output = _ns[\"output\"]")
+        else:
+            parts.append(textwrap.indent(code, "    "))
+        parts.append("    return None if output is None else str(output)")
+        parts.append("")
+        names.append((nid, n.title, fname))
+    parts.append("")
+    parts.append("STEPS = [")
+    for nid, title, fname in names:
+        parts.append("    (%r, %r, %s)," % (nid, title, fname))
+    parts.append("]")
+    return "\n".join(parts) + "\n", len(names)
+
+
+def cmd_tangle(a):
+    """Export the code sides of a branch or a path as a Python module of
+    functions, one per step."""
+    st = Store(a.project)
+    if a.path:
+        try:
+            ids = st.load_flow(a.path).order()
+        except FlowError as e:
+            die("path %s: %s" % (a.path, e))
+        label, order_word = "path '%s'" % a.path, "execution"
+    else:
+        root = st.resolve(a.branch) if a.branch else ""
+        ids = st.subtree_ids(root)
+        label = ("branch %s (%s)" % (st.number(root), st.nodes[root].title)
+                 if root else "all trees")
+        order_word = "tree"
+    rendered, count = tangle_source(st, ids, label, order_word)
+    if not count:
+        die("no code sections found in " + label)
+    try:
+        compile(rendered, a.out or "tangled", "exec")
+    except SyntaxError as e:
+        die("the exported module does not compile (%s); check the code "
+            "sides with: check" % e)
+    if a.out:
+        out_path = Path(a.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered, encoding="utf-8")
+        print("tangled %d code step(s) into %s" % (count, out_path))
+    else:
+        print(rendered, end="")
 
 
 def _flow_from_args(st, name, refs):
@@ -992,7 +1439,8 @@ def _run_from_args(st, a, flow):
         die("--redo goes with --resume (without --resume every step is "
             "asked again anyway)")
     return run_flow(st, a.name, text, a.backend, a.allow_code, flow,
-                    resume=a.resume, use_cache=not a.no_cache, redo=redo)
+                    resume=a.resume, use_cache=not a.no_cache, redo=redo,
+                    model_override=getattr(a, "model", None) or "")
 
 
 def cmd_trees(a):
@@ -1041,6 +1489,350 @@ def cmd_produce(a):
     print(_run_from_args(st, a, flow))
 
 
+# --------------------------------------------------------------- the network
+GRAPH_FORMATS = ("mermaid", "md", "dot")
+
+
+def _mm(text):
+    """Text for a quoted Mermaid label."""
+    return (text.replace("&", "&amp;").replace('"', "#quot;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _dot(text):
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _node_lines(st, n, with_kind=False):
+    lines = ["%s %s" % (st.number(n.id), n.title)]
+    if with_kind:
+        kind = "+".join(k for k in ("instructions", "code")
+                        if getattr(n, k).strip()) or "no machine side"
+        lines.append(kind)
+    for field in ("expects", "produces"):
+        if getattr(n, field):
+            lines.append("%s %s" % (field, getattr(n, field)))
+    if n.is_stale():
+        lines.append("STALE")
+    return lines
+
+
+def graph_source(st, fmt, path=None, branch="", name=""):
+    """The network as Mermaid or Graphviz DOT text.
+    Without a path: the trees (parent to child). With a path: its steps,
+    grouped by tree, with every connection and its condition."""
+    mermaid = fmt in ("mermaid", "md")
+    if path is not None:
+        flow = path
+        ids = flow.order()
+        groups = {}
+        for nid in ids:
+            groups.setdefault(st.ancestors(nid)[0].id, []).append(nid)
+        edges = []
+        for e in flow.edges:
+            if e["among"] is not None:
+                label, style = "AMONG", "among"
+            elif e["cond"]:
+                label = "IF %s%s" % ("NOT " if e["cond"][0] else "",
+                                     e["cond"][1])
+                style = "if"
+            else:
+                label, style = "", "to"
+            cross = st.ancestors(e["src"])[0].id != st.ancestors(e["dst"])[0].id
+            edges.append((e["src"], e["dst"], label, style, cross))
+        with_kind = True
+    else:
+        root = st.resolve(branch) if branch else ""
+        ids = st.subtree_ids(root)
+        groups = {"": ids}
+        edges = [(st.nodes[i].parent, i, "", "tree", False) for i in ids
+                 if st.nodes[i].parent and st.nodes[i].parent in ids]
+        with_kind = False
+    out = []
+    if mermaid:
+        out.append("flowchart %s" % ("LR" if path is not None else "TD"))
+        for gid, members in groups.items():
+            if gid:
+                out.append('  subgraph t_%s["%s"]' % (gid, _mm(st.nodes[gid].title)))
+            for nid in members:
+                n = st.nodes[nid]
+                label = "<br/>".join(_mm(x) for x in _node_lines(st, n, with_kind))
+                out.append('  %sn_%s["%s"]' % ("  " if gid else "", nid, label))
+            if gid:
+                out.append("  end")
+        for src, dst, label, style, cross in edges:
+            arrow = "-.->" if style == "among" else ("==>" if cross else "-->")
+            lab = '|"%s"|' % _mm(label) if label else ""
+            out.append("  n_%s %s%s n_%s" % (src, arrow, lab, dst))
+        machine = [i for i in ids if st.nodes[i].instructions.strip()
+                   or st.nodes[i].code.strip()]
+        stale = [i for i in ids if st.nodes[i].is_stale()]
+        out.append("  classDef machine stroke-width:3px")
+        out.append("  classDef stale fill:#fde2e2,stroke:#c0392b")
+        if machine:
+            out.append("  class %s machine" % ",".join("n_" + i for i in machine))
+        if stale:
+            out.append("  class %s stale" % ",".join("n_" + i for i in stale))
+    else:
+        out.append("digraph tawjih {")
+        out.append('  rankdir=%s; node [shape=box, style=rounded, '
+                   'fontname="DejaVu Sans"];' % ("LR" if path is not None else "TB"))
+        for k, (gid, members) in enumerate(groups.items()):
+            if gid:
+                out.append('  subgraph cluster_%d { label="%s";' % (
+                    k, _dot(st.nodes[gid].title)))
+            for nid in members:
+                n = st.nodes[nid]
+                extra = []
+                if n.instructions.strip() or n.code.strip():
+                    extra.append("penwidth=2")
+                if n.is_stale():
+                    extra.append('color="#c0392b", fillcolor="#fde2e2", '
+                                 'style="rounded,filled"')
+                out.append('  n_%s [label="%s"%s];' % (
+                    nid, _dot("\n".join(_node_lines(st, n, with_kind))),
+                    "".join(", " + x for x in extra)))
+            if gid:
+                out.append("  }")
+        for src, dst, label, style, cross in edges:
+            attrs = []
+            if label:
+                attrs.append('label="%s"' % _dot(label))
+            if style == "among":
+                attrs.append("style=dashed")
+            if cross:
+                attrs.append("penwidth=2.5")
+            out.append("  n_%s -> n_%s%s;" % (
+                src, dst, " [%s]" % ", ".join(attrs) if attrs else ""))
+        out.append("}")
+    text = "\n".join(out) + "\n"
+    if fmt == "md":
+        what = ("path '%s'" % name) if path is not None else "the trees"
+        text = ("# Tawjih network: %s\n\nThick arrows cross from one tree to "
+                "another; dashed arrows are AMONG choices; STALE marks a "
+                "machine side older than its human or reading side.\n\n"
+                "```mermaid\n%s```\n" % (what, text))
+    return text
+
+
+def cmd_graph(a):
+    """Draw the trees, or one path, as Mermaid or Graphviz DOT."""
+    st = Store(a.project)
+    flow = None
+    if a.path:
+        try:
+            flow = st.load_flow(a.path)
+            flow.order()
+        except FlowError as e:
+            die("path %s: %s" % (a.path, e))
+    if not st.nodes:
+        die("the project has no files yet")
+    text = graph_source(st, a.format, flow, a.branch or "", a.path or "")
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(text, encoding="utf-8")
+        print("wrote %s (%s)" % (a.out, a.format))
+    else:
+        print(text, end="")
+
+
+# ----------------------------------------------------------- path generation
+GENERATE_HEAD = (
+    "You are designing a production path in Tawjih. A path connects files "
+    "with these statements, one per line, files named by id:\n"
+    "  A TO B            A's output goes to B\n"
+    "  A TO B AND C      to both (branching)\n"
+    "  B AND C TO D      D receives both outputs (joining)\n"
+    "  A TO B IF word    only when A's output contains the word "
+    "(IF NOT word for the opposite)\n"
+    "  A AMONG B C       A's output names one of B, C; only that one runs\n"
+    "  A TO D THROUGH B C   A, then B, then C, then D\n"
+    "Use only files from the list. A file's 'expects' must fit what the "
+    "files before it 'produce'. No loops; each file at most once.\n"
+    "Reply with the statements only: no explanation, no code fence.")
+
+
+def _proposal_file(st, name):
+    return st.pdir / (name + ".proposed")
+
+
+def _scope_ids(st, scope):
+    root = st.resolve(scope) if scope else ""
+    return [i for i in st.subtree_ids(root)
+            if st.nodes[i].instructions.strip() or st.nodes[i].code.strip()]
+
+
+def contract_route(st, start, end, allowed):
+    """Shortest chain start -> ... -> end in which each step's declared
+    'produces' fits the next step's declared 'expects'. None if none."""
+    def fits(u, v):
+        pu, ev = st.nodes[u].produces, st.nodes[v].expects
+        if not (_parse_contract(pu) and _parse_contract(ev)):
+            return False                    # needs both declared
+        if "unknown" in (_parse_contract(pu)[0], _parse_contract(ev)[0]):
+            return False
+        sp, de = _parse_contract(pu), _parse_contract(ev)
+        if de[0] == "json" and de[1] and not sp[1]:
+            return False                    # keys required but not promised
+        return contract_fits(pu, ev) is None
+    prev, todo = {start: None}, [start]
+    while todo:
+        nxt = []
+        for u in todo:
+            for v in allowed:
+                if v not in prev and fits(u, v):
+                    prev[v] = u
+                    if v == end:
+                        chain = [v]
+                        while prev[chain[-1]] is not None:
+                            chain.append(prev[chain[-1]])
+                        return list(reversed(chain))
+                    nxt.append(v)
+        todo = nxt
+    return None
+
+
+def check_proposal(st, statements):
+    """Build a flow from statements and list everything that would stop it
+    from running. Returns (flow or None, problems)."""
+    def quiet(ref):                     # report once, in the problem list
+        with contextlib.redirect_stderr(io.StringIO()):
+            return st.resolve(ref)
+    try:
+        flow = build_flow(statements, quiet)
+        flow.order()
+    except FlowError as e:
+        return None, [str(e)]
+    except Die as e:
+        return None, [e.msg]
+    problems = ["step %s %s has no machine side" % (st.number(i), st.nodes[i].title)
+                for i in flow.nodes if not (st.nodes[i].instructions.strip()
+                                            or st.nodes[i].code.strip())]
+    problems += flow_contract_errors(st, flow)
+    return flow, problems
+
+
+def cmd_generate(a):
+    """Propose a path: from contracts (no model) or from a model given a
+    goal. The proposal is written next to the paths and runs nothing;
+    'generate NAME --accept' turns it into a path."""
+    st = Store(a.project)
+    if not re.fullmatch(r"[\w\-]+", a.name):
+        die("path names may contain only letters, digits, '_' and '-'")
+    prop = _proposal_file(st, a.name)
+    target = st.pdir / (a.name + ".path")
+    if a.accept:
+        if not prop.is_file():
+            die("there is no proposal named '%s' (make one with generate)"
+                % a.name)
+        stmts = []
+        for line in prop.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                try:
+                    stmts.append(shlex.split(line))
+                except ValueError as e:
+                    die("proposal line cannot be read (%s): %s" % (e, line))
+        flow, problems = check_proposal(st, stmts)
+        if flow is None or problems:
+            die("the proposal cannot be accepted:\n  " + "\n  ".join(
+                problems) + "\nEdit %s and try again." % prop)
+        if target.is_file() and not a.replace:
+            die("a path named '%s' already exists; add --replace to "
+                "overwrite it" % a.name)
+        write_flow(st, a.name, flow)
+        prop.unlink()
+        print("accepted: paths/%s.path" % a.name)
+        print_plan(st, a.name, plan_steps(st, flow), sys.stdout)
+        return
+    allowed = _scope_ids(st, a.scope)
+    if not allowed:
+        die("no file with a machine side in this scope")
+    if a.goal is None:
+        if not (a.start and a.end):
+            die("give --start and --end to link files by their contracts, "
+                "or --goal to ask a model")
+        start, end = st.resolve(a.start), st.resolve(a.end)
+        for ref, nid in ((a.start, start), (a.end, end)):
+            if nid not in allowed:
+                die("%s has no machine side or is outside the scope" % ref)
+        chain = contract_route(st, start, end, allowed)
+        if chain is None:
+            die("no chain of files links %s to %s by their contracts. Each "
+                "step needs 'produces' and the next one a fitting 'expects' "
+                "(see: graph). %s produces '%s'; %s expects '%s'." % (
+                    st.number(start), st.number(end), st.number(start),
+                    st.nodes[start].produces or "-", st.number(end),
+                    st.nodes[end].expects or "-"))
+        statements = [[chain[0], "TO", chain[-1]] + (
+            ["THROUGH"] + chain[1:-1] if len(chain) > 2 else [])]
+        how = "contracts, from %s to %s" % (st.number(start), st.number(end))
+    else:
+        rows = []
+        for nid in allowed:
+            n = st.nodes[nid]
+            kind = "+".join(k for k in ("instructions", "code")
+                            if getattr(n, k).strip())
+            rows.append("%s | %s | %s | %s | %s | expects %s | produces %s" % (
+                nid, st.number(nid), st.ancestors(nid)[0].title, n.title,
+                kind, n.expects or "-", n.produces or "-"))
+        prompt = ("%s\n\n# Files (id | number | tree | title | machine side |"
+                  " expects | produces)\n%s\n\n# Goal\n%s" % (
+                      GENERATE_HEAD, "\n".join(rows), a.goal))
+        use_model(a)
+        if a.backend == "dry":
+            print(prompt)
+            print("\n[dry run: nothing was sent; choose --backend]",
+                  file=sys.stderr)
+            return
+        try:
+            answer = BACKENDS[a.backend](prompt, model=a.model or "") or ""
+        except Exception as e:
+            die("model call failed: %s: %s" % (type(e).__name__, e))
+        statements, bad = [], []
+        for line in strip_fence(answer).splitlines():
+            line = line.split("#", 1)[0].strip().strip("`").strip()
+            if not line:
+                continue
+            try:
+                statements.append(shlex.split(line))
+            except ValueError:
+                bad.append(line)
+        if bad or not statements:
+            statements = []
+        how = "model %s/%s, goal: %s" % (a.backend,
+                                         os.environ.get("TAWJIH_MODEL", ""),
+                                         " ".join(a.goal.split()))
+        if not statements:
+            st.pdir.mkdir(exist_ok=True)
+            prop.write_text("# proposed by %s\n# INVALID: the answer holds no "
+                            "readable statement. The answer was:\n%s\n" % (
+                                how, "\n".join("# " + l for l in
+                                               answer.splitlines())),
+                            encoding="utf-8")
+            die("the model's answer holds no path statement; it is kept in "
+                "%s" % prop)
+    flow, problems = check_proposal(st, statements)
+    st.pdir.mkdir(exist_ok=True)
+    head = ["# proposed by %s on %s" % (how, time.strftime("%Y-%m-%d %H:%M")),
+            "# review it, edit it if needed, then: generate %s --accept"
+            % a.name]
+    if flow is None:
+        body = "\n".join(" ".join(x) for x in statements) + "\n"
+    else:
+        body = flow_text(st, flow)
+    head += ["# PROBLEM: " + p for p in problems]
+    prop.write_text("\n".join(head) + "\n" + body, encoding="utf-8")
+    if flow is not None:
+        print_plan(st, a.name + " (proposed)", plan_steps(st, flow),
+                   sys.stdout)
+    if problems:
+        die("the proposal has problems (kept in %s for you to edit):\n  %s"
+            % (prop, "\n  ".join(problems)))
+    print("proposal written to %s; nothing was run. Accept it with: "
+          "generate %s --accept" % (prop, a.name))
+
+
 def cmd_import(a):
     """Split a text file on '#' headings into child files (human side)."""
     st = Store(a.project)
@@ -1079,9 +1871,10 @@ SIDE_NOTES = {
                     "every rule, formula or fact the model needs in them.",
     "code": "The code side is Python run as one step of a path. Available "
             "names: input (str, previous step's output), origin (str, the "
-            "original request), vars (dict shared by all steps). The code "
-            "cannot see the human or reading sides. "
-            "Assign the step's result to a variable named output.",
+            "original request), vars (dict shared by all steps), steps (dict "
+            "mapping previous node ids to their outputs), meta (dict), and "
+            "linked(type='') helper. The code cannot see the human or reading "
+            "sides. Assign the step's result to a variable named output.",
     "reading": "The reading side holds passages from books and research for "
                "a person to read, each under a '## title' line followed by "
                "its '[source: ...]' line. Keep the source lines intact.",
@@ -1107,7 +1900,27 @@ def cmd_edit(a):
         parts.append("# Tree context")
         for x in above:
             parts.append("## [%s] %s\n%s" % (LEVELS[x.level - 1], x.title, x.human))
+    # Include linked nodes' interfaces/concepts when building machine sides
+    if a.side in ("instructions", "code") and n.links:
+        linked_ctx = []
+        for tid, ty in n.links:
+            tn = st.nodes.get(tid)
+            if tn:
+                info = ["## Linked [%s] %s (%s)" % (tn.id, tn.title, ty)]
+                if tn.expects:
+                    info.append("expects: " + tn.expects)
+                if tn.produces:
+                    info.append("produces: " + tn.produces)
+                if tn.human.strip():
+                    info.append(tn.human.strip())
+                linked_ctx.append("\n".join(info))
+        if linked_ctx:
+            parts.append("# Linked branches\n" + "\n\n".join(linked_ctx))
     parts.append("# File: %s [%s]" % (n.title, LEVELS[n.level - 1]))
+    if n.expects:
+        parts.append("Contract expects: " + n.expects)
+    if n.produces:
+        parts.append("Contract produces: " + n.produces)
     for sec in SECTIONS:
         parts.append("## Current %s side\n%s" % (sec, getattr(n, sec) or "(empty)"))
     if a.source:
@@ -1116,13 +1929,15 @@ def cmd_edit(a):
     parts.append("# Request\n" + a.ask)
     prompt = "\n\n".join(parts)
     use_model(a)
+    step_model = (getattr(a, "model", None) or n.model
+                  or os.environ.get("TAWJIH_MODEL", ""))
     if a.backend == "dry":
         print(prompt)
         print("\n[dry run: %d characters; choose --backend to send it]"
               % len(prompt), file=sys.stderr)
         return
     try:
-        new = strip_fence(BACKENDS[a.backend](prompt)).strip("\n")
+        new = strip_fence(BACKENDS[a.backend](prompt, model=step_model)).strip("\n")
     except Exception as e:
         die("model call failed: %s: %s" % (type(e).__name__, e))
     old = getattr(n, a.side).strip("\n")
@@ -1148,6 +1963,8 @@ def cmd_edit(a):
             return
     bak = _backup(st, n)
     setattr(n, a.side, new)
+    if a.side in ("instructions", "code"):
+        n.built_sha = n.source_digest()
     st.save(n)
     print("saved %s (previous version: %s)" % (st.file_of(nid), bak))
 
@@ -1178,10 +1995,9 @@ def editor_command(arg):
     for ext in (".exe", ".cmd", ".bat"):
         if name.endswith(ext):
             name = name[:-len(ext)]
-    # Windows starts "code" through code.cmd: find the real file first
     cmd[0] = shutil.which(cmd[0]) or cmd[0]
     if name in VSCODE and "--new-window" not in cmd and "-n" not in cmd:
-        cmd.append("--new-window")      # closing that window ends the edit
+        cmd.append("--new-window")
     if name in NEEDS_WAIT and "--wait" not in cmd and "-w" not in cmd:
         cmd.append("--wait")
     return cmd, name
@@ -1202,11 +2018,7 @@ def _backup(st, n):
 def open_editors(st, nid, editor=None, force_reading=False, split=False,
                  discard=False):
     """Open one editor per side: human, machine, and reading when the file
-    has deposited-book passages. Changes are saved when the editors close.
-
-    With split (always on for VS Code), the machine side is opened as two
-    files, instructions.md and code.py, and the text sides as .md, so the
-    editor's own support for Python and Markdown applies."""
+    has deposited-book passages. Changes are saved when the editors close."""
     n = st.nodes[nid]
     cmd, ename = editor_command(editor)
     split = split or ename in VSCODE
@@ -1231,7 +2043,7 @@ def open_editors(st, nid, editor=None, force_reading=False, split=False,
         shutil.rmtree(str(wdir))
     wdir.mkdir(parents=True, exist_ok=True)
     enc = "utf-8-sig" if os.name == "nt" and not split else "utf-8"
-    files = []                      # the BOM helps Notepad, not code.py
+    files = []
     for name, fname, text in sides:
         f = wdir / fname
         f.write_text(text.strip("\n") + "\n", encoding=enc)
@@ -1294,6 +2106,8 @@ def open_editors(st, nid, editor=None, force_reading=False, split=False,
         bak = _backup(st, n)
         for k in changed:
             setattr(n, k, result[k])
+        if any(k in changed for k in ("instructions", "code")):
+            n.built_sha = n.source_digest()
         st.save(n)
         print("saved: %s (previous version: %s)" % (", ".join(changed), bak))
     else:
@@ -1427,15 +2241,7 @@ def cmd_filter(a):
     ldir, bid, info = _book(st, a.book)
     text = (ldir / (bid + ".txt")).read_text(encoding="utf-8")
     parent = st.resolve(a.parent) if a.parent else ""
-    rows = []
-
-    def listing(pid):
-        for n in st.children(pid):
-            rows.append(n)
-            listing(n.id)
-    if parent:
-        rows.append(st.nodes[parent])
-    listing(parent)
+    rows = [st.nodes[nid] for nid in st.subtree_ids(parent)]
     if not rows:
         die("the tree is empty; create files first")
     ok_targets = {n.id for n in rows}
@@ -1570,10 +2376,11 @@ def main():
     s = sub.add_parser("init", help="create a project")
     s.set_defaults(fn=cmd_init)
 
-    s = sub.add_parser("new", help="create a two-sided file")
+    s = sub.add_parser("new", help="create a three-sided file")
     s.add_argument("title")
     s.add_argument("--parent", help="id or number of the parent file")
     s.add_argument("--level", help="1-6 or name; default: parent level + 1")
+    s.add_argument("--model", help="preferred model for this file")
     s.add_argument("--open", action="store_true",
                    help="open the editors on the new file")
     s.set_defaults(fn=cmd_new)
@@ -1591,8 +2398,17 @@ def main():
                    "and code.py (always done for VS Code)")
     s.set_defaults(fn=cmd_open)
 
-    s = sub.add_parser("tree", help="show all trees (H/I/C/R = sides filled)")
+    s = sub.add_parser("tree", help="show trees or a branch (H/I/C/R = sides filled, ! = stale)")
+    s.add_argument("--branch", help="id or number of a branch to display")
     s.set_defaults(fn=cmd_tree)
+
+    s = sub.add_parser("search", help="search across trees or within a branch")
+    s.add_argument("query", help="text to search for")
+    s.add_argument("--branch", help="limit search to this branch id or number")
+    s.add_argument("--side", choices=["H", "I", "C", "R", "h", "i", "c", "r",
+                                      "human", "instructions", "code", "reading"],
+                   help="limit search to one side")
+    s.set_defaults(fn=cmd_search)
 
     s = sub.add_parser("show", help="print one file and its location")
     s.add_argument("ref")
@@ -1604,8 +2420,15 @@ def main():
     s.add_argument("--type", default="related")
     s.set_defaults(fn=cmd_link)
 
-    s = sub.add_parser("check", help="validate trees, links and paths")
+    s = sub.add_parser("check", help="validate trees, contracts, links and paths")
+    s.add_argument("--branch", help="limit check to a specific branch")
     s.set_defaults(fn=cmd_check)
+
+    s = sub.add_parser("tangle", help="export code sides as Python functions, one per step")
+    s.add_argument("--branch", help="id or number of a branch to export")
+    s.add_argument("--path", help="export code steps of a saved path in order")
+    s.add_argument("-o", "--out", help="output .py file path")
+    s.set_defaults(fn=cmd_tangle)
 
     s = sub.add_parser("path", help="define (with refs) or show a path")
     s.add_argument("name")
@@ -1661,6 +2484,31 @@ def main():
     s.add_argument("--no-cache", action="store_true",
                    help="do not keep the model's answers in cache/")
     s.set_defaults(fn=cmd_produce)
+
+    s = sub.add_parser("graph", help="draw the trees or a path (Mermaid, "
+                       "Markdown or Graphviz DOT)")
+    s.add_argument("--path", help="draw this saved path instead of the trees")
+    s.add_argument("--branch", help="draw only this branch of the trees")
+    s.add_argument("--format", choices=GRAPH_FORMATS, default="md",
+                   help="md (Mermaid in Markdown, shown as a picture on "
+                   "GitHub), mermaid, or dot")
+    s.add_argument("-o", "--out", help="write to this file")
+    s.set_defaults(fn=cmd_graph)
+
+    s = sub.add_parser("generate", help="propose a path from contracts or "
+                       "from a goal; accept it to save it")
+    s.add_argument("name")
+    s.add_argument("--start", help="first file (with --end): link by contracts")
+    s.add_argument("--end", help="last file (with --start)")
+    s.add_argument("--goal", help="what the path should do: a model proposes it")
+    s.add_argument("--scope", help="only files under this branch")
+    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--model", help="model name (default: TAWJIH_MODEL)")
+    s.add_argument("--accept", action="store_true",
+                   help="turn the reviewed proposal into a path")
+    s.add_argument("--replace", action="store_true",
+                   help="with --accept: overwrite a path of the same name")
+    s.set_defaults(fn=cmd_generate)
 
     s = sub.add_parser("import", help="split a text file on '#' headings into child "
                        "files (human side), without a model")

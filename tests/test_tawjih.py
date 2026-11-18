@@ -23,8 +23,11 @@ class Base(unittest.TestCase):
         self.prompts = []
         self.replies = []
 
-        def fake(prompt):
+        self.models = []
+
+        def fake(prompt, model=""):
             self.prompts.append(prompt)
+            self.models.append(model)
             return self.replies.pop(0) if self.replies else "ok"
         tawjih.BACKENDS["fake"] = fake
         self.cli("init")
@@ -433,7 +436,7 @@ class CacheAndResume(Base):
     def test_resume_after_a_failed_model_call(self):
         calls = []
 
-        def flaky(prompt):
+        def flaky(prompt, model=""):
             calls.append(prompt)
             if len(calls) == 2:
                 raise RuntimeError("HTTP 503")
@@ -526,6 +529,281 @@ class CacheAndResume(Base):
         self.assertIn("sent to the model: %d characters of instructions in "
                       "2 step(s)" % (len("استخرج العدد") + len("اشرح النتيجة")),
                       out)
+
+
+class Contracts(Base):
+    """expects / produces, after the fixes."""
+
+    def setUp(self):
+        super().setUp()
+        self.make_path()
+        self.first = self.store().resolve("1.1.1")
+        self.fill("1.1.1", produces="json(n)")
+        self.fill("2", expects="json(n)",
+                  code="import json\noutput = str(json.loads(input)['n'] * 2)")
+
+    def go(self, *extra, replies=()):
+        self.prompts.clear()
+        self.replies = list(replies)
+        return self.cli("produce", "p", "--input", "x", "--backend", "fake",
+                        "--allow-code", *extra)
+
+    def cached(self):
+        d = self.root / "cache"
+        return list(d.glob("*.json")) if d.is_dir() else []
+
+    def test_fenced_or_wrapped_json_is_accepted_and_passed_on_bare(self):
+        for answer in ('```json\n{"n": 21}\n```',
+                       'Sure! Here it is: {"n": 21} Hope this helps.'):
+            code, out, err = self.go(replies=[answer, "done"])
+            self.assertEqual((code, out.strip()), (0, "done"), err)
+            self.assertIn("# Input\n42", self.prompts[1])
+
+    def test_rejected_answer_is_not_kept_and_the_hint_names_the_step(self):
+        code, _, err = self.go(replies=['{"m": 1}'])
+        self.assertEqual(code, 1)
+        self.assertIn("missing JSON key(s): n", err)
+        self.assertIn("--resume --redo 1.1.1", err)
+        self.assertEqual(self.cached(), [])
+        code, out, _ = self.go("--resume", replies=['{"n": 1}', "done"])
+        self.assertEqual((code, len(self.prompts)), (0, 2))
+
+    def test_input_contract_failure_names_the_step_that_fed_it(self):
+        self.fill("1.1.1", produces="")
+        code, _, err = self.go(replies=["no json here"])
+        self.assertEqual(code, 1)
+        self.assertIn("input contract", err)
+        self.assertIn("--redo 1.1.1", err)
+
+    def test_unknown_contract_is_reported_not_ignored(self):
+        self.fill("2", expects="jsno(n)")
+        code, out, _ = self.cli("check")
+        self.assertEqual(code, 1)
+        self.assertIn("unknown expects contract 'jsno(n)'", out)
+        code, _, err = self.go(replies=['{"n": 1}'])
+        self.assertEqual(code, 1)
+        self.assertIn("unknown contract", err)
+
+    def test_text_accepts_any_output_and_key_mismatch_is_found(self):
+        self.fill("2", expects="text")
+        self.assertEqual(self.cli("check")[0], 0)
+        self.fill("2", expects="json(n, m)")
+        code, out, _ = self.cli("check")
+        self.assertEqual(code, 1)
+        self.assertIn("expects keys m", out)
+
+
+class ModelChoice(Base):
+    def setUp(self):
+        super().setUp()
+        self._env = os.environ.pop("TAWJIH_MODEL", None)
+        self.make_path()
+        self.fill("1.1.1", model="header-model")
+
+    def tearDown(self):
+        os.environ.pop("TAWJIH_MODEL", None)
+        if self._env is not None:
+            os.environ["TAWJIH_MODEL"] = self._env
+        super().tearDown()
+
+    def test_command_line_beats_header_beats_environment(self):
+        os.environ["TAWJIH_MODEL"] = "env-model"
+        args = ("produce", "p", "--input", "x", "--backend", "fake",
+                "--allow-code", "--no-cache")
+        self.replies = ["21", "done"]
+        self.assertEqual(self.cli(*args)[0], 0)
+        self.assertEqual(self.models, ["header-model", "env-model"])
+        self.models.clear()
+        self.replies = ["21", "done"]
+        self.assertEqual(self.cli(*args, "--model", "cli-model")[0], 0)
+        self.assertEqual(self.models, ["cli-model", "cli-model"])
+
+
+class Steps(Base):
+    def setUp(self):
+        super().setUp()
+        self.tree()
+        for name in ("a", "b", "c"):
+            self.cli("new", name, "--parent", "2")
+        st = self.store()
+        self.a, self.b, self.c = (st.resolve(r) for r in ("2.1", "2.2", "2.3"))
+        self.fill("2.1", code="output = 'A'")
+        self.fill("2.3", code="output = 'C'")
+
+    def run_path(self, *words):
+        return self.cli("produce", "s", *words, "--input", "x", "--backend",
+                        "fake", "--allow-code")
+
+    def test_upstream_outputs_are_readable_by_id_or_number(self):
+        self.fill("2.2", code="output = steps[%r] + steps.get('2.1')" % self.a)
+        code, out, err = self.run_path("2.1", "TO", "2.2")
+        self.assertEqual((code, out.strip()), (0, "AA"), err)
+
+    def test_reading_a_file_that_is_not_upstream_is_an_error(self):
+        self.fill("2.2", code="output = str(steps.get(%r))" % self.c)
+        code, _, err = self.run_path("2.1", "TO", "2.2", "/", "2.1", "TO",
+                                     "2.3")
+        self.assertEqual(code, 1)
+        self.assertIn("not upstream of this step", err)
+
+    def test_linked_gives_an_output_only_when_it_is_upstream(self):
+        st = self.store()
+        n = st.nodes[self.b]
+        n.links = [(self.a, "uses"), (self.c, "uses")]
+        n.code = "output = repr([(l['title'], l['output']) for l in linked()])"
+        st.save(n)
+        code, out, err = self.run_path("2.1", "TO", "2.2", "/", "2.1", "TO",
+                                       "2.3")
+        self.assertEqual(code, 0, err)
+        self.assertIn("('a', 'A'), ('c', None)", out)
+
+
+class Tangle(Base):
+    def test_each_code_step_becomes_a_working_function(self):
+        self.make_path()
+        self.fill("2.1", code='text = """two\nlines"""\noutput = text + input')
+        code, out, err = self.cli("tangle", "--path", "p", "-o",
+                                  str(self.root / "mod.py"))
+        self.assertEqual(code, 0, err)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mod", self.root / "mod.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        st = self.store()
+        names = [s[0] for s in mod.STEPS]
+        self.assertEqual(names, [st.resolve("2"), st.resolve("2.1")])
+        double = getattr(mod, "step_" + st.resolve("2"))
+        shared = {}
+        self.assertEqual(double("21", vars=shared), "42")
+        self.assertEqual(shared["n"], 21)
+        multi = getattr(mod, "step_" + st.resolve("2.1"))
+        self.assertEqual(multi("!"), "two\nlines!")
+
+
+class Graph(Base):
+    def setUp(self):
+        super().setUp()
+        self.make_path()
+        st = self.store()
+        self.ids = {r: st.resolve(r) for r in ("1.1.1", "2", "2.1")}
+
+    def test_path_drawing(self):
+        self.cli("path", "q", "1.1.1", "TO", "2", "IF", "ok", "/",
+                 "2", "AMONG", "2.1", "1")
+        code, out, err = self.cli("graph", "--path", "q", "--format",
+                                  "mermaid")
+        self.assertEqual(code, 0, err)
+        i = self.ids
+        self.assertIn("flowchart LR", out)
+        self.assertIn('n_%s ==>|"IF ok"| n_%s' % (i["1.1.1"], i["2"]), out)
+        self.assertIn('n_%s -.->|"AMONG"| n_%s' % (i["2"], i["2.1"]), out)
+        self.assertEqual(out.count("subgraph"), 2)
+        code, dot, _ = self.cli("graph", "--path", "q", "--format", "dot")
+        self.assertIn('n_%s -> n_%s [label="IF ok", penwidth=2.5];'
+                      % (i["1.1.1"], i["2"]), dot)
+        self.assertEqual(dot.count("subgraph cluster_"), 2)
+
+    def test_trees_drawing_marks_stale_files_and_writes_markdown(self):
+        self.fill("2", built_sha="0" * 16)          # human changed since
+        code, out, err = self.cli("graph", "-o", str(self.root / "g.md"))
+        self.assertEqual(code, 0, err)
+        md = (self.root / "g.md").read_text(encoding="utf-8")
+        self.assertTrue(md.startswith("# Tawjih network: the trees"))
+        self.assertIn("```mermaid\nflowchart TD", md)
+        self.assertIn("class n_%s stale" % self.ids["2"], md)
+        self.assertIn("STALE", md)
+
+
+class Generate(Base):
+    def setUp(self):
+        super().setUp()
+        self.make_path()
+        self.fill("1.1.1", produces="json(n)")
+        self.fill("2", expects="json(n)", produces="json(m)",
+                  code="import json\n"
+                       "output = json.dumps({'m': json.loads(input)['n'] * 2})")
+        self.fill("2.1", expects="json(m)")
+
+    def test_route_by_contracts_then_accept(self):
+        code, out, err = self.cli("generate", "g", "--start", "1.1.1",
+                                  "--end", "2.1")
+        self.assertEqual(code, 0, err)
+        prop = self.root / "paths" / "g.proposed"
+        self.assertTrue(prop.is_file())
+        self.assertFalse((self.root / "paths" / "g.path").exists())
+        st = self.store()
+        self.assertIn("%s TO %s THROUGH %s" % (
+            st.resolve("1.1.1"), st.resolve("2.1"), st.resolve("2")),
+            prop.read_text(encoding="utf-8"))
+        self.assertEqual(self.prompts, [])           # no model involved
+        code, out, err = self.cli("generate", "g", "--accept")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(prop.exists())
+        self.replies = ['{"n": 21}', "done"]
+        code, out, _ = self.cli("produce", "g", "--input", "x", "--backend",
+                                "fake", "--allow-code")
+        self.assertEqual((code, out.strip()), (0, "done"))
+
+    def test_no_route_explains_why(self):
+        self.fill("2", produces="")
+        code, _, err = self.cli("generate", "g", "--start", "1.1.1",
+                                "--end", "2.1")
+        self.assertEqual(code, 1)
+        self.assertIn("no chain of files", err)
+
+    def test_model_proposal_is_checked_and_needs_accepting(self):
+        st = self.store()
+        a, b, c = (st.resolve(r) for r in ("1.1.1", "2", "2.1"))
+        self.replies = ["```\n%s TO %s\n%s TO %s\n```" % (a, b, b, c)]
+        code, out, err = self.cli("generate", "g", "--goal", "double it",
+                                  "--backend", "fake")
+        self.assertEqual(code, 0, err)
+        self.assertIn("double it", self.prompts[0])
+        self.assertIn("expects json(n)", self.prompts[0])
+        self.assertFalse((self.root / "paths" / "g.path").exists())
+        self.assertEqual(self.cli("generate", "g", "--accept")[0], 0)
+        # same name again: needs --replace
+        self.replies = ["%s TO %s" % (a, b)]
+        self.cli("generate", "g", "--goal", "again", "--backend", "fake")
+        code, _, err = self.cli("generate", "g", "--accept")
+        self.assertEqual(code, 1)
+        self.assertIn("--replace", err)
+        self.assertEqual(self.cli("generate", "g", "--accept",
+                                  "--replace")[0], 0)
+
+    def test_a_bad_proposal_is_kept_with_its_problems_and_refused(self):
+        st = self.store()
+        a, c = st.resolve("1.1.1"), st.resolve("2.1")
+        self.fill("2.1", expects="json(x)")
+        self.fill("1.1.1", produces="json(n)")
+        for answer, problem in (("%s TO %s TO %s" % (a, c, a), "loop"),
+                                ("%s TO %s" % (a, c), "expects keys x"),
+                                ("I would start with algebra.",
+                                 "unknown file 'I'")):
+            self.replies = [answer]
+            code, _, err = self.cli("generate", "bad", "--goal", "x",
+                                    "--backend", "fake")
+            self.assertEqual(code, 1, answer)
+            self.assertIn(problem, err + (self.root / "paths" / "bad.proposed")
+                          .read_text(encoding="utf-8"))
+            self.assertEqual(self.cli("generate", "bad", "--accept")[0], 1)
+        self.assertFalse((self.root / "paths" / "bad.path").exists())
+
+    def test_dry_run_only_shows_the_request(self):
+        code, out, _ = self.cli("generate", "g", "--goal", "x")
+        self.assertEqual(code, 0)
+        self.assertIn("A TO B AND C", out)
+        self.assertFalse((self.root / "paths" / "g.proposed").exists())
+
+
+def test_license_identifier_is_valid():
+    assert "SPDX-License-Identifier: CC-BY-NC-SA-4.0\n" in open(
+        tawjih.__file__, encoding="utf-8").read()
+
+
+class License(unittest.TestCase):
+    def test_spdx(self):
+        test_license_identifier_is_valid()
 
 
 class Edit(Base):

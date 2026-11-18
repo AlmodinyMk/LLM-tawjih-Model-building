@@ -21,7 +21,7 @@ class DeskTests(unittest.TestCase):
         self.prompts = []
         self.replies = []
 
-        def fake(prompt):
+        def fake(prompt, model=""):
             self.prompts.append(prompt)
             return self.replies.pop(0) if self.replies else "ok"
         tawjih.BACKENDS["fake"] = fake
@@ -133,7 +133,7 @@ class DeskTests(unittest.TestCase):
         before = (getattr(sys.stdout, "real", sys.stdout),
                   getattr(sys.stderr, "real", sys.stderr))
 
-        def slow(prompt):
+        def slow(prompt, model=""):
             time.sleep(0.15)
             return "ok"
         tawjih.BACKENDS["fake"] = slow
@@ -198,6 +198,13 @@ class DeskTests(unittest.TestCase):
         for q, backend in ((" ", "fake"), ("hi", "dry")):
             with self.assertRaises(DeskError):
                 self.desk.chat(q, backend)
+
+    def test_saving_the_machine_side_clears_staleness(self):
+        self.desk.save_side(self.alg, "code", "output = 1")
+        self.desk.save_side(self.alg, "human", "changed afterwards")
+        self.assertTrue(tawjih.Store(self.dir).nodes[self.alg].is_stale())
+        self.desk.save_side(self.alg, "code", "output = 2")
+        self.assertFalse(tawjih.Store(self.dir).nodes[self.alg].is_stale())
 
     def test_check_code(self):
         self.assertIsNone(self.desk.check_code("output = 1"))

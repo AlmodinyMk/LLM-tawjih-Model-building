@@ -179,6 +179,8 @@ class Desk:
             raise DeskError("the text contains a '=== ... ===' marker line")
         bak = tawjih._backup(self.st, n)
         setattr(n, side, text)
+        if side in ("instructions", "code") and hasattr(n, "source_digest"):
+            n.built_sha = n.source_digest()     # machine side rebuilt now
         self.st.save(n)
         return "saved %s (previous version: history/%s)" % (side, bak.name)
 
