@@ -1,4 +1,4 @@
-# Tawjih specification (0.6.1)
+# Tawjih specification (0.6.2)
 
 This is the contract the program and the tests follow.
 
@@ -204,8 +204,15 @@ it as `paths/NAME.path`, refusing to replace an existing path without
 
 `deposit FILE [--part N|TITLE ...]` converts the source to text with `#`
 headings, by extension: `.txt` as is; `.md` (setext headings, code fences
-protected); `.tex` (sectioning commands, `\input`/`\include`, labelled
-theorem-like environments, `- ` items, mathematics kept); `.html` (`h1`-`h6`,
+protected); `.tex` (in this order: `\input`/`\include` read in except
+when commented out; code environments and `\verb` protected; comments
+removed; the document's own commands and `\newtheorem` environments read
+and expanded; the body taken after `\begin{document}` only when
+`\documentclass` opens the file, up to the last `\end{document}`;
+mathematics protected; then sectioning commands, labelled theorem-like
+environments, `- ` items, `[footnote: …]`, `[ref: …]`, `[cite: …]`,
+accents and special characters; a remaining command keeps its arguments,
+separated by spaces, or its name; mathematics and code put back last); `.html` (`h1`-`h6`,
 MathML replaced by its TeX annotation or `alttext`); `.xml`/`.ptx`
 (PreTeXt: divisions, `xi:include`, `<m>` → `$…$`, `<me>`/`<md>` → `$$…$$`,
 blocks numbered per chapter with one shared counter, `xref` replaced by the

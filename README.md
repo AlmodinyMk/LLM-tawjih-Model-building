@@ -1,7 +1,5 @@
 # tawjih — توجيه أوامر الآلة
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24332793.svg)](https://doi.org/10.5281/zenodo.24332793)
-
 A personal, file-based way to direct a language model. Knowledge is kept in
 trees of small files; each file has three sides; a *path* strings files
 together into a workflow that the model and your own code execute step by step.
@@ -10,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.6.1, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.6.2, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -199,7 +197,7 @@ exponents, arrows and fractions come out broken (`271³²¹` becomes `271321`).
 |---|---|
 | `.txt` | kept as it is; `#` lines are headings |
 | `.md` | `#` and underlined headings; `#` lines inside code blocks are protected |
-| `.tex` | `\part` … `\subsubsection` become headings, `\input` and `\include` are read in, theorem-like environments are labelled, lists become `- ` lines, mathematics stays LaTeX; pictures and comments are left out |
+| `.tex` | read in stages: code (`verbatim`, `lstlisting`, `minted`, `\verb`) is protected first, so an example document inside the text does not cut it short; `\input` and `\include` are read in unless commented out; the document's own `\newcommand`, `\def`, `\DeclareMathOperator` and `\newtheorem` are expanded; mathematics is protected and kept as LaTeX; then `\part` … `\subparagraph` become headings, theorem-like environments are labelled, lists become `- ` lines, footnotes stay in place, references become `[ref: …]` and `[cite: …]`, accents and special characters become text; pictures are left out |
 | `.html` | `<h1>`–`<h6>` become headings; scripts, styles and navigation are left out; MathML is replaced by its TeX |
 | `.xml`, `.ptx` | PreTeXt: chapters and sections become headings, `xi:include` files are read in, `<m>` and `<md>` become `$…$` and `$$…$$`, theorems, examples and figures get the book's numbers (Example 3.8) and references point to them; Sage cells, index entries and pictures are left out. Other XML: its text |
 
@@ -361,18 +359,6 @@ were driven by a script on a virtual display; see
 Not yet verified: real editors and the desktop windows used by a person, and
 real providers. The three network backends were checked only
 against a local mock server that imitates the response formats.
-
-## Paper and citation
-
-The working paper for this version describes the method, version 0.6.1 and a
-trial on two chapters of an open algebra textbook:
-
-> Almodiny, M. K. (2026). *Tawjih: Directing a Language Model with Three-Sided
-> Files and Cross-Tree Production Paths* (working paper, software version
-> 0.6.1). Zenodo. https://doi.org/10.5281/zenodo.24332793
-
-GitHub's "Cite this repository" button gives the same reference from
-[`CITATION.cff`](CITATION.cff).
 
 ## License
 

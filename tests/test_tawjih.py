@@ -991,13 +991,61 @@ $|H|$ divides $|G|$, and
         self.assertEqual(self.heads(text), ["# Groups", "## Definitions",
                                             "## Subgroups"])
         self.assertIn("Theorem (Lagrange).", text)
-        self.assertIn("\\[ a^{-1} \\circ a = e \\]", text)
+        self.assertIn("$$a^{-1} \\circ a = e$$", text)
         self.assertIn("[ref: t1]", text)
         self.assertIn("[cite: judson]", text)
         self.assertIn("- one", text)
         self.assertIn("$H \\le G$", text)
         self.assertNotIn("draw", text)
         self.assertNotIn("comment", text)
+        self.assertNotIn("newcommand", text)
+
+    def test_latex_examples_of_documents_do_not_cut_the_book(self):
+        text, _ = self.deposited("guide.tex", r"""\chapter{Basics}
+A document looks like this:
+\begin{verbatim}
+\documentclass{article}
+\begin{document}
+\section{Not a heading}
+\end{document}
+\end{verbatim}
+and \verb|\end{document}| ends it.
+\section{Later}
+Text after the examples.
+""")
+        self.assertEqual(self.heads(text), ["# Basics", "## Later"])
+        self.assertIn("Text after the examples.", text)
+        self.assertIn("```\n\\documentclass{article}", text)
+        self.assertIn("`\\end{document}`", text)
+
+    def test_latex_own_commands_theorems_and_protected_math(self):
+        self.write("skip.tex", "SHOULD NOT APPEAR")
+        text, _ = self.deposited("m.tex", r"""\documentclass{article}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\pair}[2]{\langle #1, #2\rangle}
+\newtheorem{thm}{Theorem}
+\DeclareMathOperator{\rank}{rank}
+\begin{document}
+% \input{skip}
+\begin{thm}[Main] For $x \in \R$ the \emph{pair} $\pair{x}{y}$ has $\rank = 2$.\end{thm}
+\begin{align}
+a &= b \label{e1} \\
+c &= d
+\end{align}
+Na\"ive \c{c}a, caf\'e---see\footnote{A note.} \ldots
+!!a{element} and \olfileid{sfr}{set}{sub}; 50\% \& more.
+\end{document}""")
+        self.assertIn("Theorem (Main).", text)
+        self.assertIn("$x \\in \\mathbb{R}$", text)
+        self.assertIn("$\\langle x, y\\rangle$", text)
+        self.assertIn("\\operatorname{rank}", text)
+        self.assertIn("a &= b", text)                    # & kept in mathematics
+        self.assertNotIn("\\label", text)
+        self.assertIn("Naïve ça, café—see [footnote: A note.] …", text)
+        self.assertIn("!!a element", text)
+        self.assertIn("sfr set sub", text)
+        self.assertIn("50% & more", text)
+        self.assertNotIn("SHOULD NOT APPEAR", text)
         self.assertNotIn("newcommand", text)
 
     def test_html_headings_mathml_and_skipped_parts(self):

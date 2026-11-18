@@ -29,13 +29,14 @@ import subprocess
 import sys
 import textwrap
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -2344,19 +2345,72 @@ def from_markdown(text, path=None):
 
 
 TEX_LEVELS = ["part", "chapter", "section", "subsection", "subsubsection",
-              "paragraph"]
-TEX_BLOCKS = ["theorem", "lemma", "proposition", "corollary", "definition",
-              "example", "remark", "proof", "exercise", "conjecture", "note",
-              "axiom", "claim", "fact", "problem", "solution"]
-TEX_DROP = ["tikzpicture", "figure", "comment", "thebibliography", "verbatim"]
+              "paragraph", "subparagraph"]
+TEX_BLOCKS = {"theorem": "Theorem", "lemma": "Lemma", "proposition": "Proposition",
+              "corollary": "Corollary", "definition": "Definition",
+              "example": "Example", "remark": "Remark", "proof": "Proof",
+              "exercise": "Exercise", "conjecture": "Conjecture",
+              "claim": "Claim", "fact": "Fact", "note": "Note",
+              "problem": "Problem", "solution": "Solution", "axiom": "Axiom",
+              "notation": "Notation", "question": "Question"}
+TEX_VERBATIM = r"verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|alltt"
+TEX_MATH = (r"equation|align|gather|multline|eqnarray|displaymath|flalign|"
+            r"alignat|IEEEeqnarray|dmath|math")
+TEX_DROP = r"tikzpicture|tikzcd|pspicture|picture|filecontents\*?|comment"
+TEX_LAYOUT = (r"itshape|bfseries|slshape|scshape|upshape|mdseries|rmfamily|"
+              r"sffamily|ttfamily|normalfont|em|it|bf|sl|sc|tt|rm|sf|tiny|"
+              r"scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|"
+              r"Huge|centering|raggedright|raggedleft|noindent|indent|par|"
+              r"newline|linebreak|pagebreak|nolinebreak|nopagebreak|clearpage|"
+              r"cleardoublepage|newpage|smallskip|medskip|bigskip|vfill|hfill|"
+              r"null|maketitle|tableofcontents|listoffigures|listoftables|"
+              r"appendix|frontmatter|mainmatter|backmatter|protect|relax|"
+              r"centerline|leavevmode|hline|toprule|midrule|bottomrule|"
+              r"addlinespace|big|Big|bigg|Bigg")
+TEX_NOTTEXT = (r"index|glossary|vspace|hspace|addvspace|setlength|addtolength|"
+               r"addtocounter|setcounter|stepcounter|refstepcounter|"
+               r"addcontentsline|markboth|markright|bibliographystyle|"
+               r"bibliography|usepackage|RequirePackage|documentclass|"
+               r"pagestyle|thispagestyle|pagenumbering|color|graphicspath|"
+               r"input|include|includeonly|hypersetup|geometry|setcopyright|"
+               r"selectlanguage|indexsee|cline|cmidrule")
+TEX_STYLE = (r"emph|textbf|textit|textsl|textsc|texttt|textsf|textrm|textup|"
+             r"textmd|textnormal|underline|uline|mbox|hbox|fbox|makebox|text|"
+             r"textsuperscript|textsubscript|enquote|textquote|"
+             r"MakeUppercase|MakeLowercase|uppercase|lowercase|"
+             r"foreignlanguage\s*\{[^}]*\}|textcolor\s*\{[^}]*\}|"
+             r"colorbox\s*\{[^}]*\}")
+TEX_ACCENTS = {"'": "\u0301", "`": "\u0300", "^": "\u0302", '"': "\u0308",
+               "~": "\u0303", "=": "\u0304", ".": "\u0307", "u": "\u0306",
+               "v": "\u030c", "H": "\u030b", "c": "\u0327", "k": "\u0328",
+               "d": "\u0323", "b": "\u0331", "r": "\u030a", "t": "\u0361"}
+TEX_WORDS = {"ldots": "\u2026", "dots": "\u2026", "textellipsis": "\u2026",
+             "LaTeXe": "LaTeX2e", "LaTeX": "LaTeX", "TeX": "TeX",
+             "XeLaTeX": "XeLaTeX", "LuaLaTeX": "LuaLaTeX", "today": "",
+             "slash": "/", "textbackslash": "\\", "ss": "\u00df",
+             "o": "\u00f8", "O": "\u00d8", "ae": "\u00e6", "AE": "\u00c6",
+             "oe": "\u0153", "OE": "\u0152", "aa": "\u00e5", "AA": "\u00c5",
+             "l": "\u0142", "L": "\u0141", "i": "\u0131", "j": "\u0237",
+             "dag": "\u2020", "ddag": "\u2021", "S": "\u00a7", "P": "\u00b6",
+             "copyright": "\u00a9", "pounds": "\u00a3", "texteuro": "\u20ac",
+             "euro": "\u20ac", "textregistered": "\u00ae",
+             "texttrademark": "\u2122", "textdegree": "\u00b0",
+             "textendash": "\u2013", "textemdash": "\u2014",
+             "textquoteleft": "\u2018", "textquoteright": "\u2019",
+             "textquotedblleft": "\u201c", "textquotedblright": "\u201d",
+             "quad": " ", "qquad": " ", "enspace": " ", "thinspace": " ",
+             "textvisiblespace": "\u2423", "textbar": "|", "textless": "<",
+             "textgreater": ">", "textasciitilde": "~", "textasciicircum": "^",
+             "textunderscore": "_", "checkmark": "\u2713"}
 
 
 def _tex_arg(s, i):
-    """The {...} group starting at s[i] (after optional spaces): (text, end)."""
+    """The {...} group starting at s[i] (after optional spaces): (text, end),
+    or (None, i) when there is none."""
     while i < len(s) and s[i] in " \t\n":
         i += 1
     if i >= len(s) or s[i] != "{":
-        return "", i
+        return None, i
     depth, j = 0, i
     while j < len(s):
         if s[j] == "\\":
@@ -2372,65 +2426,293 @@ def _tex_arg(s, i):
     return s[i + 1:], len(s)
 
 
-def from_latex(text, path=None, _seen=None):
-    """LaTeX: \\part ... \\subsubsection become headings, \\input and
-    \\include are read in, theorem-like environments get a label, lists
-    become '- ' lines; mathematics stays as written."""
-    seen = _seen if _seen is not None else set()
-    text = re.sub(r"(?<!\\)%.*", "", text)                 # comments
+def _tex_strip_comments(t):
+    """'%' to the end of the line, and with it the line break and the
+    leading spaces of the next line; '\\%' is a percent sign."""
+    return re.sub(r"(?<!\\)%[^\n]*\n?[ \t]*", "", t)
+
+
+def _tex_includes(text, path, seen):
+    """Read in the files named by \\input and \\include, recursively,
+    except on lines where they are commented out."""
+    path = Path(path).resolve()
+    seen.add(path)
 
     def include(m):
-        if not path:
-            return ""
-        f = (Path(path).parent / m.group(2)).resolve()
+        f = (path.parent / m.group(2).strip()).resolve()
         if not f.suffix:
             f = f.with_suffix(".tex")
         if f in seen or not f.is_file():
             return ""
-        seen.add(f)
-        return from_latex(f.read_text(encoding="utf-8", errors="replace"),
-                          f, seen)
-    text = re.sub(r"\\(input|include)\s*\{([^}]*)\}", include, text)
-    if _seen is not None:                                  # an included part
-        return text
-    m = re.search(r"\\begin\{document\}(.*?)(\\end\{document\}|$)", text, re.S)
-    if m:
-        text = m.group(1)
-    for env in TEX_DROP:
-        text = re.sub(r"\\begin\{%s\*?\}.*?\\end\{%s\*?\}" % (env, env), "",
-                      text, flags=re.S)
-    used = [k for k in TEX_LEVELS if re.search(r"\\%s\*?\s*[\[{]" % k, text)]
-    out, i = [], 0
-    pat = re.compile(r"\\(%s)\*?\s*(\[[^\]]*\])?\s*(?=\{)" % "|".join(TEX_LEVELS))
-    for m in pat.finditer(text):
+        return _tex_includes(f.read_text(encoding="utf-8", errors="replace"),
+                             f, seen)
+    lines = []
+    for line in text.split("\n"):
+        c = re.search(r"(?<!\\)%", line)
+        head, tail = (line[:c.start()], line[c.start():]) if c else (line, "")
+        lines.append(re.sub(r"\\(input|include)\s*\{([^}]*)\}", include, head)
+                     + tail)
+    return "\n".join(lines)
+
+
+def _tex_macros(s):
+    """Read the definitions of the document's own commands and theorem
+    environments, remove them, and return (text, macros, theorems)."""
+    macros, theorems, out, i = {}, {}, [], 0
+    defn = re.compile(r"\\(newcommand|renewcommand|providecommand|"
+                      r"DeclareRobustCommand|DeclareMathOperator|newtheorem|"
+                      r"def|NewDocumentCommand|RenewDocumentCommand|"
+                      r"ProvideDocumentCommand)\*?\s*")
+
+    def name_at(k):
+        nm, k2 = _tex_arg(s, k)
+        if nm is None:
+            m = re.match(r"\s*(\\[A-Za-z@]+)", s[k:])
+            nm, k2 = m.group(1), k + m.end()
+        return nm.strip().lstrip("\\"), k2
+
+    def opt(k):
+        m = re.match(r"\s*\[([^\]]*)\]", s[k:])
+        return (m.group(1), k + m.end()) if m else (None, k)
+
+    while True:
+        m = defn.search(s, i)
+        if not m:
+            out.append(s[i:])
+            break
+        out.append(s[i:m.start()])
+        kind, k = m.group(1), m.end()
+        try:
+            if kind == "def":
+                nm = re.match(r"\\([A-Za-z@]+)([^{]*)", s[k:])
+                body, k = _tex_arg(s, k + nm.end())
+                if body is None or "#" in nm.group(2):
+                    raise ValueError
+                macros[nm.group(1)] = (0, None, body)
+            elif kind == "newtheorem":
+                env, k = _tex_arg(s, k)
+                _, k = opt(k)
+                label, k = _tex_arg(s, k)
+                _, k = opt(k)
+                theorems[env.strip()] = label.strip()
+            elif kind.endswith("DocumentCommand"):
+                nm, k = name_at(k)
+                spec, k = _tex_arg(s, k)
+                body, k = _tex_arg(s, k)
+                macros[nm] = (len(re.findall(r"[mo]", spec or "")), None, body)
+            elif kind == "DeclareMathOperator":
+                nm, k = name_at(k)
+                body, k = _tex_arg(s, k)
+                macros[nm] = (0, None, "\\operatorname{%s}" % body)
+            else:
+                nm, k = name_at(k)
+                n, k = opt(k)
+                default, k = opt(k)
+                body, k = _tex_arg(s, k)
+                if body is None:
+                    raise ValueError
+                macros[nm] = (int(n or 0), default, body)
+            i = k
+        except (ValueError, AttributeError, TypeError):
+            out.append(m.group(0))              # not understood: left as is
+            i = m.end()
+    return "".join(out), macros, theorems
+
+
+def _tex_expand(t, macros, depth=0):
+    if depth > 5 or not macros:
+        return t
+    pat = re.compile(r"\\(%s)(?![A-Za-z@])" % "|".join(
+        re.escape(n) for n in sorted(macros, key=len, reverse=True)))
+    res, i = [], 0
+    for m in pat.finditer(t):
         if m.start() < i:
             continue
-        title, end = _tex_arg(text, m.end())
-        out.append(text[i:m.start()])
-        out.append(_heading(used.index(m.group(1)) + 1, title))
+        n, default, body = macros[m.group(1)]
+        k, args = m.end(), []
+        if default is not None:
+            o = re.match(r"\s*\[([^\]]*)\]", t[k:])
+            args.append(o.group(1) if o else default)
+            k += o.end() if o else 0
+        while len(args) < n:
+            g, k2 = _tex_arg(t, k)
+            if g is None:
+                one = re.match(r"\s*(\\[A-Za-z]+|\S)", t[k:])
+                if not one:
+                    break
+                g, k2 = one.group(1), k + one.end()
+            args.append(g)
+            k = k2
+        for a_i, a in enumerate(args, 1):
+            body = body.replace("#%d" % a_i, a)
+        res += [t[i:m.start()], body]
+        i = k
+    res.append(t[i:])
+    t2 = "".join(res)
+    return t2 if t2 == t else _tex_expand(t2, macros, depth + 1)
+
+
+def from_latex(text, path=None):
+    """LaTeX, in stages: code is protected first, then the document body is
+    taken (an example document inside the text does not cut it short),
+    \\input and \\include are read in, the document's own commands are
+    expanded, mathematics is protected, and only then are sections,
+    environments, references, text commands and special characters turned
+    into text; code and mathematics are put back last."""
+    kept = []
+    if path:
+        text = _tex_includes(text, path, set())
+
+    def keep(kind, body):
+        kept.append((kind, body))
+        return "\ue000%d\ue001" % (len(kept) - 1)
+
+    # 1. code, printed exactly as typed
+    def verb_env(m):
+        name, body = m.group(1), m.group(2)
+        if name == "minted":
+            body = re.sub(r"^\s*(\[[^\]]*\])?\s*\{[^}]*\}", "", body, count=1)
+        elif name.startswith(("lstlisting", "Verbatim", "BVerbatim",
+                              "LVerbatim")):
+            body = re.sub(r"^\s*\[[^\]]*\]", "", body, count=1)
+        return "\n\n" + keep("code", body.strip("\n")) + "\n\n"
+    s = re.sub(r"\\begin\{(%s)\}(.*?)\\end\{\1\}" % TEX_VERBATIM, verb_env,
+               text, flags=re.S)
+    s = re.sub(r"\\verb\*?([^A-Za-z*\s])(.*?)\1",
+               lambda m: keep("inline", m.group(2)), s)
+    s = re.sub(r"\\(lstinline|mintinline\s*\{[^}]*\})\s*(\[[^\]]*\])?"
+               r"(?:\{([^}]*)\}|([^A-Za-z\s{])(.*?)\4)",
+               lambda m: keep("inline", m.group(3) if m.group(3) is not None
+                              else m.group(5)), s)
+
+    # 2. comments; the document's own commands, defined in the preamble
+    # too; then the document body
+    s = _tex_strip_comments(s)
+    s, macros, theorems = _tex_macros(s)
+    dc = re.search(r"\\documentclass", s)
+    first = re.search(r"\\(begin\{(?!document)|part\b|chapter\b|section\b)", s)
+    if dc and not (first and first.start() < dc.start()):
+        b, e = s.find("\\begin{document}", dc.end()), s.rfind("\\end{document}")
+        if b >= 0:
+            s = s[b + len("\\begin{document}"):e if e > b else None]
+    else:
+        s = re.sub(r"\\(begin|end)\{document\}", "", s)
+
+    # 3. the document's own commands expanded
+    s = _tex_expand(s, macros)
+
+    # 4. mathematics, kept as LaTeX
+    def math(kind, body):
+        body = re.sub(r"\\label\s*\{[^}]*\}|\\nonumber\b|\\notag\b", "", body)
+        return keep(kind, body.strip())
+    s = re.sub(r"\\begin\{((?:%s)\*?)\}(.*?)\\end\{\1\}" % TEX_MATH,
+               lambda m: "\n" + math("display", "\\begin{%s}%s\\end{%s}" % (
+                   m.group(1), m.group(2), m.group(1))) + "\n", s, flags=re.S)
+    for pat, kind in ((r"\$\$(.+?)\$\$", "display"), (r"\\\[(.+?)\\\]", "display"),
+                      (r"\\\((.+?)\\\)", "math"),
+                      (r"(?<!\\)\$(.+?)(?<!\\)\$", "math")):
+        s = re.sub(pat, lambda m, k=kind: (("\n%s\n" if k == "display" else "%s")
+                                           % math(k, m.group(1))), s, flags=re.S)
+
+    # 5. sections
+    used = [k for k in TEX_LEVELS if re.search(r"\\%s\*?\s*[\[{]" % k, s)]
+    out, i = [], 0
+    for m in re.finditer(r"\\(%s)\*?\s*(\[[^\]]*\])?\s*(?=\{)"
+                         % "|".join(TEX_LEVELS), s):
+        if m.start() < i:
+            continue
+        title, end = _tex_arg(s, m.end())
+        if title is None:
+            continue
+        out.append(s[i:m.start()])
+        out.append("\n\n\ue002%d %s\ue003\n\n" % (
+            min(6, used.index(m.group(1)) + 1), " ".join(title.split())))
         i = end
-    text = "".join(out) + text[i:]
-    blocks = "|".join(TEX_BLOCKS)
-    text = re.sub(r"\\begin\{(%s)\*?\}(\[([^\]]*)\])?" % blocks,
-                  lambda m: "\n\n%s%s. " % (m.group(1).capitalize(),
-                                            " (%s)" % m.group(3)
-                                            if m.group(3) else ""), text)
-    text = re.sub(r"\\end\{(%s)\*?\}" % blocks, "\n\n", text)
-    text = re.sub(r"\\begin\{(itemize|enumerate|description)\}|"
-                  r"\\end\{(itemize|enumerate|description)\}", "\n", text)
-    text = re.sub(r"\\item\s*(\[[^\]]*\])?", lambda m: "\n- " + (
-        m.group(1)[1:-1] + " " if m.group(1) else ""), text)
-    text = re.sub(r"\\(label|index)\s*\{[^}]*\}", "", text)
-    text = re.sub(r"\\(eqref|ref|cref|Cref|autoref)\s*\{([^}]*)\}",
-                  r"[ref: \2]", text)
-    text = re.sub(r"\\cite[pt]?\s*(\[[^\]]*\])?\s*\{([^}]*)\}", r"[cite: \2]",
-                  text)
-    for _ in range(3):              # nested text styling
-        text = re.sub(r"\\(emph|textbf|textit|textsf|texttt|underline)"
-                      r"\s*\{([^{}]*)\}", r"\2", text)
-    text = text.replace("~", " ").replace("``", "\u201c").replace("''", "\u201d")
-    text = text.replace("---", "\u2014").replace("\\\\\n", "\n")
-    return _tidy(_guard_hashes_body(text))
+    s = "".join(out) + s[i:]
+
+    # 6. environments
+    blocks = dict(TEX_BLOCKS, **theorems)
+    s = re.sub(r"\\begin\{(%s)\}.*?\\end\{\1\}" % TEX_DROP, "", s, flags=re.S)
+    s = re.sub(r"\\includegraphics\s*(\[[^\]]*\])?\s*\{([^}]*)\}",
+               r"[image: \2]", s)
+    s = re.sub(r"\\caption\s*(\[[^\]]*\])?\s*\{", "\n\nCaption: {", s)
+    s = re.sub(r"\\begin\{(tabular\*?|tabularx|longtable|array|minipage|"
+               r"wrapfigure)\}\s*(\[[^\]]*\])?\s*(\{(?:[^{}]|\{[^{}]*\})*\})?"
+               r"(\s*\{(?:[^{}]|\{[^{}]*\})*\})?", "\n\n", s)
+
+    def begin(m):
+        base, title = m.group(1).rstrip("*"), m.group(3)
+        if base in blocks:
+            return "\n\n%s%s.\n" % (blocks[base], " (%s)" % title if title else "")
+        if base in ("itemize", "enumerate", "description", "list"):
+            return "\n"
+        if title and base not in ("figure", "table", "center", "quote",
+                                  "quotation", "verse"):
+            return "\n\n%s (%s).\n" % (base.capitalize(), title)
+        return "\n\n"
+    s = re.sub(r"\\begin\{([A-Za-z*]+)\}(\[([^\]]*)\])?", begin, s)
+    s = re.sub(r"\\end\{[A-Za-z*]+\}", "\n\n", s)
+    s = re.sub(r"\\item\s*\[([^\]]*)\]", r"\n- \1: ", s)
+    s = re.sub(r"\\item\b\s*", "\n- ", s)
+    s = re.sub(r"(?<!\\)&", " | ", s)
+
+    # 7. references and citations
+    s = re.sub(r"\\label\s*\{[^}]*\}", "", s)
+    s = re.sub(r"\\(eqref|ref|pageref|autoref|cref|Cref|nameref|vref|vpageref|"
+               r"labelcref|crefrange)\*?\s*\{([^}]*)\}(\s*\{([^}]*)\})?",
+               lambda m: "[ref: %s]" % (m.group(2) + (
+                   "\u2013" + m.group(4) if m.group(4) else "")), s)
+    s = re.sub(r"\\(cite|citep|citet|citealp|citealt|parencite|textcite|"
+               r"autocite|footcite|citeauthor|citeyear|nocite)\*?\s*"
+               r"(\[[^\]]*\]\s*){0,2}\{([^}]*)\}", r"[cite: \3]", s)
+    s = re.sub(r"\\href\s*\{([^}]*)\}\s*\{([^}]*)\}", r"\2 (\1)", s)
+    s = re.sub(r"\\(url|path)\s*\{([^}]*)\}", r"\2", s)
+
+    # 8. text commands
+    for _ in range(3):
+        s = re.sub(r"\\footnote\s*(\[[^\]]*\])?\s*\{([^{}]*(\{[^{}]*\}[^{}]*)*)\}",
+                   r" [footnote: \2]", s)
+    for _ in range(4):
+        s = re.sub(r"\\(%s)\*?\s*\{([^{}]*)\}" % TEX_STYLE, r"\2", s)
+    s = re.sub(r"\\(%s)\*?\s*(\[[^\]]*\])?((\s*\{[^{}]*\})*)" % TEX_NOTTEXT, " ", s)
+    s = re.sub(r"\\(%s)(?![A-Za-z])\s?" % TEX_LAYOUT, " ", s)
+
+    # 9. special characters and accents
+    def accent(m):
+        ch = m.group(2) or m.group(3)
+        ch = {"\\i": "i", "\\j": "j"}.get(ch, ch)
+        return unicodedata.normalize("NFC", ch + TEX_ACCENTS[m.group(1)])
+    s = re.sub(r"\\(['`^\"~=.]|[uvHckdbrt](?![A-Za-z]))\s*(?:\{(\\?[A-Za-z])\}|"
+               r"(\\[ij](?![A-Za-z])|[A-Za-z]))", accent, s)
+    s = re.sub(r"\\(%s)(?![A-Za-z])(\{\})?" % "|".join(
+        sorted(TEX_WORDS, key=len, reverse=True)), lambda m: TEX_WORDS[m.group(1)], s)
+    s = re.sub(r"\\([%&_#${}])", r"\1", s)
+    s = re.sub(r"\\[,;:! ]", " ", s)
+    s = re.sub(r"\\\\\*?(\[[^\]]*\])?", "\n", s)
+    s = s.replace("---", "\u2014").replace("--", "\u2013")
+    s = s.replace("``", "\u201c").replace("''", "\u201d")
+    s = re.sub(r"(?<!\\)~", " ", s)
+    # a command still left is the document's own: its arguments are kept
+    # (several are separated by spaces), or its name when it has none
+    for _ in range(3):
+        s = re.sub(r"\\([A-Za-z@]+)\*?\s*(\[[^\]]*\])?((\s*\{[^{}]*\})+)",
+                   lambda m: " ".join(re.findall(r"\{([^{}]*)\}", m.group(3))), s)
+    s = re.sub(r"\\([A-Za-z@]+)\*?", r"\1", s)
+    s = re.sub(r"(?<=[A-Za-z])\{(?=[A-Za-z])", " ", s)  # a!!a{word}: no gluing
+    s = re.sub(r"(?<!\\)[{}]", "", s)
+
+    # 10. code, mathematics and headings back in place
+    def put(m):
+        kind, body = kept[int(m.group(1))]
+        return {"code": "\n```\n%s\n```\n", "inline": "`%s`",
+                "display": "\n$$%s$$\n", "math": "$%s$"}[kind] % body
+    for _ in range(3):
+        s = re.sub("\ue000(\\d+)\ue001", put, s)
+    s = re.sub("\ue002(\\d) ([^\ue003]*)\ue003",
+               lambda m: "\n\n%s %s\n\n" % ("#" * int(m.group(1)),
+                                            m.group(2).strip()), s)
+    return _tidy(_guard_hashes_body(s))
+
 
 
 def _guard_hashes_body(text):
