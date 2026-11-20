@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #1d2433; --muted: #5b6475; --line: #d6dbe4; --bg: #ffffff;
+    --build: #0f766e; --build-bg: #e6f4f2;
+    --run: #1d4ed8; --run-bg: #e8effc;
+    --net: #7c3aed; --net-bg: #f1ebfd;
+    --ui: #334155; --ui-bg: #eef1f5;
+    --data: #92400e; --data-bg: #fbf1e6;
+    --warn: #b42318;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font-family: "Noto Sans Arabic", "DejaVu Sans", sans-serif; }
+  .page { width: 1600px; padding: 40px 48px 36px; }
+  h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: 0; }
+  h1 span { color: var(--muted); font-weight: 400; font-size: 22px; margin-right: 12px; }
+  .sub { color: var(--muted); font-size: 17px; margin: 6px 0 26px; }
+  code, .en { font-family: "DejaVu Sans Mono", monospace; direction: ltr; unicode-bidi: isolate; font-size: 0.86em; }
+  .layer { border-radius: 14px; padding: 16px 18px 18px; margin-bottom: 14px; }
+  .layer > .tag { font-size: 15px; font-weight: 700; margin-bottom: 10px; display: flex; gap: 10px; align-items: baseline; }
+  .layer > .tag small { font-weight: 400; color: var(--muted); font-size: 14px; }
+  .row { display: grid; gap: 12px; }
+  .box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 15px; line-height: 1.55; }
+  .box b { font-size: 16px; display: block; margin-bottom: 2px; }
+  .box .m { color: var(--muted); font-size: 14px; }
+  .ui   { background: var(--ui-bg); }   .ui > .tag { color: var(--ui); }
+  .net  { background: var(--net-bg); }  .net > .tag { color: var(--net); }
+  .data { background: var(--data-bg); } .data > .tag { color: var(--data); }
+  .middle { display: grid; grid-template-columns: 1fr 1.08fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .col { border-radius: 14px; padding: 16px 16px 18px; }
+  .col > .tag { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+  .build { background: var(--build-bg); } .build > .tag { color: var(--build); }
+  .run { background: var(--run-bg); } .run > .tag { color: var(--run); }
+  .steps { display: flex; flex-direction: column; gap: 0; }
+  .step { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; font-size: 15px; line-height: 1.5; }
+  .step .m { color: var(--muted); font-size: 13.5px; }
+  .arrow { text-align: center; font-size: 18px; line-height: 20px; height: 22px; color: var(--muted); }
+  .build .step { border-right: 4px solid var(--build); }
+  .run .step { border-right: 4px solid var(--run); }
+  .file { background: #fff; border: 2px solid var(--ink); border-radius: 14px; padding: 14px; }
+  .file .hdr { font-size: 14px; color: var(--muted); border-bottom: 1px dashed var(--line); padding-bottom: 8px; margin-bottom: 10px; line-height: 1.6; }
+  .file .title { font-size: 18px; font-weight: 700; margin-bottom: 6px; color: var(--ink); }
+  .sides { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
+  .side { border-radius: 9px; padding: 10px; font-size: 14px; line-height: 1.5; min-height: 118px; }
+  .side b { font-size: 15px; display: block; margin-bottom: 4px; }
+  .s-h { background: var(--build-bg); border: 1px solid #b7ded8; }
+  .s-m { background: var(--run-bg); border: 1px solid #bccdf3; }
+  .s-r { background: #f4f1e8; border: 1px solid #e2d8bd; }
+  .rule { margin-top: 12px; background: #fff7f6; border: 1px solid #f3c3bd; color: var(--warn); border-radius: 9px; padding: 9px 12px; font-size: 14.5px; font-weight: 600; line-height: 1.5; }
+  .levels { margin-top: 12px; font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .levels .chain { color: var(--ink); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; direction: ltr; justify-content: flex-end; }
+  .chip { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; padding: 3px 8px; border-radius: 999px; background: #fff; border: 1px solid var(--line); }
+  .chip.k { border-color: #c9b5f5; color: var(--net); font-weight: 700; }
+  .chip.p { border-color: #bccdf3; color: var(--run); }
+  .foot { display: flex; justify-content: space-between; color: var(--muted); font-size: 13.5px; margin-top: 4px; }
+.gov { background: #eef6ee; } .gov > .tag { color: #166534; }
+  .train { background: #fdf2f8; } .train > .tag { color: #9d174d; }
+  .s-e { background: #fdf2f8; border: 1px solid #f3c6dd; }
+  .flow { font-size: 14px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Tawjih — شكل البرنامج <span>توجيه أوامر الآلة · الإصدار 0.10.0</span></h1>
+  <div class="sub">المعرفة في أشجار من ملفات ثلاثية الوجوه، تُبنى منها لغة الآلة، وتُربط الملفات في مسارات تُنفَّذ خطوة خطوة، ويحفظ صدقَها التقييمُ والحوكمة وجسرُ تدريب اختياري</div>
+
+  <div class="layer ui">
+    <div class="tag">الواجهات <small>كلها تعمل على المشروع نفسه</small></div>
+    <div class="row" style="grid-template-columns: 1.15fr 1.45fr 0.95fr 1.15fr;">
+      <div class="box"><b>برنامج الترمنال <span class="en">tawjih.py</span></b>مع الحزمة <span class="en">tawjihlib/</span> · لينكس وويندوز · بلا مكتبات خارجية<div class="m">80 أمراً</div></div>
+      <div class="box"><b>نوافذ لينكس الأربع <span class="en">linux/tawjih_desk.py</span></b>الكتب والبحوث · المفهوم البشري · لغة الآلة · البحث والجدولة<div class="m">محادثة جانبية مع الذكاء الاصطناعي لا تغيّر المشروع · GTK أو Tkinter</div></div>
+      <div class="box"><b>المحررات</b><span class="en">open --editor vscode</span><div class="m">لغة الآلة ملفان: <span class="en">instructions.md</span> و<span class="en">code.py</span></div></div>
+      <div class="box"><b>البرامج الأخرى</b><span class="en">serve</span> · المسارات عبر HTTP برمز<div class="m"><span class="en">schedule</span> · <span class="en">trigger</span> من cron أو جدولة المهام</div></div>
+    </div>
+  </div>
+
+  <div class="middle">
+    <div class="col build">
+      <div class="tag">وقت البناء — من الكتاب إلى لغة الآلة</div>
+      <div class="steps">
+        <div class="step"><b>إيداع</b> كتاب من مصدره <span class="en">deposit</span><div class="m">نص، Markdown، LaTeX، HTML، PreTeXt · و<span class="en">ingest</span> لملفات Word وEPUB وPDF</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>فلترة</b> مقطعاً مقطعاً <span class="en">filter</span> ثم <span class="en">accept</span><div class="m">تقرير أولاً: ماذا يُحفظ ولأي ملف</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>المفهوم البشري</b> يُكتب ويُراجع<div class="m">يدوياً أو باقتراح نموذج <span class="en">edit</span> · و<span class="en">--stage</span> للمراجعة قبل الحفظ</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>لغة الآلة</b> تعليمات تكفي نفسها + كود<div class="m"><span class="en">open</span> · <span class="en">edit</span> · <span class="en">contract</span> · <span class="en">inherit</span> · <span class="en">template</span></div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>الأمثلة</b> أسئلة محلولة <span class="en">Q: A: E: BAD:</span><div class="m">split تدريب / تقييم · weight</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>القِدَم</b> <span class="en">built_sha</span> · <span class="en">review</span><div class="m">علامة <span class="en">!</span> إذا تغيّر مصدر بعد البناء، و<span class="en">confirm</span> بعد المراجعة</div></div>
+      </div>
+    </div>
+
+    <div class="col" style="background:#f7f8fa;">
+      <div class="tag" style="color:var(--ink)">الملف ثلاثي الوجوه <small style="font-weight:400;color:var(--muted)">(ووجه خامس اختياري)</small></div>
+      <div class="file">
+        <div class="title">ملف: موضوع</div>
+        <div class="hdr"><span class="en">id</span> تعريفة ثابتة · رقم مثل <span class="en">1.1.1.1.2</span> · <span class="en">aliases</span><br>
+          <span class="en">model</span> · عقود <span class="en">expects</span> / <span class="en">produces</span> · <span class="en">retries</span> · <span class="en">fallback</span> · <span class="en">approve</span> · <span class="en">each</span><br>
+          <span class="en">split</span> · <span class="en">weight</span> · <span class="en">tags</span> · <span class="en">locked</span></div>
+        <div class="sides">
+          <div class="side s-h"><b>المفهوم التعبيري البشري</b>شرح الموضوع بلغة الإنسان</div>
+          <div class="side s-m"><b>لغة الآلة</b>تعليمات للنموذج<br>+ كود بايثون</div>
+          <div class="side s-r"><b>القراءة</b>مقاطع من الكتب والبحوث مع مصدرها</div>
+          <div class="side s-e"><b>الأمثلة</b>أسئلة بأجوبتها الصحيحة والخاطئة، للتقييم والتدريب</div>
+        </div>
+        <div class="rule">وقت التشغيل لا يُرسَل إلا لغة الآلة. الوجوه الأخرى للبناء والتقييم والتدريب.</div>
+      </div>
+      <div class="levels">الأشجار حتى ستة مستويات:<br><span class="chain">عام ← قسم ← فصل ← موضوع ← فرع ← جزء</span><br>ومشروع واحد يحمل أشجاراً كثيرة، ويركّب أشجار مشروع آخر للقراءة فقط</div>
+    </div>
+
+    <div class="col run">
+      <div class="tag">وقت التشغيل — الإنتاج عبر الأشجار</div>
+      <div class="steps">
+        <div class="step"><b>المسار</b> ملفات من أي شجرة <span class="en">produce NAME</span><div class="m"><span class="en">--plan</span> يعرض الخطوات وحجمها قبل التشغيل</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>استخراج</b> لغة الآلة وحدها، و<b style="display:inline">إخفاء</b> البيانات الخاصة</div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>التنفيذ</b> الكود أولاً ثم النموذج<div class="chips"><span class="chip p">ollama</span><span class="chip p">openai</span><span class="chip p">anthropic</span><span class="chip p">manual</span><span class="chip p">dry</span></div><div class="m">«لكل» على عناصر قائمة · <span class="en">--sandbox</span> للكود</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>فحص العقود</b> على المدخل والناتج<div class="m">إعادة المحاولة · ملف بديل · موافقة إنسان</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>التمرير</b> والتفرّع والجمع والتسليم بين الأشجار</div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>النتيجة</b> مع سجل وتوثيق والرموز والكلفة<div class="m"><span class="en">--resume</span> · <span class="en">--redo</span> · <span class="en">stats</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer net">
+    <div class="tag">الشبكة <small>لغة المسار، ورسمه، وتوليده</small></div>
+    <div class="row" style="grid-template-columns: 1.15fr 1fr 1fr;">
+      <div class="box"><b>لغة المسار</b>كلمات ربط بين الملفات، وبالعربية أيضاً<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">AMONG</span><span class="chip k">THROUGH</span></div></div>
+      <div class="box"><b>رسم الشبكة <span class="en">graph</span></b>الأشجار أو مسار، بصيغة <span class="en">Markdown</span> أو <span class="en">Mermaid</span> أو <span class="en">Graphviz</span><div class="m">التسليم بين الأشجار سهم سميك · الملف القديم معلَّم</div></div>
+      <div class="box"><b>توليد المسار <span class="en">generate</span></b>بالعقود بلا نموذج، أو بهدف يقترحه نموذج<div class="m">اقتراح يُراجَع ثم <span class="en">--accept</span></div></div>
+    </div>
+  </div>
+
+  <div class="layer gov">
+    <div class="tag">التقييم والحوكمة <small>هل يتفوق المسار على سؤال النموذج مباشرة، وهل يمكن تتبع كل تغيير والرجوع عنه</small></div>
+    <div class="row" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="box"><b>التقييم <span class="en">eval</span></b>حالات من الأمثلة · نموذج حَكَم<div class="m"><span class="en">compare</span> مع سؤال النموذج مباشرة · <span class="en">baseline</span> · <span class="en">blame</span> · <span class="en">promote</span> · <span class="en">report</span></div></div>
+      <div class="box"><b>التتبع <span class="en">trace</span></b><span class="en">--impact</span> قبل التعديل · <span class="en">--output</span> رجوعاً إلى الكتب<div class="m"><span class="en">dataset</span> مع بيان ببصمات SHA-256</div></div>
+      <div class="box"><b>الإصدارات <span class="en">release</span></b>إنشاء · مقارنة · فحص · رجوع<div class="m"><span class="en">snapshot</span> · <span class="en">seal</span> / <span class="en">verify</span> (توقيع GnuPG اختياري)</div></div>
+      <div class="box"><b>الحماية</b><span class="en">lock</span> · <span class="en">review</span> · <span class="en">stage</span> · <span class="en">audit</span><div class="m"><span class="en">doctor</span> / <span class="en">repair</span> · <span class="en">format</span> · <span class="en">gc</span> · <span class="en">archive</span></div></div>
+    </div>
+  </div>
+
+  <div class="layer train">
+    <div class="tag">جسر التدريب <span class="en" style="font-weight:400">plugins/neural_bridge.py</span> <small>اختياري · العمل الثقيل لـ PyTorch وllama.cpp · خطة فقط إلا مع ‎--run</small></div>
+    <div class="row" style="grid-template-columns: 1fr;">
+      <div class="box flow"><span class="en">compile</span> الأمثلة ← بيانات SFT / تقييم / DPO &nbsp;←&nbsp; <span class="en">train</span> محوّل LoRA أو QLoRA (torch · unsloth · axolotl) &nbsp;←&nbsp; <span class="en">merge</span> &nbsp;←&nbsp; <span class="en">convert</span> إلى GGUF &nbsp;←&nbsp; <span class="en">quantize</span><br><span class="en">lora bind</span> ربط فرع بمحوّل (بالتعريفة، ويُورَث) &nbsp;←&nbsp; <span class="en">lora apply</span> يكتب <span class="en">model:</span> لكل خطوة &nbsp;←&nbsp; <span class="en">lora serve</span> (vLLM، Ollama) &nbsp;·&nbsp; <span class="en">fuse</span> &nbsp;·&nbsp; <span class="en">lineage</span> المحوّل ← البيانات ← الملفات</div>
+    </div>
+  </div>
+
+  <div class="layer data">
+    <div class="tag">المشروع على القرص <small>ملفات نصية عادية</small></div>
+    <div class="row" style="grid-template-columns: repeat(8, 1fr);">
+      <div class="box"><b class="en">files/</b>ملف لكل موضوع</div>
+      <div class="box"><b class="en">paths/</b>المسارات والحالات وخطوط الأساس</div>
+      <div class="box"><b class="en">library/</b>الكتب وتقارير الفلترة</div>
+      <div class="box"><b class="en">cache/</b>أجوبة النموذج المحفوظة</div>
+      <div class="box"><b class="en">runs/</b>السجلات والنتائج والتقييمات</div>
+      <div class="box"><b class="en">history/</b>توثيق التشغيل والنسخ السابقة</div>
+      <div class="box"><b class="en">releases/</b>إصدارات مختومة · <span class="en">archive/</span> <span class="en">stage/</span> <span class="en">templates/</span></div>
+      <div class="box"><b class="en">models/</b>المحوّلات وGGUF · <span class="en">datasets/</span></div>
+    </div>
+  </div>
+
+  <div class="foot"><span>Mohammed Khalid Almodiny · CC BY-NC-SA 4.0</span><span class="en">github.com/AlmodinyMk/LLM-tawjih-Model-building</span></div>
+</div>
+</body>
+</html>

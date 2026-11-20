@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #1d2433; --muted: #5b6475; --line: #d6dbe4; --bg: #ffffff;
+    --build: #0f766e; --build-bg: #e6f4f2;
+    --run: #1d4ed8; --run-bg: #e8effc;
+    --net: #7c3aed; --net-bg: #f1ebfd;
+    --ui: #334155; --ui-bg: #eef1f5;
+    --data: #92400e; --data-bg: #fbf1e6;
+    --warn: #b42318;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font-family: "DejaVu Sans", "Noto Sans Arabic", sans-serif; }
+  .page { width: 1600px; padding: 40px 48px 36px; }
+  h1 { margin: 0; font-size: 32px; font-weight: 700; }
+  h1 span { color: var(--muted); font-weight: 400; font-size: 20px; margin-left: 12px; }
+  .sub { color: var(--muted); font-size: 16.5px; margin: 6px 0 26px; }
+  code, .en { font-family: "DejaVu Sans Mono", monospace; font-size: 0.86em; }
+  .layer { border-radius: 14px; padding: 16px 18px 18px; margin-bottom: 14px; }
+  .layer > .tag { font-size: 15px; font-weight: 700; margin-bottom: 10px; display: flex; gap: 10px; align-items: baseline; }
+  .layer > .tag small { font-weight: 400; color: var(--muted); font-size: 13.5px; }
+  .row { display: grid; gap: 12px; }
+  .box { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14.5px; line-height: 1.55; }
+  .box b { font-size: 15.5px; display: block; margin-bottom: 2px; }
+  .box .m { color: var(--muted); font-size: 13.5px; }
+  .ui   { background: var(--ui-bg); }   .ui > .tag { color: var(--ui); }
+  .net  { background: var(--net-bg); }  .net > .tag { color: var(--net); }
+  .data { background: var(--data-bg); } .data > .tag { color: var(--data); }
+  .middle { display: grid; grid-template-columns: 1fr 1.08fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .col { border-radius: 14px; padding: 16px 16px 18px; }
+  .col > .tag { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+  .build { background: var(--build-bg); } .build > .tag { color: var(--build); }
+  .run { background: var(--run-bg); } .run > .tag { color: var(--run); }
+  .steps { display: flex; flex-direction: column; }
+  .step { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; font-size: 14.5px; line-height: 1.5; }
+  .step .m { color: var(--muted); font-size: 13px; }
+  .arrow { text-align: center; font-size: 18px; line-height: 20px; height: 22px; color: var(--muted); }
+  .build .step { border-left: 4px solid var(--build); }
+  .run .step { border-left: 4px solid var(--run); }
+  .file { background: #fff; border: 2px solid var(--ink); border-radius: 14px; padding: 14px; }
+  .file .hdr { font-size: 13.5px; color: var(--muted); border-bottom: 1px dashed var(--line); padding-bottom: 8px; margin-bottom: 10px; line-height: 1.6; }
+  .file .title { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+  .sides { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
+  .side { border-radius: 9px; padding: 10px; font-size: 13.5px; line-height: 1.5; min-height: 128px; }
+  .side b { font-size: 14.5px; display: block; margin-bottom: 4px; }
+  .s-h { background: var(--build-bg); border: 1px solid #b7ded8; }
+  .s-m { background: var(--run-bg); border: 1px solid #bccdf3; }
+  .s-r { background: #f4f1e8; border: 1px solid #e2d8bd; }
+  .rule { margin-top: 12px; background: #fff7f6; border: 1px solid #f3c3bd; color: var(--warn); border-radius: 9px; padding: 9px 12px; font-size: 14px; font-weight: 600; line-height: 1.5; }
+  .levels { margin-top: 12px; font-size: 13.5px; color: var(--muted); line-height: 1.6; }
+  .levels .chain { color: var(--ink); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { font-family: "DejaVu Sans Mono", monospace; font-size: 12.5px; padding: 3px 8px; border-radius: 999px; background: #fff; border: 1px solid var(--line); }
+  .chip.k { border-color: #c9b5f5; color: var(--net); font-weight: 700; }
+  .chip.p { border-color: #bccdf3; color: var(--run); }
+  .foot { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-top: 4px; }
+.gov { background: #eef6ee; } .gov > .tag { color: #166534; }
+  .train { background: #fdf2f8; } .train > .tag { color: #9d174d; }
+  .s-e { background: #fdf2f8; border: 1px solid #f3c6dd; }
+  .flow { font-size: 13.5px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Tawjih — how the program is built <span>machine command directing · version 0.10.0</span></h1>
+  <div class="sub">Knowledge lives in trees of three-sided files; machine language is built from it; paths connect files and run them step by step; evaluation, governance and an optional training bridge keep it honest.</div>
+
+  <div class="layer ui">
+    <div class="tag">Interfaces <small>all work on the same project</small></div>
+    <div class="row" style="grid-template-columns: 1.15fr 1.45fr 0.95fr 1.15fr;">
+      <div class="box"><b>Terminal program <span class="en">tawjih.py</span></b>with the package <span class="en">tawjihlib/</span> · Linux and Windows · standard library only<div class="m">80 commands</div></div>
+      <div class="box"><b>Four Linux windows <span class="en">linux/tawjih_desk.py</span></b>Books and research · Human concept · Machine language · Search and schedule<div class="m">a side conversation with the AI that cannot change the project · GTK or Tkinter</div></div>
+      <div class="box"><b>Editors</b><span class="en">open --editor vscode</span><div class="m">machine language as <span class="en">instructions.md</span> + <span class="en">code.py</span></div></div>
+      <div class="box"><b>Other programs</b><span class="en">serve</span> · paths over HTTP with a token<div class="m"><span class="en">schedule</span> · <span class="en">trigger</span> from cron or Task Scheduler</div></div>
+    </div>
+  </div>
+
+  <div class="middle">
+    <div class="col build">
+      <div class="tag">Build time — from the book to machine language</div>
+      <div class="steps">
+        <div class="step"><b>Deposit</b> a book from its source <span class="en">deposit</span><div class="m">text, Markdown, LaTeX, HTML, PreTeXt · <span class="en">ingest</span> for Word, EPUB, PDF</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Filter</b> passage by passage <span class="en">filter</span>, then <b style="display:inline">accept</b><div class="m">a report first: what to keep, for which file</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Human concept</b> written and reviewed<div class="m">by hand, or proposed by a model <span class="en">edit</span> · <span class="en">--stage</span> to review first</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Machine language</b> self-contained instructions + code<div class="m"><span class="en">open</span> · <span class="en">edit</span> · <span class="en">contract</span> · <span class="en">inherit</span> · <span class="en">template</span></div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Examples</b> worked questions <span class="en">Q: A: E: BAD:</span><div class="m">split train / eval · weight</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Staleness</b> <span class="en">built_sha</span> · <span class="en">review</span><div class="m">a <span class="en">!</span> when a source changes after the build; <span class="en">confirm</span> after review</div></div>
+      </div>
+    </div>
+
+    <div class="col" style="background:#f7f8fa;">
+      <div class="tag">The three-sided file <small style="font-weight:400;color:var(--muted)">(and an optional fifth side)</small></div>
+      <div class="file">
+        <div class="title">File: a topic</div>
+        <div class="hdr"><span class="en">id</span> stable · number such as <span class="en">1.1.1.1.2</span> · <span class="en">aliases</span><br>
+          <span class="en">model</span> · <span class="en">expects</span> / <span class="en">produces</span> contracts · <span class="en">retries</span> · <span class="en">fallback</span> · <span class="en">approve</span> · <span class="en">each</span><br>
+          <span class="en">split</span> · <span class="en">weight</span> · <span class="en">tags</span> · <span class="en">locked</span></div>
+        <div class="sides">
+          <div class="side s-h"><b>Human concept</b>the subject explained in human language</div>
+          <div class="side s-m"><b>Machine language</b>instructions for the model<br>+ Python code</div>
+          <div class="side s-r"><b>Reading</b>passages from books and papers, with their source</div>
+          <div class="side s-e"><b>Examples</b>questions with answers and wrong answers, for evaluation and training</div>
+        </div>
+        <div class="rule">At run time only machine language is sent. The other sides are for building, evaluating and training.</div>
+      </div>
+      <div class="levels">Trees of up to six levels:<br><span class="chain">general → section → chapter → topic → branch → part</span><br>one project holds many trees, and can mount another's, read-only</div>
+    </div>
+
+    <div class="col run">
+      <div class="tag">Run time — cross-tree production</div>
+      <div class="steps">
+        <div class="step"><b>Path</b> files from any tree <span class="en">produce NAME</span><div class="m"><span class="en">--plan</span> shows the steps and their size first</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Extract</b> only the machine side; <b style="display:inline">redact</b> private data</div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Execute</b> code first, then the model<div class="chips"><span class="chip p">ollama</span><span class="chip p">openai</span><span class="chip p">anthropic</span><span class="chip p">manual</span><span class="chip p">dry</span></div><div class="m">FOR EACH over a list · <span class="en">--sandbox</span> for code</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Check contracts</b> on input and output<div class="m">retries · fallback file · a person approves</div></div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Pass on</b>: branching, joining, handoffs between trees</div>
+        <div class="arrow">↓</div>
+        <div class="step"><b>Result</b> with a log, a record, tokens and cost<div class="m"><span class="en">--resume</span> · <span class="en">--redo</span> · <span class="en">stats</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer net">
+    <div class="tag">The network <small>the path language, drawing it, generating it</small></div>
+    <div class="row" style="grid-template-columns: 1.15fr 1fr 1fr;">
+      <div class="box"><b>Path language</b>connecting words between files, in Arabic too<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">AMONG</span><span class="chip k">THROUGH</span></div></div>
+      <div class="box"><b>Drawing <span class="en">graph</span></b>the trees or a path, as <span class="en">Markdown</span>, <span class="en">Mermaid</span> or <span class="en">Graphviz</span><div class="m">handoffs between trees are thick · stale files are marked</div></div>
+      <div class="box"><b>Generating <span class="en">generate</span></b>by contracts with no model, or from a goal a model proposes<div class="m">a proposal to review, then <span class="en">--accept</span></div></div>
+    </div>
+  </div>
+
+  <div class="layer gov">
+    <div class="tag">Evaluation and governance <small>does the path beat the model asked directly, and can every change be traced and undone</small></div>
+    <div class="row" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="box"><b>Evaluation <span class="en">eval</span></b>cases from the examples · a judge model<div class="m"><span class="en">compare</span> with the model asked directly · <span class="en">baseline</span> · <span class="en">blame</span> · <span class="en">promote</span> · <span class="en">report</span></div></div>
+      <div class="box"><b>Lineage <span class="en">trace</span></b><span class="en">--impact</span> before a change · <span class="en">--output</span> back to the books<div class="m"><span class="en">dataset</span> with a manifest of SHA-256 digests</div></div>
+      <div class="box"><b>Releases <span class="en">release</span></b>create · diff · verify · rollback<div class="m"><span class="en">snapshot</span> · <span class="en">seal</span> / <span class="en">verify</span> (GnuPG optional)</div></div>
+      <div class="box"><b>Guards</b><span class="en">lock</span> · <span class="en">review</span> · <span class="en">stage</span> · <span class="en">audit</span><div class="m"><span class="en">doctor</span> / <span class="en">repair</span> · <span class="en">format</span> · <span class="en">gc</span> · <span class="en">archive</span></div></div>
+    </div>
+  </div>
+
+  <div class="layer train">
+    <div class="tag">Training bridge <span class="en" style="font-weight:400">plugins/neural_bridge.py</span> <small>optional · the heavy work is done by PyTorch and llama.cpp · a plan unless --run</small></div>
+    <div class="row" style="grid-template-columns: 1fr;">
+      <div class="box flow"><span class="en">compile</span> examples → SFT / eval / DPO data &nbsp;→&nbsp; <span class="en">train</span> LoRA or QLoRA (torch · unsloth · axolotl) &nbsp;→&nbsp; <span class="en">merge</span> &nbsp;→&nbsp; <span class="en">convert</span> to GGUF &nbsp;→&nbsp; <span class="en">quantize</span><br><span class="en">lora bind</span> a branch to an adapter (by id, inherited) &nbsp;→&nbsp; <span class="en">lora apply</span> writes each step's <span class="en">model:</span> &nbsp;→&nbsp; <span class="en">lora serve</span> (vLLM, Ollama) &nbsp;·&nbsp; <span class="en">fuse</span> &nbsp;·&nbsp; <span class="en">lineage</span> adapter → data → files</div>
+    </div>
+  </div>
+
+  <div class="layer data">
+    <div class="tag">The project on disk <small>plain text files</small></div>
+    <div class="row" style="grid-template-columns: repeat(8, 1fr);">
+      <div class="box"><b class="en">files/</b>one file per topic</div>
+      <div class="box"><b class="en">paths/</b>paths, cases, baselines</div>
+      <div class="box"><b class="en">library/</b>books and filter reports</div>
+      <div class="box"><b class="en">cache/</b>kept model answers</div>
+      <div class="box"><b class="en">runs/</b>logs, results, evaluations</div>
+      <div class="box"><b class="en">history/</b>run records and earlier versions</div>
+      <div class="box"><b class="en">releases/</b>sealed zips · <span class="en">archive/</span> <span class="en">stage/</span> <span class="en">templates/</span></div>
+      <div class="box"><b class="en">models/</b>adapters, GGUF · <span class="en">datasets/</span></div>
+    </div>
+  </div>
+
+  <div class="foot"><span class="en">github.com/AlmodinyMk/LLM-tawjih-Model-building</span><span>Mohammed Khalid Almodiny · CC BY-NC-SA 4.0</span></div>
+</div>
+</body>
+</html>
