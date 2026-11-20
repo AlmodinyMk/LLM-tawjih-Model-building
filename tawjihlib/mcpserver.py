@@ -642,8 +642,11 @@ def _error(mid, code, message):
 def language_text():
     """The path language and file format sections of SPEC.md."""
     from pathlib import Path
-    spec = Path(__file__).resolve().parent.parent / "SPEC.md"
-    if not spec.is_file():
+    here = Path(__file__).resolve().parent
+    # beside the package when installed with pip, beside tawjih.py otherwise
+    spec = next((f for f in (here / "SPEC.md", here.parent / "SPEC.md")
+                 if f.is_file()), None)
+    if spec is None:
         return "SPEC.md is not next to the program"
     text = spec.read_text(encoding="utf-8")
     keep = []

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tawjih"
+dynamic = ["version"]
+description = "Direct a language model from trees of multi-sided knowledge files, with traceable paths, evaluation and human-approved AI assistance (English and Arabic)."
+readme = "docs/PYPI.md"
+requires-python = ">=3.11"
+license = "CC-BY-NC-SA-4.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Mohammed Khalid Almodiny" }]
+keywords = ["llm", "prompt engineering", "knowledge organization", "provenance",
+            "evaluation", "mcp", "arabic", "lora"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Natural Language :: Arabic",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/AlmodinyMk/LLM-tawjih-Model-building"
+Documentation = "https://github.com/AlmodinyMk/LLM-tawjih-Model-building#readme"
+Arabic = "https://github.com/AlmodinyMk/LLM-tawjih-Model-building/blob/main/README.ar.md"
+Paper = "https://doi.org/10.5281/zenodo.24332793"
+
+[project.scripts]
+tawjih = "tawjihlib.cli:main"
+
+[tool.setuptools]
+packages = ["tawjihlib"]
+py-modules = ["tawjih"]
+
+[tool.setuptools.package-data]
+tawjihlib = ["SPEC.md"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tawjihlib.core.__version__" }

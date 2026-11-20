@@ -1,0 +1,48 @@
+name: publish to PyPI
+# Runs when a release is published on GitHub (or by hand from the Actions
+# tab). It uses PyPI's trusted publishing: no token is stored anywhere. Set
+# it up once on https://pypi.org/manage/account/publishing/ with
+#   project: tawjih, owner: AlmodinyMk, repository: LLM-tawjih-Model-building,
+#   workflow: publish.yml, environment: pypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m unittest discover -s tests
+      - name: build
+        run: |
+          cp SPEC.md tawjihlib/SPEC.md
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - name: the version matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          v=$(python -c "import tawjihlib; print(tawjihlib.__version__)")
+          test "v$v" = "${{ github.event.release.tag_name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

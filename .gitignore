@@ -17,3 +17,7 @@ quarantine/
 models/
 datasets/
 requests/
+build/
+dist/
+*.egg-info/
+tawjihlib/SPEC.md
