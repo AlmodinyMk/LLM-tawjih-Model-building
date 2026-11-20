@@ -203,3 +203,75 @@ class Words(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Script(Base):
+    """The command do: management statements in English or Arabic."""
+    def setUp(self):
+        super().setUp()
+        self.tree()
+
+    def test_translation(self):
+        import tawjih
+        todo, problems = tawjih.translate_script(
+            'أنشئ "تحليل النص" تحت 1.1 / عدّل 1.1.1 جانب آلي بواسطة ollama '
+            '"اكتب التعليمات" / انقل 2 في 1 ; انسخ 1.1 تحت 2 / ادمج 2 في 1 '
+            '/ احذف 1.1.1 / افحص 1 / نظف\nمسار p 1 إلى 2 , 2 مرر 1.1\n'
+            '# a comment\nCREATE x UNDER 1 FROM tpl\n'
+            'EDIT 1 SIDE HUMAN USING llama3 shorter')
+        self.assertEqual(problems, [])
+        argv = [t[1] for t in todo]
+        self.assertEqual(argv[0], ["new", "تحليل النص", "--parent", "1.1"])
+        self.assertEqual(argv[1], ["edit", "1.1.1", "--side", "instructions",
+                                   "--ask", "اكتب التعليمات", "--backend",
+                                   "ollama", "--stage"])
+        self.assertEqual(argv[2], ["move", "2", "--to", "1"])
+        self.assertEqual(argv[3], ["copy", "1.1", "--to", "2"])
+        self.assertEqual(argv[4], ["merge", "1", "2"])
+        self.assertEqual(argv[5], ["rm", "1.1.1"])
+        self.assertEqual(argv[6], ["check", "--branch", "1"])
+        self.assertEqual(argv[7], ["gc"])
+        self.assertEqual(argv[8], ["path", "p", "1", "إلى", "2", ",", "2",
+                                   "مرر", "1.1"])
+        self.assertEqual(argv[9], ["scaffold", "tpl", "--title", "x",
+                                   "--parent", "1"])
+        self.assertEqual(argv[10][-5:], ["--backend", "dry", "--model",
+                                         "llama3", "--stage"])
+        self.assertEqual([t[2] for t in todo].count(True), 3)
+
+    def test_problems_stop_everything(self):
+        code, out, err = self.cli("do", "أنشئ جديد تحت 1 / 1.1 مرر 2 / "
+                                  "عدّل 1 جانب آلي", "--run")
+        self.assertNotEqual(code, 0)
+        self.assertIn("statement 2", err)
+        self.assertIn("EDIT needs what to ask", err)
+        self.assertEqual(len(self.store().nodes), 4)    # nothing ran
+
+    def test_plan_then_run_with_yes_for_removal(self):
+        code, out, _ = self.cli("do", "CREATE new UNDER 2 / DELETE 1.1.1")
+        self.assertIn("nothing was run", out)
+        self.assertIn("(needs --yes)", out)
+        self.assertEqual(len(self.store().nodes), 4)
+        code, out, err = self.cli("do", "CREATE new UNDER 2 / DELETE 1.1.1 / "
+                                  "CHECK", "--run")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.store().nodes), 5)        # not removed
+        self.cli("do", "DELETE 1.1.1", "--run", "--yes")
+        self.assertEqual(len(self.store().nodes), 4)
+
+    def test_a_failing_statement_stops_the_rest(self):
+        self.cli("lock", "2")
+        code, out, err = self.cli("do", "DELETE 2 / CREATE late", "--run",
+                                  "--yes")
+        self.assertNotEqual(code, 0)
+        self.assertIn("stopped at statement 1", err)
+        self.assertNotIn("late", [n.title for n in
+                                  self.store().nodes.values()])
+
+    def test_script_file(self):
+        f = self.root / "ops.txt"
+        f.write_text("# build\nCREATE Notes UNDER 1\nPATH p 1 TO 2\n",
+                     encoding="utf-8")
+        code, out, err = self.cli("do", "--file", str(f), "--run")
+        self.assertEqual(code, 0, err)
+        self.assertTrue((self.root / "paths" / "p.path").is_file())

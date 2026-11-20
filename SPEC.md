@@ -1,4 +1,4 @@
-# Tawjih specification (0.11.0)
+# Tawjih specification (0.12.0)
 
 This is the contract the program and the tests follow.
 
@@ -557,11 +557,34 @@ of their content keys), `path`, `input` or `input_file`, `backend`, `model`,
 `schedule --run-due` runs each job that is due once, with approval denied,
 and records the outcome. An `at` job is due once a day, after its time.
 
+## Management statements
+
+`do` reads statements separated by new lines, `/`, `;` or `؛` (outside
+quotes, which shlex rules govern; a line starting with `#` is skipped).
+Each starts with a verb and becomes one command:
+
+| Statement | Command |
+|---|---|
+| `CREATE t [UNDER\|INTO r] [FROM tpl]` [أنشئ، انشئ؛ تحت، في؛ من] | `new t --parent r`, or `scaffold tpl --title t --parent r` |
+| `EDIT r SIDE s [USING x] request` [عدّل، عدل؛ جانب؛ بواسطة] | `edit r --side s --ask request --backend B [--model x] --stage` (`--yes` instead of `--stage` with `do --yes`). x names a provider when it is one, else a model. s: HUMAN [بشري], MACHINE or INSTRUCTIONS [آلي، الي، تعليمات], CODE [كود], READING [قرائي], EXAMPLES [أمثلة] |
+| `MOVE r UNDER\|INTO d`, `COPY r UNDER\|INTO d` [انقل، انسخ] | `move r --to d`, `copy r --to d` |
+| `MERGE b INTO a` [ادمج] | `merge a b` |
+| `DELETE r` [احذف] | `rm r` (`--yes` with `do --yes`) |
+| `CHECK [r]` [افحص] | `check [--branch r]` |
+| `GC` [نظّف، نظف] | `gc` (`--yes` with `do --yes`) |
+| `PATH name ...` [مسار] | `path name ...` |
+
+Every statement is translated before any runs; one that is not understood
+stops all. Without `--run` only the translation is shown. With it, the
+commands run in order and the first failure stops the rest; `MERGE` is
+skipped without `--yes`. These words are a vocabulary of their own, not
+reserved in the path language.
+
 ## Program layout
 
 `tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
 copies every name of its modules into its own namespace and runs `main()`.
 The modules, in order: `core`, `providers`, `engine`, `commands`,
-`library`, `manage`, `outputs`, `evaluate`, `governance`, `cli`. A module
+`library`, `manage`, `outputs`, `evaluate`, `governance`, `script`, `cli`. A module
 imports only from those before it, by name, and only the standard library
 from outside; each lists its names in `__all__`.

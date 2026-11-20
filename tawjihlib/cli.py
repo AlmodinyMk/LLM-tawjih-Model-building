@@ -5,10 +5,12 @@ SPDX-License-Identifier: CC-BY-NC-SA-4.0
 """
 
 import argparse
+import shlex
 import sys
+from pathlib import Path
 
 from .core import (
-    DESCRIPTION, EXTRA, SECTIONS, SPLITS, __version__,
+    Die, die, DESCRIPTION, EXTRA, SECTIONS, SPLITS, __version__,
 )
 from .providers import (
     BACKENDS,
@@ -45,6 +47,9 @@ from .governance import (
     cmd_stage, cmd_template, cmd_trace, cmd_trigger, cmd_unalias,
     cmd_unlock, cmd_unmount, cmd_verify,
 )
+from .script import (
+    translate_script,
+)
 
 
 def main():
@@ -53,6 +58,54 @@ def main():
             s.reconfigure(encoding="utf-8")
         except Exception:
             pass
+    a = build_parser().parse_args()
+    rc = a.fn(a)
+    if isinstance(rc, int) and rc:
+        sys.exit(rc)
+
+
+def cmd_do(a):
+    """Management statements (CREATE, EDIT, MOVE, COPY, MERGE, DELETE,
+    CHECK, GC, PATH; in Arabic too), translated into commands. Without
+    --run it only shows them; DELETE, GC and MERGE also need --yes to
+    remove anything, and EDIT stages its proposal unless --yes."""
+    text = " ".join(a.statements)
+    if a.file:
+        text = Path(a.file).read_text(encoding="utf-8") + "\n" + text
+    if not text.strip():
+        die("give statements, or --file SCRIPT")
+    todo, problems = translate_script(text, a.backend, a.yes)
+    for line in problems:
+        print("problem: " + line, file=sys.stderr)
+    if problems:
+        die("nothing was run: %d statement(s) not understood" % len(problems))
+    parser = build_parser()
+    for k, (stmt, argv, destructive) in enumerate(todo, 1):
+        print("%d. %s\n   -> tawjih.py %s%s" % (
+            k, stmt, " ".join(shlex.quote(x) for x in argv),
+            "   (needs --yes)" if destructive and not a.yes else ""))
+    if not a.run:
+        print("nothing was run; add --run to run these in order")
+        return 0
+    for k, (stmt, argv, destructive) in enumerate(todo, 1):
+        if argv[0] == "merge" and not a.yes:
+            print("%d. skipped (MERGE removes a file; add --yes)" % k)
+            continue
+        print("== %d. %s" % (k, stmt))
+        sub = parser.parse_args(["-p", a.project] + argv)
+        try:
+            rc = sub.fn(sub)
+        except Die:                     # its message is already printed
+            die("stopped at statement %d (%s)" % (k, stmt))
+        except SystemExit as e:         # a command that exits by itself
+            rc = e.code or 0
+        if isinstance(rc, int) and rc:
+            die("stopped at statement %d (%s): exit status %d" % (k, stmt,
+                                                                   rc))
+    return 0
+
+
+def build_parser():
     p = argparse.ArgumentParser(prog="tawjih.py", description=DESCRIPTION)
     p.add_argument("-p", "--project", default=".", help="project folder")
     p.add_argument("--version", action="version",
@@ -770,12 +823,20 @@ def main():
     s.add_argument("--all", action="store_true", help="include the subtree")
     s.set_defaults(fn=cmd_read)
 
-    a = p.parse_args()
-    rc = a.fn(a)
-    if isinstance(rc, int) and rc:
-        sys.exit(rc)
+    s = sub.add_parser("do", help="management statements: CREATE, EDIT, "
+                       "MOVE, COPY, MERGE, DELETE, CHECK, GC, PATH (Arabic "
+                       "too); shown unless --run")
+    s.add_argument("statements", nargs="*")
+    s.add_argument("--file", help="a script of statements, one per line")
+    s.add_argument("--run", action="store_true", help="run them in order")
+    s.add_argument("--yes", action="store_true",
+                   help="let DELETE, GC and MERGE remove, and EDIT save")
+    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry",
+                   help="for EDIT, unless it says USING a provider")
+    s.set_defaults(fn=cmd_do)
+    return p
 
 
 __all__ = [
-    'main',
+    'build_parser', 'cmd_do', 'main',
 ]

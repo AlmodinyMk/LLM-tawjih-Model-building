@@ -9,7 +9,7 @@ beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.11.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.12.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -249,6 +249,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path; the format follows the `-o` extension (`.mmd`, `.dot`, `.gv`) unless given |
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
+| `do STATEMENTS [--file F] [--run] [--yes]` | management statements in English or Arabic, translated into commands (see [Management statements](#management-statements-do)) |
 | `lock`, `alias`, `review`, `stage`, `mount`, `sandbox`, `trace`, `release`, `snapshot`, `seal`, `verify`, `inherit`, `template`, `scaffold`, `gc`, `compact`, `format`, `archive`, `glossary`, `doctor`, `repair`, `schedule`, `trigger`, `pause`, `resume`, `cancel` | see [Governance](#governance-locks-reviews-releases-schedules) (0.10) |
 
 ## Managing a project
@@ -393,6 +394,35 @@ never reach training data; `weight: 2` makes them count more, and
 model asked directly on cases that matter to you, the work of building it
 did not pay. A handful of cases decides nothing, and a judge model has its
 own biases.
+
+## Management statements: `do`
+
+Several file operations can be written as statements, in English or
+Arabic, and run in order. `do` translates each one into the program's own
+command and shows the list; nothing runs without `--run`.
+
+```
+python tawjih.py do 'أنشئ "تحليل النص" تحت 1.1 / عدّل 1.1.1 جانب آلي "اكتب تعليمات قصيرة" / مسار p 1.1 إلى 1.1.1'
+python tawjih.py do --file ops.txt --run
+```
+
+| Statement | Command |
+|---|---|
+| `CREATE "title" [UNDER ref] [FROM template]` (أنشئ، تحت، من) | `new`, or `scaffold` from a template |
+| `EDIT ref SIDE side [USING provider\|model] request...` (عدّل، جانب، بواسطة) | `edit`, staged for review unless `--yes`. Sides: HUMAN (بشري), MACHINE (آلي), CODE (كود), READING (قرائي), EXAMPLES (أمثلة) |
+| `MOVE ref UNDER ref` / `COPY ref UNDER ref` (انقل، انسخ، تحت أو في) | `move` / `copy` |
+| `MERGE b INTO a` (ادمج، في) | `merge a b`: b's human and reading sides go to a, and b is removed |
+| `DELETE ref` (احذف) | `rm` |
+| `CHECK [ref]` (افحص) | `check` |
+| `GC` (نظّف) | `gc` |
+| `PATH name statements` (مسار) | `path`: the rest is the path language, with `,` between its statements |
+
+Statements are separated by a new line, `/`, `;` or `؛`; a line starting
+with `#` is a comment. Every statement is checked before any runs, and the
+first failure stops the rest. `DELETE`, `GC` and `MERGE` remove nothing
+without `--yes`. Numbers are read when each statement runs, so after a
+`MOVE` they may name other files: in scripts, use ids or aliases. These
+words are not words of the path language, so في and من stay free there.
 
 ## Governance: locks, reviews, releases, schedules
 
@@ -576,7 +606,7 @@ datasets/ compiled training data (neural bridge; git-ignored)
 The program itself is `tawjih.py`, which runs and imports the package
 `tawjihlib/`: `core` (file model, store, path language), `providers`,
 `engine` (code and path execution), `commands`, `library`, `manage`,
-`outputs`, `evaluate`, `governance` and `cli`. Each module imports only from
+`outputs`, `evaluate`, `governance`, `script` and `cli`. Each module imports only from
 the ones before it, and everything is reachable as `tawjih.NAME`. Keep the
 two together when you copy the program.
 
