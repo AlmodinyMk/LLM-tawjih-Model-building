@@ -274,8 +274,8 @@ def split_statements(tokens):
     """Statements on a command line are separated by ',' or '/'."""
     out, cur = [], []
     for t in tokens:
-        end = t in (",", "/") or t.endswith(",")
-        t = "" if t in (",", "/") else t.rstrip(",")
+        end = t in (",", "/", "؛", "،") or t.endswith((",", "؛", "،"))
+        t = "" if t in (",", "/", "؛", "،") else t.rstrip(",؛،")
         if t:
             cur.append(t)
         if end and cur:
@@ -303,6 +303,8 @@ def write_flow(store, name, flow):
 
 def edge_text(store, e):
     t = "%s %s" % (store.number(e["src"]), store.nodes[e["src"]].title)
+    if e.get("order"):
+        t += " (LINK: after it, without its output)"
     if e["among"]:
         t += " (if chosen)"
     if e["cond"]:
@@ -327,6 +329,7 @@ def plan_steps(store, flow):
                      "instructions": bool(ins.strip()),
                      "code": bool(code.strip()), "machine_sha": digest,
                      "instructions_chars": len(ins), "code_chars": len(code),
+                     "path": dict(flow.steps.get(nid, {})),
                      "from": [edge_text(store, e) for e in flow.incoming(nid)]})
     return plan
 
@@ -341,8 +344,15 @@ def print_plan(store, name, plan, out):
     for p in plan:
         kind = "+".join(k for k in ("instructions", "code") if p[k]) or "EMPTY"
         flags = []
-        if p["model"]:
-            flags.append("model=" + p["model"])
+        ps = p.get("path", {})
+        if ps.get("using") or p["model"]:
+            flags.append("model=" + (ps.get("using") or p["model"]))
+        for k in ("each", "approve", "retry", "pick"):
+            if ps.get(k):
+                flags.append("%s=%s" % (k.upper(), ps[k]))
+        if ps.get("until"):
+            flags.append("UNTIL %s%s" % ("NOT " if ps["until"][0] else "",
+                                         ps["until"][1]))
         if p["stale"]:
             flags.append("STALE")
         extra = ("  [%s]" % ", ".join(flags)) if flags else ""
@@ -481,8 +491,10 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
               "trees": trees, "cross_tree": len(trees) > 1, "handoffs": 0,
               "flow": [" ".join(l) for l in flow.lines],
               "connections": [{"from": e["src"], "to": e["dst"],
-                               "if": e["cond"], "among": e["among"]}
+                               "if": e["cond"], "among": e["among"],
+                               "order_only": bool(e.get("order"))}
                               for e in flow.edges],
+              "calls": list(flow.calls),
               "steps": plan, "status": "running", "log": str(logfile),
               "state": str(statefile),
               "result": "", "model": default_model,
@@ -539,12 +551,17 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             return condition_holds(outputs[e["src"]], word) != neg
         return True
 
-    def execute(p, n, prev):
+    def settings(p, n):
+        """This path's settings for the step; none for a fallback file."""
+        return flow.steps.get(n.id, {}) if n.id == p["id"] else {}
+
+    def execute(p, n, prev, note=""):
         """The step on its input, or with 'each' once per item of a JSON
         list (the input itself, or the list under that key); the outputs
         are passed on as {"items": [...]}."""
-        if not n.each:
-            return execute_one(p, n, prev)
+        each = settings(p, n).get("each") or n.each
+        if not each:
+            return execute_one(p, n, prev, note)
         obj, _ = _json_in(prev)
         if obj is None:
             try:
@@ -552,31 +569,33 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             except ValueError:
                 obj = None
         items = obj if isinstance(obj, list) else (
-            obj.get(n.each) if isinstance(obj, dict) and n.each != "yes"
+            obj.get(each) if isinstance(obj, dict) and each != "yes"
             else None)
         if not isinstance(items, list):
             raise StepFailure("each", ValueError(
                 "the input is not a JSON list%s" % (
-                    "" if n.each == "yes" else
-                    " and has no list under '%s'" % n.each)))
+                    "" if each == "yes" else
+                    " and has no list under '%s'" % each)))
         results = []
         for k, item in enumerate(items, 1):
             text = item if isinstance(item, str) else json.dumps(
                 item, ensure_ascii=False)
             print("  item %d of %d" % (k, len(items)), file=sys.stderr)
             log.append("#### Item %d of %d" % (k, len(items)))
-            out = execute_one(p, n, text)
+            out = execute_one(p, n, text, note)
             parsed, _ = _json_in(out)
             results.append(parsed if parsed is not None else out)
         return json.dumps({"items": results}, ensure_ascii=False)
 
-    def execute_one(p, n, prev):
+    def execute_one(p, n, prev, note=""):
         """Run the machine side of n on prev and return its checked output,
         or raise StepFailure. Model answers that break the contract are
         asked again, up to the retries allowed."""
         ins, code, _ = machine_side(n)
-        # --model on the command line > the file's model: header > TAWJIH_MODEL
-        step_model = model_override or n.model or default_model
+        ps = settings(p, n)
+        # --model > the path's USING > the file's model: > TAWJIH_MODEL
+        step_model = model_override or ps.get("using") or n.model or \
+            default_model
         p["model"] = step_model
         if n.expects:
             prev, cerr = conform(prev, n.expects, "input")
@@ -598,7 +617,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 print("  code skipped (pass --allow-code to execute it)",
                       file=sys.stderr)
         if ins.strip():
-            prompt = build_prompt(store, n, prev, code_out, text)
+            prompt = build_prompt(store, n, prev, code_out, text) + note
             print("  prompt: %d characters" % len(prompt), file=sys.stderr)
             log.append("### Prompt\n" + prompt)
             cfile = (cache_file(store, backend, step_model, prompt)
@@ -618,7 +637,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 log.append("(answer taken from the cache: %s)" % cfile.name)
             else:
                 allowed = retries if retries is not None else \
-                    int(n.retries or 0)
+                    ps.get("retry", int(n.retries or 0))
                 ask, problem = prompt, None
                 for attempt in range(allowed + 1):
                     if attempt:
@@ -694,14 +713,18 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
         if not incoming:
             prev, feeders = text, []
         else:
-            feeders = [e["src"] for e in incoming if active(e)]
-            if not feeders:
+            live = [e for e in incoming if active(e)]
+            if not live:
                 p["status"] = "skipped"
                 print(head + "  (skipped: no active connection)",
                       file=sys.stderr)
                 log.append("skipped: no active connection")
                 continue
-            if len(feeders) == 1:
+            feeders = [e["src"] for e in live if not e.get("order")]
+            p["after"] = [e["src"] for e in live if e.get("order")]
+            if not feeders:              # only LINKs: the original request
+                prev = text
+            elif len(feeders) == 1:
                 prev = outputs[feeders[0]]
             else:
                 prev = "\n\n".join("## from: %s [%s]\n%s" % (
@@ -714,7 +737,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 record["handoffs"] += 1
                 print("  handoff from tree: %s" % store.ancestors(f)[0].title,
                       file=sys.stderr)
-        if n.approve in ("before", "both"):
+        ps = flow.steps.get(n.id, {})
+        approve_when = n.approve
+        if ps.get("approve") and approve_when not in ("before", "both"):
+            approve_when = "both" if approve_when == "after" else "before"
+        if approve_when in ("before", "both"):
             ok, _ = _ask_approval(n, "before", prev, approve)
             if not ok:
                 fail(p, n, "approval", ValueError(
@@ -724,6 +751,26 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                     outputs)
         try:
             out = execute(p, n, prev)
+            until = ps.get("until")
+            for attempt in range(ps.get("retry", 0) if until else 0):
+                if condition_holds(out, until[1]) != until[0]:
+                    break
+                record["usage"]["retries"] += 1
+                print("  UNTIL %s%s not met; trying again (%d of %d)" % (
+                    "NOT " if until[0] else "", until[1], attempt + 1,
+                    ps["retry"]), file=sys.stderr)
+                log.append("(UNTIL %s%s not met; tried again)" % (
+                    "NOT " if until[0] else "", until[1]))
+                out = execute(p, n, prev, note=(
+                    "\n\n## Your previous answer was not accepted\nIt must "
+                    "%s'%s'. Answer again.\n\nPrevious answer:\n%s" % (
+                        "not satisfy " if until[0] else "satisfy ",
+                        until[1], out)))
+            if until and condition_holds(out, until[1]) == until[0]:
+                raise StepFailure("UNTIL", ValueError(
+                    "the output still does not meet UNTIL %s%s after %d "
+                    "tries" % ("NOT " if until[0] else "", until[1],
+                               ps["retry"] + 1)))
         except StepFailure as sf:
             fb = store.nodes.get(n.fallback) if n.fallback else None
             if fb is None or not (fb.instructions.strip() or fb.code.strip()):
@@ -739,7 +786,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             except StepFailure as sf2:
                 fail(p, n, sf2.what + " (in the fallback %s)" % fb.title,
                      sf2.err, outputs)
-        if n.approve in ("after", "both"):
+        if approve_when in ("after", "both"):
             ok, edited = _ask_approval(n, "after", out, approve)
             if not ok:
                 fail(p, n, "approval", ValueError(
@@ -754,6 +801,16 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                     if cerr:
                         fail(p, n, "contract", ValueError(cerr), outputs)
                 out = edited
+        if ps.get("pick"):
+            obj, _ = _json_in(out)
+            if not isinstance(obj, dict) or ps["pick"] not in obj:
+                fail(p, n, "PICK", ValueError(
+                    "the output is not a JSON object with the key '%s'"
+                    % ps["pick"]), outputs)
+            v = obj[ps["pick"]]
+            out = v if isinstance(v, str) else json.dumps(v,
+                                                          ensure_ascii=False)
+            log.append("(PICK: only '%s' is passed on)" % ps["pick"])
         outputs[n.id] = out
         log.append("### Output\n" + out)
         groups = {}

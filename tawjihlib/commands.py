@@ -307,7 +307,8 @@ def _flow_from_args(st, name, refs):
         die("path names may contain only letters, digits, '_' and '-'")
     try:
         if refs:
-            flow = build_flow(split_statements(refs), st.resolve)
+            flow = build_flow(split_statements(refs), st.resolve,
+                              st.path_statements, (name,))
             flow.order()
             write_flow(st, name, flow)
         else:
@@ -448,7 +449,9 @@ def graph_source(st, fmt, path=None, branch="", name=""):
             groups.setdefault(st.ancestors(nid)[0].id, []).append(nid)
         edges = []
         for e in flow.edges:
-            if e["among"] is not None:
+            if e.get("order"):
+                label, style = "LINK", "order"
+            elif e["among"] is not None:
                 label, style = "AMONG", "among"
             elif e["cond"]:
                 label = "IF %s%s" % ("NOT " if e["cond"][0] else "",
@@ -479,7 +482,8 @@ def graph_source(st, fmt, path=None, branch="", name=""):
             if gid:
                 out.append("  end")
         for src, dst, label, style, cross in edges:
-            arrow = "-.->" if style == "among" else ("==>" if cross else "-->")
+            arrow = "-.->" if style in ("among", "order") else (
+                "==>" if cross else "-->")
             lab = '|"%s"|' % _mm(label) if label else ""
             out.append("  n_%s %s%s n_%s" % (src, arrow, lab, dst))
         machine = [i for i in ids if st.nodes[i].instructions.strip()
@@ -518,6 +522,8 @@ def graph_source(st, fmt, path=None, branch="", name=""):
                 attrs.append('label="%s"' % _dot(label))
             if style == "among":
                 attrs.append("style=dashed")
+            if style == "order":
+                attrs.append("style=dotted")
             if cross:
                 attrs.append("penwidth=2.5")
             out.append("  n_%s -> n_%s%s;" % (
@@ -527,7 +533,7 @@ def graph_source(st, fmt, path=None, branch="", name=""):
     if fmt == "md":
         what = ("path '%s'" % name) if path is not None else "the trees"
         text = ("# Tawjih network: %s\n\nThick arrows cross from one tree to "
-                "another; dashed arrows are AMONG choices; STALE marks a "
+                "another; dashed arrows are AMONG choices or LINKs (order only); STALE marks a "
                 "machine side older than its human or reading side.\n\n"
                 "```mermaid\n%s```\n" % (what, text))
     return text
@@ -621,7 +627,7 @@ def check_proposal(st, statements):
         with contextlib.redirect_stderr(io.StringIO()):
             return st.resolve(ref)
     try:
-        flow = build_flow(statements, quiet)
+        flow = build_flow(statements, quiet, st.path_statements)
         flow.order()
     except FlowError as e:
         return None, [str(e)]

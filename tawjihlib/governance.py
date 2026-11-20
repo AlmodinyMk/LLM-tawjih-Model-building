@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .core import (
     Die, EXTRA, FlowError, LEVELS, Node, SECTIONS, Store, __version__,
-    die, parse_examples,
+    _kw, die, parse_examples,
 )
 from .engine import (
     CodeTimeout, SANDBOX_LIMITS, machine_side, run_code, run_flow,
@@ -95,6 +95,8 @@ def cmd_alias(a):
                 + name)
         if name in st.nodes:
             die("%s is an id" % name)
+        if _kw(name):
+            die("%s is a word of the path language" % name)
         other = [m for m in st.nodes.values() if m.id != nid and any(
             x.casefold() == name.casefold() for x in m.aliases)]
         if other:

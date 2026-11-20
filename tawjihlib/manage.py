@@ -13,7 +13,8 @@ import time
 import uuid
 
 from .core import (
-    Die, EXTRA, FlowError, LEVELS, Node, SECTIONS, Store, die, parse_level,
+    Die, EXTRA, FlowError, LEVELS, Node, SECTIONS, Store, _kw, die,
+    parse_level,
 )
 from .commands import (
     _backup, _flow_from_args, audit_code,
@@ -26,7 +27,7 @@ from .commands import (
 
 def _paths_using(st, ids):
     """{path name: [ids of the given set it uses]} over saved paths."""
-    out = {}
+    out, calls = {}, {}
     ids = set(ids)
     if st.pdir.is_dir():
         for f in sorted(st.pdir.glob("*.path")):
@@ -34,11 +35,23 @@ def _paths_using(st, ids):
                 lines = st.load_path(f.stem, True)       # comments removed
             except Die:
                 continue
+            words = " ".join(lines).split()
             toks = set(re.findall(r"\b[0-9a-f]{6}\b", " ".join(lines)))
+            calls[f.stem] = {b.strip("'\"") for a, b in zip(words, words[1:])
+                             if _kw(a) == "CALL"}
             hit = sorted(toks & ids)
             if hit:
                 out[f.stem] = hit
-    return out
+    changed = True                  # a path that CALLs one using them
+    while changed:
+        changed = False
+        for name, called in calls.items():
+            got = sorted(set(out.get(name, [])).union(
+                *(out[c] for c in called if c in out)))
+            if got != out.get(name, []):
+                out[name] = got
+                changed = True
+    return {k: v for k, v in out.items() if v}
 
 
 def _renumber(st, parent, keep_first=None):

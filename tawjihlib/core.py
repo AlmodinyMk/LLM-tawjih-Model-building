@@ -28,7 +28,7 @@ from pathlib import Path
 
 
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 DESCRIPTION = "tawjih - personal LLM command-directing (توجيه أوامر الآلة)."
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
@@ -610,10 +610,19 @@ class Store:
                 raise FlowError("file %s does not exist" % ref)
             return ref
         try:
-            stmts = [shlex.split(line) for line in self.load_path(name, True)]
+            stmts = self.path_statements(name)
         except ValueError as e:
             raise FlowError("unreadable line (%s)" % e)
-        return build_flow(stmts, known)
+        return build_flow(stmts, known, self.path_statements, (name,))
+
+    def path_statements(self, name):
+        """The statements of paths/NAME.path, for building or for CALL."""
+        if not (self.pdir / (name + ".path")).is_file():
+            raise FlowError("no path named '%s'" % name)
+        try:
+            return [shlex.split(line) for line in self.load_path(name, True)]
+        except ValueError as e:
+            raise FlowError("unreadable line in path %s (%s)" % (name, e))
 
     def check(self, branch_id=""):
         errors, warns = [], []
@@ -703,37 +712,94 @@ class FlowError(Exception):
     pass
 
 
-KEYWORDS = {"TO": "TO", "IF": "IF", "AND": "AND", "AMONG": "AMONG",
-            "THROUGH": "THROUGH", "NOT": "NOT",
-            "إلى": "TO", "الى": "TO", "إذا": "IF", "اذا": "IF", "و": "AND",
-            "بين": "AMONG", "عبر": "THROUGH", "ليس": "NOT"}
+KEYWORDS = {
+    # connecting words
+    "TO": "TO", "PASS": "TO", "AND": "AND", "IF": "IF", "NOT": "NOT",
+    "ELSE": "ELSE", "AMONG": "AMONG", "THROUGH": "THROUGH", "LINK": "LINK",
+    # what a step is
+    "EACH": "EACH", "APPROVE": "APPROVE", "CALL": "CALL",
+    # how a step runs in this path
+    "USING": "USING", "RETRY": "RETRY", "UNTIL": "UNTIL", "PICK": "PICK",
+    # reserved, with a reason (see UNSUPPORTED)
+    "PARALLEL": "PARALLEL", "CACHE": "CACHE",
+    "إلى": "TO", "الى": "TO", "مرر": "TO", "مرّر": "TO", "و": "AND",
+    "إذا": "IF", "اذا": "IF", "ليس": "NOT", "وإلا": "ELSE", "والا": "ELSE",
+    "بين": "AMONG", "عبر": "THROUGH", "ارتبط": "LINK", "إرتبط": "LINK",
+    "اربط": "LINK", "لكل": "EACH", "اعتمد": "APPROVE", "نفذ": "CALL",
+    "نفّذ": "CALL", "بواسطة": "USING", "أعد": "RETRY", "اعد": "RETRY",
+    "حتى": "UNTIL", "انتق": "PICK", "انتقِ": "PICK", "توازي": "PARALLEL",
+    "بالتوازي": "PARALLEL", "مخزن": "CACHE"}
+CONNECTING = {"TO", "AND", "IF", "NOT", "ELSE", "AMONG", "THROUGH", "LINK"}
+UNSUPPORTED = {
+    "PARALLEL": "PARALLEL is not a word of the path language: files joined "
+                "by AND (A TO B AND C) are already independent branches; "
+                "running them at the same time is not implemented",
+    "CACHE": "CACHE is not a word of the path language: every model answer "
+             "is kept already, and --resume reuses them"}
+STEP_KEYS = ("using", "retry", "until", "pick", "each", "approve")
 
 
 def _kw(tok):
-    return KEYWORDS.get(tok.upper())
+    return KEYWORDS.get(tok.replace("\u0640", "").upper())
 
 
 class Flow:
     def __init__(self):
         self.nodes, self.edges, self.lines, self._groups = [], [], [], 0
+        self.steps, self.calls = {}, []    # per-file settings; CALLed paths
 
     def add_node(self, nid):
         if nid not in self.nodes:
             self.nodes.append(nid)
 
-    def add_edge(self, src, dst, cond=None, among=None):
+    def add_edge(self, src, dst, cond=None, among=None, order=False):
         if src == dst:
             raise FlowError("file %s cannot feed itself" % src)
         for e in self.edges:
             if e["src"] == src and e["dst"] == dst:
-                if e["cond"] == cond and among is None and e["among"] is None:
+                if e["cond"] == cond and among is None and e["among"] is None \
+                        and e.get("order", False) == order:
                     return
                 raise FlowError("%s is connected to %s twice in different "
                                 "ways" % (src, dst))
         self.edges.append({"src": src, "dst": dst, "cond": cond,
-                           "among": among})
+                           "among": among, "order": order})
 
-    def statement(self, tokens, resolve):
+    def setting(self, nid, key, value):
+        s = self.steps.setdefault(nid, {})
+        if key in s and s[key] != value:
+            raise FlowError("%s is given %s twice, differently" % (
+                nid, key.upper()))
+        s[key] = value
+
+    def call(self, name, resolve, load, calling):
+        """Splice the path NAME into this one: (its first files, its last
+        files)."""
+        if load is None:
+            raise FlowError("CALL %s: other paths cannot be read here" % name)
+        if name in calling:
+            raise FlowError("path %s calls itself (through %s)" % (
+                name, " -> ".join(calling)))
+        sub = build_flow(load(name), resolve, load, calling + (name,))
+        for nid in sub.nodes:
+            if nid in self.nodes:
+                raise FlowError("file %s is in this path and in the called "
+                                "path %s; a file appears in a path once"
+                                % (nid, name))
+            self.add_node(nid)
+        for e in sub.edges:
+            e = dict(e)
+            if e["among"] is not None:
+                e["among"] += self._groups
+            self.edges.append(e)
+        self._groups += sub._groups
+        for nid, st in sub.steps.items():
+            self.steps[nid] = dict(st)
+        self.calls += [name] + [c for c in sub.calls if c not in self.calls]
+        ins = [n for n in sub.nodes if not sub.incoming(n)]
+        return ins, sub.terminals()
+
+    def statement(self, tokens, resolve, load=None, calling=()):
         pos, norm = 0, []
         text = " ".join(tokens)
 
@@ -745,10 +811,26 @@ class Flow:
             pos += 1
             norm.append(k)
 
+        def refuse():
+            k = peek()
+            if k in UNSUPPORTED:
+                raise FlowError(UNSUPPORTED[k])
+
+        def word(what):
+            nonlocal pos
+            if pos >= len(tokens) or _kw(tokens[pos]):
+                raise FlowError("%s needs a word after it in: %s" % (what,
+                                                                     text))
+            w = tokens[pos]
+            pos += 1
+            norm.append(shlex.quote(w))
+            return w
+
         def ref():
             nonlocal pos
             if pos >= len(tokens):
                 raise FlowError("a file is missing at the end of: " + text)
+            refuse()
             if _kw(tokens[pos]):
                 raise FlowError("expected a file but found '%s' in: %s"
                                 % (tokens[pos], text))
@@ -758,23 +840,84 @@ class Flow:
             norm.append(nid)
             return nid
 
+        def step():
+            """[EACH] [APPROVE] file [USING m] [RETRY n] [UNTIL [NOT] w]
+            [PICK key], or CALL path. Returns (first files, last files)."""
+            refuse()
+            if peek() == "CALL":
+                take("CALL")
+                name = word("CALL")
+                if not re.fullmatch(r"[\w\-]+", name):
+                    raise FlowError("CALL takes the name of a saved path")
+                return self.call(name, resolve, load, calling)
+            prefix = []
+            while peek() in ("EACH", "APPROVE"):
+                prefix.append(peek())
+                take(peek())
+            nid = ref()
+            for k in prefix:
+                self.setting(nid, k.lower(), "yes" if k == "EACH"
+                             else "before")
+            while True:
+                refuse()
+                k = peek()
+                if k not in ("USING", "RETRY", "UNTIL", "PICK"):
+                    break
+                take(k)
+                if k == "USING":
+                    self.setting(nid, "using", word("USING"))
+                elif k == "PICK":
+                    self.setting(nid, "pick", word("PICK"))
+                elif k == "RETRY":
+                    n = word("RETRY")
+                    if not (n.isdigit() and 1 <= int(n) <= 20):
+                        raise FlowError("RETRY takes a number from 1 to 20 "
+                                        "in: " + text)
+                    self.setting(nid, "retry", int(n))
+                else:
+                    neg = peek() == "NOT"
+                    if neg:
+                        take("NOT")
+                    self.setting(nid, "until", [neg, word("UNTIL")])
+            return [nid], [nid]
+
         def group():                       # A AND B AND C
-            g = [ref()]
+            g = [step()]
             while peek() == "AND":
                 take("AND")
-                g.append(ref())
+                g.append(step())
             return g
 
         def listing():                     # A B C   (AND optional)
-            g = [ref()]
-            while pos < len(tokens) and peek() in (None, "AND"):
+            g = [step()]
+            while pos < len(tokens) and peek() in (None, "AND", "EACH",
+                                                   "APPROVE", "CALL"):
                 if peek() == "AND":
                     take("AND")
-                g.append(ref())
+                g.append(step())
             return g
+
+        def outs(steps):
+            return [x for s in steps for x in s[1]]
+
+        def connect(cur, tgt, via, cond, order=False):
+            if via:
+                for src in outs(cur):
+                    for dst in via[0][0]:
+                        self.add_edge(src, dst, cond)
+                for a, b in zip(via, via[1:]):
+                    for src in a[1]:
+                        for dst in b[0]:
+                            self.add_edge(src, dst)
+                cur, cond = [via[-1]], None
+            for src in outs(cur):
+                for t in tgt:
+                    for dst in t[0]:
+                        self.add_edge(src, dst, cond, order=order)
 
         cur = group()
         while pos < len(tokens):
+            refuse()
             k = peek()
             if (k == "TO" and pos + 1 < len(tokens)
                     and _kw(tokens[pos + 1]) == "AMONG"):
@@ -782,25 +925,28 @@ class Flow:
                 k = "AMONG"
             if k == "AMONG":
                 take("AMONG")
-                if len(cur) != 1:
+                if len(cur) != 1 or len(cur[0][1]) != 1:
                     raise FlowError("AMONG needs exactly one deciding file "
                                     "before it in: " + text)
                 cands = listing()
                 if len(cands) < 2:
                     raise FlowError("AMONG needs at least two files to "
                                     "choose from in: " + text)
+                if any(len(c[0]) != 1 or c[0] != c[1] for c in cands):
+                    raise FlowError("AMONG chooses among files, not called "
+                                    "paths, in: " + text)
                 self._groups += 1
-                for d in cands:
-                    self.add_edge(cur[0], d, None, self._groups)
+                for c in cands:
+                    self.add_edge(cur[0][1][0], c[0][0], None, self._groups)
                 cur = cands
-            elif k == "TO":
-                take("TO")
-                tgt, via, cond = group(), [], None
-                while peek() in ("THROUGH", "IF"):
+            elif k in ("TO", "LINK"):
+                take(k)
+                tgt, via, cond, other = group(), [], None, None
+                while peek() in ("THROUGH", "IF", "ELSE"):
                     if peek() == "THROUGH":
                         take("THROUGH")
                         via = listing()
-                    else:
+                    elif peek() == "IF":
                         take("IF")
                         neg = peek() == "NOT"
                         if neg:
@@ -812,21 +958,27 @@ class Flow:
                         cond = [neg, tokens[pos]]
                         norm.append(shlex.quote(tokens[pos]))
                         pos += 1
-                if via:
-                    for src in cur:
-                        self.add_edge(src, via[0], cond)
-                    for x, y in zip(via, via[1:]):
-                        self.add_edge(x, y)
-                    for dst in tgt:
-                        self.add_edge(via[-1], dst)
-                else:
-                    for src in cur:
-                        for dst in tgt:
-                            self.add_edge(src, dst, cond)
+                    else:
+                        if cond is None or other is not None:
+                            raise FlowError("ELSE comes once, after an IF, "
+                                            "in: " + text)
+                        take("ELSE")
+                        other = group()
+                if k == "LINK" and (cond or via):
+                    raise FlowError("LINK only orders two files (the second "
+                                    "runs after the first, without its "
+                                    "output); it takes no IF or THROUGH")
+                if other is not None and via:
+                    raise FlowError("ELSE cannot be used with THROUGH in: "
+                                    + text)
+                connect(cur, tgt, via, cond, order=k == "LINK")
+                if other is not None:
+                    connect(cur, other, [], [not cond[0], cond[1]])
+                    tgt = tgt + other
                 cur = tgt
             else:
-                raise FlowError("expected TO or AMONG but found '%s' in: %s"
-                                % (tokens[pos], text))
+                raise FlowError("expected TO, LINK or AMONG but found '%s' "
+                                "in: %s" % (tokens[pos], text))
         self.lines.append(norm)
 
     def order(self):
@@ -869,10 +1021,12 @@ class Flow:
                 if not any(e["src"] == n for e in self.edges)]
 
 
-def build_flow(statements, resolve):
-    """Statements without any connecting word are a plain sequence."""
+def build_flow(statements, resolve, load=None, calling=()):
+    """Statements without any connecting word are a plain sequence.
+    load(name) gives the statements of a saved path, for CALL."""
     flow = Flow()
-    if not any(_kw(t) for st in statements for t in st):
+    words = {_kw(t) for st in statements for t in st} - {None}
+    if not words:
         ids = [resolve(t) for st in statements for t in st]
         for nid in ids:
             flow.add_node(nid)
@@ -881,11 +1035,21 @@ def build_flow(statements, resolve):
             raise FlowError("a file appears twice in the sequence")
         for x, y in zip(ids, ids[1:]):
             flow.add_edge(x, y)
+    elif not words & CONNECTING:
+        # a sequence of steps with settings or CALLs: one after another
+        joined = []
+        for st in statements:
+            joined += (["TO"] if joined else []) + list(st)
+        flow.statement(joined, resolve, load, calling)
     else:
         for st in statements:
-            flow.statement(st, resolve)
+            flow.statement(st, resolve, load, calling)
     if not flow.nodes:
         raise FlowError("no files given")
+    for nid, st in flow.steps.items():
+        if "until" in st and "retry" not in st:
+            raise FlowError("UNTIL needs RETRY n on the same file (%s), to "
+                            "bound the number of tries" % nid)
     return flow
 
 
@@ -910,6 +1074,8 @@ def contract_fits(produces, expects):
 def flow_contract_errors(store, flow):
     out = []
     for e in flow.edges:
+        if e.get("order") or flow.steps.get(e["src"], {}).get("pick"):
+            continue                    # no output, or only one key of it
         src, dst = store.nodes[e["src"]], store.nodes[e["dst"]]
         why = contract_fits(src.produces, dst.expects)
         if why:
@@ -937,7 +1103,7 @@ def flow_condition_notes(store, flow):
 
 
 __all__ = [
-    'CONTRACT_HELP', 'DESCRIPTION', 'Die', 'EXAMPLE_KEYS', 'EXTRA',
+    'CONNECTING', 'STEP_KEYS', 'UNSUPPORTED', 'CONTRACT_HELP', 'DESCRIPTION', 'Die', 'EXAMPLE_KEYS', 'EXTRA',
     'FALSE_WORDS', 'Flow', 'FlowError', 'KEYWORDS', 'LEVELS', 'LEVELS_AR',
     'MARK', 'Mapping', 'Node', 'Path', 'SECTIONS', 'SPLITS', 'Store',
     '__version__', '_json_in', '_kw', '_norm_q', '_parse_contract',

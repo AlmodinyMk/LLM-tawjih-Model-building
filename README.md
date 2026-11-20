@@ -9,7 +9,7 @@ beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.10.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.11.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -96,10 +96,24 @@ Use `-p FOLDER` before the command to work on a project elsewhere.
 | `A TO B IF word` | when A's output is JSON with that key: only when its value is true or non-empty; otherwise only when the output contains the word. `IF NOT word` for the opposite |
 | `A AMONG B C D` | A's output names one of them; only that one runs |
 | `A TO D THROUGH B C` | A → B → C → D |
+| `A TO B IF word ELSE C` | B when the word holds, otherwise C (the same as adding `A TO C IF NOT word`) |
+| `A LINK B` | B runs after A but does not receive its output (it receives the original request) |
+| `A PASS B` | the same as `A TO B` |
+| `A TO EACH B` | B runs once per item of the JSON list it receives (as `contract --each yes`, in this path only) |
+| `A TO APPROVE B` | a person approves B's input before it runs (as `approve: before`, in this path only) |
+| `A TO CALL other TO B` | the saved path `other` is spliced in: A feeds its first files, its last files feed B. It is read every time, so a change to it reaches every path that calls it |
+| `B USING model` | B uses that model in this path (`--model` still wins) |
+| `B RETRY 3 UNTIL word` | B is run again, told why, until its output meets the word (as for `IF`), at most 3 more times; `UNTIL NOT word` for the opposite. `RETRY n` alone sets the retries for a broken contract |
+| `A PICK key TO B` | only the value of `key` in A's JSON output is passed on |
 
-Statements chain (`A TO B AND C TO D`), and several are separated by `,` or
-`/` (use `/` in PowerShell). Arabic words work too: إلى، و، إذا، ليس، بين، عبر.
-Files written with no connecting word are a plain sequence.
+`EACH` and `APPROVE` come before a file; `USING`, `RETRY`, `UNTIL` and
+`PICK` after it, and belong to that file in that path only. Statements chain
+(`A TO B AND C TO D`), and several are separated by `,` or `/` (use `/` in
+PowerShell). Arabic words work too: إلى، مرر، و، إذا، ليس، وإلا، بين، عبر،
+ارتبط، لكل، اعتمد، نفذ، بواسطة، أعد، حتى، انتق; and `؛` or `،` separate
+statements. Files written with no connecting word are a plain sequence.
+`PARALLEL` and `CACHE` are refused with a reason: branches joined by `AND`
+are already independent, and every answer is already kept for `--resume`.
 
 ```
 produce review 1.1 TO 1.2 IF error / 1.1 TO 1.3 IF NOT error / 1.2 AND 1.3 TO 2.1

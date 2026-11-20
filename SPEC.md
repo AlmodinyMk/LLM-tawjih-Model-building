@@ -1,4 +1,4 @@
-# Tawjih specification (0.10.0)
+# Tawjih specification (0.11.0)
 
 This is the contract the program and the tests follow.
 
@@ -100,9 +100,28 @@ in brackets.
 | `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite |
 | `A AMONG B C D` [بين] | A decides: the candidate named first in A's output (by number, id or title) is the only one that runs; if none is named and exactly one candidate's `expects` accepts the output, that one runs |
 | `A TO D THROUGH B C` [عبر] | A → B → C → D |
+| `A TO B IF word ELSE C` [وإلا، والا] | also `A TO C IF NOT word` |
+| `A LINK B` [ارتبط، اربط] | an order-only connection: B runs after A, is skipped if A is, and does not receive A's output; a file fed only by LINKs receives the original request. LINK takes no `IF` or `THROUGH` |
+| `A PASS B` [مرر] | `A TO B` |
+| `CALL name` [نفذ] | in place of a file: the saved path `name` is built (from its file, every time) and spliced in. Connections into it go to its files that nothing feeds; connections out of it leave from its final files. A file may not be both in the path and in the called path; a path may not call itself, directly or not. `AMONG` chooses among files only |
+| `EACH A` [لكل] | A's `each` is `yes` in this path |
+| `APPROVE A` [اعتمد] | A is approved before it runs in this path (with `approve: after` in the file: both) |
+| `A USING m` [بواسطة] | A's model in this path: `--model` > `USING` > `model:` > `TAWJIH_MODEL` |
+| `A RETRY n` [أعد، اعد] | n from 1 to 20: A's retries in this path (`--retries` wins) |
+| `A UNTIL [NOT] w` [حتى] | needs `RETRY n` on A: while the condition (as for `IF`) does not hold for A's output, A runs again, at most n more times, with its previous answer and the reason appended to its prompt; then the step fails (and its fallback, if any, runs) |
+| `A PICK k` [انتق] | after A's contract and approval, only the value of key `k` of A's JSON object output is kept and passed on (a string as is, anything else as JSON); without that key the step fails. Contract checks skip connections out of A |
 
 Statements chain left to right: `A TO B AND C TO D` connects A to B and C,
-and both to D. `IF` applies to the connections of the `TO` just before it.
+and both to D. `IF` applies to the connections of the `TO` just before it;
+`A TO B IF w ELSE C TO D` continues from both B and C. `EACH` and `APPROVE`
+come before a file, `USING`, `RETRY`, `UNTIL` and `PICK` after it, in any
+order; they are saved with the path and belong to that file in that path
+only, and the same setting given twice differently is an error. A path whose
+statements hold settings or `CALL` but no connecting word is a sequence.
+Statements are separated by `,`, `/`, `؛` or `،`; the Arabic tatweel (ـ) is
+ignored in words. `PARALLEL` [توازي، بالتوازي] and `CACHE` [مخزن] are
+reserved and refused with the reason. An alias cannot be one of these
+words.
 A file listed without any connecting word in a file that has none is the
 old form: a plain sequence, one file per line.
 
