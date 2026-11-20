@@ -1,4 +1,4 @@
-"""Tests for 0.14: named providers (providers.json) with retries and
+"""Tests for the 0.13.1 additions: named providers (providers.json) with retries and
 fallback chains, schema contracts, IF/UNTIL key = value, AMONG ... BY key,
 and the project's restrict-only policy (tawjih.policy.json)."""
 import http.server
