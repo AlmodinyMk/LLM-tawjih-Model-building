@@ -275,3 +275,26 @@ class Script(Base):
         code, out, err = self.cli("do", "--file", str(f), "--run")
         self.assertEqual(code, 0, err)
         self.assertTrue((self.root / "paths" / "p.path").is_file())
+
+
+class ReviewFixes012(Base):
+    """What the review of 0.11 and 0.12 found."""
+    def setUp(self):
+        super().setUp()
+        for t in ("A", "B", "C"):
+            self.cli("new", t)
+
+    def test_no_if_after_else(self):
+        err = self.cli("path", "k", "1", "TO", "2", "IF", "ok", "ELSE", "3",
+                       "IF", "z")[2]
+        self.assertIn("may follow the files after ELSE", err)
+
+    def test_an_unclosed_quote_is_a_problem_not_a_crash(self):
+        code, _, err = self.cli("do", 'CREATE "unclosed UNDER 1')
+        self.assertNotEqual(code, 0)
+        self.assertIn("No closing quotation", err)
+
+    def test_create_with_two_parents_is_refused(self):
+        import tawjih
+        _, problems = tawjih.translate_script("CREATE t UNDER 1 UNDER 2")
+        self.assertTrue(problems)

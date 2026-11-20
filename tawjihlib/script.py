@@ -116,9 +116,9 @@ def translate(tokens, backend="dry", yes=False):
         title, parent, template, i = rest[0], None, None, 1
         while i < len(rest):
             w = _word(PLACES, rest[i])
-            if w in ("UNDER", "INTO") and i + 1 < len(rest):
+            if w in ("UNDER", "INTO") and i + 1 < len(rest) and not parent:
                 parent = rest[i + 1]
-            elif w == "FROM" and i + 1 < len(rest):
+            elif w == "FROM" and i + 1 < len(rest) and not template:
                 template = rest[i + 1]
             else:
                 raise ScriptError("CREATE \"title\" [UNDER file] [FROM "
@@ -195,7 +195,11 @@ def translate_script(text, backend="dry", yes=False):
     """All statements of a script, each as (statement, argv, destructive);
     every statement is checked before anything runs."""
     out, problems = [], []
-    for k, st in enumerate(split_script(text), 1):
+    try:
+        statements = split_script(text)
+    except ScriptError as e:
+        return [], [str(e)]
+    for k, st in enumerate(statements, 1):
         try:
             argv, bad = translate(st, backend, yes)
             out.append((" ".join(st), argv, bad))

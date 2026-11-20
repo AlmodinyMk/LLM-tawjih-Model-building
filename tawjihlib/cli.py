@@ -5,6 +5,7 @@ SPDX-License-Identifier: CC-BY-NC-SA-4.0
 """
 
 import argparse
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -59,7 +60,14 @@ def main():
         except Exception:
             pass
     a = build_parser().parse_args()
-    rc = a.fn(a)
+    try:
+        rc = a.fn(a)
+    except BrokenPipeError:          # output piped into head and closed
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        sys.exit(0)
     if isinstance(rc, int) and rc:
         sys.exit(rc)
 
@@ -492,7 +500,9 @@ def build_parser():
     s = sub.add_parser("path", help="define (with refs) or show a path")
     s.add_argument("name")
     s.add_argument("refs", nargs="*", help="files (ids or numbers) joined by "
-                   "TO, AND, IF, AMONG, THROUGH; ',' or '/' between statements")
+                   "TO, AND, IF, ELSE, AMONG, THROUGH, LINK, CALL, with EACH, APPROVE, "
+                   "USING, RETRY, UNTIL, PICK (see SPEC.md); ',', '/', '؛' or "
+                   "'،' between statements")
     s.set_defaults(fn=cmd_path)
 
     s = sub.add_parser("run", help="execute a path step by step")
@@ -536,8 +546,9 @@ def build_parser():
                        "order, extract machine sides, run, save, document")
     s.add_argument("name")
     s.add_argument("refs", nargs="*", help="files from any tree (ids or "
-                   "numbers) joined by TO, AND, IF, AMONG, THROUGH; ',' or "
-                   "'/' between statements; omit to reuse NAME")
+                   "numbers) joined by the words of the path language (TO, AND, "
+                   "IF, ELSE, AMONG, THROUGH, LINK, CALL ...); ',' or '/' "
+                   "between statements; omit to reuse NAME")
     s.add_argument("--plan", action="store_true",
                    help="show and validate the plan without running it")
     s.add_argument("--input", default="")

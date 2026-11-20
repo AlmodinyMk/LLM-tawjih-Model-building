@@ -39,6 +39,10 @@ Every file has three sides:
 | **machine** | instructions for the model, and optional Python code | building, and **running a path** |
 | **reading** | passages filtered from deposited books and research, with their source | building the file |
 
+A fifth, optional side holds worked examples, for evaluation and training
+(see [Examples](#examples-training-data-and-evaluation)); it is never sent
+when a path runs either.
+
 Files form trees with up to six levels: general → section → chapter → topic →
 branch → part. Every file has a stable id (`e1d13b`) and a positional number
 (`1.1.1.1.1`); commands accept either.
@@ -153,8 +157,8 @@ names the step to ask again. `check` compares the contracts of connected
 files before anything runs, and reports an unknown contract (a typo) as an
 error.
 
-The model of a step is `--model` if given, else the file's `model`, else
-`TAWJIH_MODEL`.
+The model of a step is `--model` if given, else the path's `USING`, else
+the file's `model`, else `TAWJIH_MODEL`.
 
 When you rebuild a machine side (with `open`, `edit` or the Linux windows)
 the program records the state of the human and reading sides. If either
@@ -165,7 +169,7 @@ rebuild a side that comes back unchanged records it too.
 
 `IF` and JSON: when a step's output is a JSON object, `IF is_group` tests the
 value of the key `is_group` (true, non-zero, non-empty; the strings
-`"false"`, `"no"` and `"لا"` count as false), not whether the
+`false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false), not whether the
 letters appear somewhere in the text. `check` and `generate` add a note when
 an `IF` word is not one of the keys the source file promises in `produces`.
 
@@ -182,13 +186,13 @@ python tawjih.py graph --path branch --format dot -o branch.dot
 The `.md` file holds a Mermaid diagram that GitHub shows as a picture;
 `--format mermaid` gives the diagram alone and `--format dot` gives Graphviz.
 In a path, files are grouped by tree, `IF` conditions label the arrows,
-`AMONG` choices are dashed, handoffs between trees are thick, and stale
-files are marked.
+`AMONG` choices are dashed, `LINK`s dotted, handoffs between trees are
+thick, and stale files are marked.
 
 `generate` proposes a path, and runs nothing:
 
 ```
-python tawjih.py generate solve2 --start 1.1.1.1.1 --end 1.1.1.1.3
+python tawjih.py -p examples/quadratic generate solve2 --start 1.1.1.1.1 --end 1.1.1.1.2
 python tawjih.py generate review --goal "check and explain a solution" --backend ollama
 python tawjih.py generate review --accept
 ```
@@ -232,7 +236,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `search QUERY [--branch REF] [--side S] [--tag T] [--rank \| --semantic]` | search titles and sides; see [Managing a project](#managing-a-project) for the other commands added in 0.7 |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
-| `contract REF [--expects S] [--produces S] [--model M] [--retries N] [--fallback REF] [--approve WHEN]` | show or set a file's contracts, model, retries, fallback and approval |
+| `contract REF [--expects S] [--produces S] [--model M] [--retries N] [--fallback REF] [--approve WHEN] [--split S] [--weight W] [--each yes\|KEY]` | show or set a file's contracts, model, retries, fallback, approval, split, weight and FOR EACH |
 | `redact [TEXT] [--init]` / `stats` | private data hidden before model calls / what runs cost; see [Failures, approval, privacy and cost](#failures-approval-privacy-and-cost) |
 | `check [--branch REF]` | validate parents, levels, cycles, links, paths, code syntax, contracts, staleness |
 | `trees` | list the available trees |
@@ -575,12 +579,13 @@ A code step that runs longer than 60 seconds is stopped
 (`--code-timeout SECONDS`, `0` for no limit). The limit is checked between
 Python lines, so it stops a loop that never ends but not one long call into
 C code, and it makes pure-Python loops several times slower while it is on.
-It is a safeguard against mistakes, not a sandbox.
+The time limit is a safeguard against mistakes, not a sandbox.
 
 ## Project layout
 
 ```
-files/    one .md file per tree file (header + four marked sections)
+files/    one .md file per tree file (header + four marked sections,
+          and examples when there are any)
 paths/    one .path file per path, and .proposed files from generate
 library/  deposited books and filter reports   (git-ignored)
 runs/     log, result and state of every run   (git-ignored)
@@ -595,8 +600,8 @@ prices.json price per million tokens, for stats (optional)
 releases/ releases and snapshots (zip files)
 archive/  archived branches
 templates/ saved templates
-stage/    proposals waiting for review
-quarantine/ files repair could not read
+stage/    proposals waiting for review           (git-ignored)
+quarantine/ files repair could not read        (git-ignored)
 mounts.json, schedules.json, seal.json   (optional)
 models/   adapters, merged models, GGUF files, registry.json
           (neural bridge; git-ignored)
@@ -613,10 +618,13 @@ two together when you copy the program.
 ## Limitations
 
 - Branches run one after another, not in parallel. There are no loops;
-  FOR EACH (`contract --each`) runs one step over the items of a list, one
-  after another.
-  Retries ask the model again only when the answer breaks the contract; a
-  failed production is run again with `--resume`.
+  FOR EACH (`EACH` or `contract --each`) runs one step over the items of a
+  list, one after another.
+  Retries ask the model again when the answer breaks the contract, or, with
+  `RETRY n UNTIL word`, while the output does not meet the word; a failed
+  production is run again with `--resume`.
+- A path that `CALL`s another breaks if that one is removed or renamed;
+  `check` reports it. Statements of `do` read numbers when they run.
 - Redaction catches only what its patterns and your list describe.
 - `schedule` runs nothing by itself: it needs the system's scheduler to call
   `schedule --run-due`. A lock, a seal or a review guards against mistakes
@@ -658,7 +666,7 @@ two together when you copy the program.
 ## What is and is not verified
 
 Verified by the test suite (`python -m unittest discover -s tests -v`), on
-Linux with Python 3.12: file format, trees and numbering, structural checks,
+Linux with Python 3.11, 3.12 and 3.13: file format, trees and numbering, structural checks,
 running paths and cross-tree productions with branching, joining, `IF`,
 `AMONG` and `THROUGH` (including that the human and reading sides never reach the
 model), `edit`, the deposit → filter → accept pipeline, `open` with a
@@ -670,7 +678,9 @@ fallbacks, approval, redaction (including on the Linux windows' calls),
 usage and `stats`, with Docling, Marker and Pandoc replaced by stand-in
 scripts; and since 0.10 every command in
 [Governance](#governance-locks-reviews-releases-schedules), with the sandbox
-tested on Linux only and GnuPG signing not tested.
+tested on Linux only and GnuPG signing not tested; since 0.11 every word of
+the path language and since 0.12 the statements of `do`. The neural bridge
+has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 

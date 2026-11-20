@@ -943,6 +943,10 @@ class Flow:
                 take(k)
                 tgt, via, cond, other = group(), [], None, None
                 while peek() in ("THROUGH", "IF", "ELSE"):
+                    if other is not None:
+                        raise FlowError("nothing but TO, LINK or AMONG may "
+                                        "follow the files after ELSE, in: "
+                                        + text)
                     if peek() == "THROUGH":
                         take("THROUGH")
                         via = listing()
