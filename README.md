@@ -14,7 +14,7 @@ beside it. Linux and Windows, in the terminal.
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
 
-![How Tawjih is built: interfaces, build time, the three-sided file, run time, the network, and the project on disk](docs/images/architecture-en.png)
+![How Tawjih is built: interfaces, build time, the three-sided file, run time, the network, evaluation and governance, the training bridge, and the project on disk](docs/images/architecture-en.png)
 
 ## Screenshots
 
