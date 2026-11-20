@@ -1,4 +1,4 @@
-# Tawjih specification (0.6.2)
+# Tawjih specification (0.7.0)
 
 This is the contract the program and the tests follow.
 
@@ -19,6 +19,7 @@ model: ...            optional, the model this file's step uses
 expects: json(a, b)   optional, contract on the step's input
 produces: json(x)     optional, contract on the step's output
 built_sha: ...        optional, written by the program (see Staleness)
+tags: a, b            optional, cross-tree labels
 ---
 === human ===         the expressive human concept
 === instructions ===  machine side, part 1: text addressed to the model
@@ -176,8 +177,9 @@ it as `paths/NAME.path`, refusing to replace an existing path without
 
 ## Search and tangle
 
-- `search QUERY [--branch REF] [--side S]` searches titles, ids and sides
-  across all trees or one branch.
+- `search QUERY [--branch REF] [--side S] [--tag T]` searches titles, ids
+  and sides across all trees or one branch, literally; `--rank` and
+  `--semantic` are described under Managing a project.
 - `tangle [--branch REF | --path NAME] [-o FILE]` exports the code sides as
   a Python module: one function `step_<id>(input, origin="", vars=None,
   steps=None, meta=None, linked=None)` per file, returning its output, with
@@ -193,12 +195,128 @@ it as `paths/NAME.path`, refusing to replace an existing path without
   id, written for failed runs too.
 - `history/production-<name>-<time>.json`: the operation itself: trees,
   connections, handoffs, each step's id, number, tree, machine digest,
-  status and the files it received from, the model, the backend, a digest
-  of the input, and where the log and result are.
-- `cache/<hash>.json`: one kept model answer.
+  status and the files it received from, the model, the backend, the
+  input and its digest, and where the log and result are.
+- `cache/<hash>.json`: one kept model answer, with its prompt.
+- `runs/eval-<name>-<time>.json`: an evaluation, case by case.
+- `state.json`: the digests used by `sync` and `status`.
+- `index/embeddings.json`: the semantic search index.
 - `history/<id>-<time>.md`: the previous version of a file, saved whenever
-  `open`, `edit`, `accept` or the Linux windows change it.
+  a command or the Linux windows change it (see Versions).
 - `paths/<name>.proposed`: a path proposed by `generate`, until accepted.
+
+## Managing a project
+
+**Restructuring** never changes an id, so paths stay valid; positional
+numbers change. Each changed file is first saved to `history/`.
+
+- `move REF (--to REF | --root [--level L]) [--position N | --before REF |
+  --after REF]`: the file and its branch get the new parent; every level in
+  the branch shifts by the same amount, which must keep them within 1-6; a
+  file cannot move into its own branch. Siblings are renumbered 1, 2, ...
+- `rename REF TITLE`: files that choose REF with `AMONG` in a saved path
+  have each case-insensitive occurrence of the old title in their
+  instructions replaced (`--no-update` leaves them); other machine sides
+  that mention it are reported.
+- `copy REF (--to REF | --root) [--branch] [--title T]`: new ids; sides,
+  contracts, model, tags, `built_sha` and links are copied; links to files
+  inside the copied set point to the copies.
+- `rm REF [--branch] [--unlink] [--yes]`: refused while a saved path names
+  the file (or a file of the branch), while it has children (without
+  `--branch`), or while other files link to it (without `--unlink`, which
+  removes those links). Without `--yes` nothing is removed.
+- `split REF --passages SPEC --title T`: the reading side's passages are
+  its blocks starting with `## `; those listed (`2,4-6`) move to a new file
+  of the same level placed right after REF, which keeps the rest.
+- `merge A B [--keep]`: B's human side (after a comment line naming B) and
+  reading side are appended to A's, its links and tags added; without
+  `--keep` B must have no children, no machine side and no path, links to it
+  are moved to A, and it is removed.
+
+**Versions**: `history/<id>-<YYYYMMDD-HHMMSS>[-k].md`, numbered newest first
+from 1.
+
+- `log REF` lists them with the sides and header fields that changed after
+  each.
+- `diff REF [--version K] [--side S]` prints changed header fields and a
+  unified diff per changed side.
+- `revert REF [--version K] [--side S] [--header]` saves the current file,
+  then copies the chosen sides (default all four) and with `--header` the
+  title, links, model, contracts and tags. When the instructions or code
+  come back, `built_sha` comes back with them. A removed file (an id with
+  versions but no file) is restored whole under its old parent.
+
+**State**: `state.json` holds, per file, digests of the human side, the
+machine side and the reading side as Tawjih last wrote them. A difference
+is an edit made outside Tawjih. Projects older than 0.7 start without it.
+
+- `sync` reports such edits, then records the current state;
+  `--confirm-machine` sets `built_sha` for files whose machine side was
+  edited; `--clean-work` removes `work/` leftovers; `--watch S` repeats.
+- `status` lists: stale files; files in a saved path without a machine side;
+  machine sides without contracts; empty human sides; edits outside Tawjih;
+  folders left in `work/`.
+- `tag REF WORD...`, `untag REF WORD...`: the header line `tags: a, b`.
+  A tag is one word of letters, digits, `-`, `_` or `.`.
+- `refs REF`: parent, children, links out and in, each saved path with the
+  files it receives from and gives to, shared tags, and machine sides that
+  mention the title.
+- `clean [--runs DAYS] [--yes]`: `work/` folders, run records older than
+  DAYS, and links to missing files are removed with `--yes`; files with a
+  missing parent and unreadable paths are reported only.
+- `audit [REF | --path NAME]` parses each code side and reports, with line
+  numbers, imports of process, network, file-system and code-loading
+  modules and calls that run programs, delete, move or write files, open
+  files for writing, use the network or turn text into code. Exit status 1
+  when there is a finding marked danger. `produce` and `run` print these
+  findings before running code. It reads what is written; it is not a
+  sandbox.
+
+**Search**: `--rank` scores the title, each reading passage and each
+paragraph of the other sides with Okapi BM25 (k1 1.5, b 0.75) over words
+of two or more letters. `index --backend ollama|openai [--model M]` writes
+`index/embeddings.json`: provider, model and, per piece of the human and
+reading sides, its digest and vector; pieces whose digest is already there
+are not embedded again. `--semantic` embeds the query with the same provider
+and ranks pieces by cosine similarity.
+
+**Outputs**
+
+- `export` writes, per file in tree order, a heading at its depth with its
+  number and title, its tags, its human side, with `--machine` its
+  instructions and code, and unless `--no-reading` its reading passages as
+  quotations. HTML escapes all text, marks every block `dir="auto"`, and
+  loads MathJax 3 from jsDelivr when it finds `$...$` (`--no-mathjax`).
+- `pack` writes a zip holding `manifest.json` (version, files, roots,
+  paths), `files/<id>.md` for the branch or the paths' files, and
+  `paths/<name>.path` for the named paths and every saved path whose files
+  are all in the pack. `unpack` accepts only those entry names, refuses
+  existing ids unless `--new-ids` (which renames them in files and paths),
+  attaches the roots under `--parent` (levels shifted) or as new trees, and
+  renames a clashing path `NAME-2`, `NAME-3`, ...
+- `ingest` writes Markdown: `.docx` headings from the style's outline level
+  or a style named "heading N" (or the Arabic "عنوان N"), list paragraphs as
+  `- `, tables as `| a | b |`, Office Math as its text between `$`; `.epub`
+  through the HTML reader in spine order; `.pdf` through `pdftotext`.
+- `serve` answers `GET /health`; with `Authorization: Bearer TOKEN`,
+  `GET /paths` (name, steps, whether it has code) and `POST /paths/NAME`
+  with `{"input": "..."}`, which runs the path and returns `{"result",
+  "messages"}`; 401 without the token, 403 for a path with code unless
+  started with `--allow-code`, 404, 400 for a bad body, 413 above 1 MB, 500
+  when the run fails. Runs are serialised.
+- `eval NAME` reads `paths/NAME.cases.jsonl` (or `--cases`): per line
+  `{"input", "expect", "match", "name"}`. `contains` (default for text) and
+  `not-contains` compare case-insensitively with each expected string;
+  `equals` compares the trimmed output; `regex` searches; `json` (default
+  when `expect` is an object) requires every expected key with an equal
+  value. The record is `runs/eval-NAME-<time>.json`; exit status 1 if a
+  case fails.
+- `dataset -o F --source eval|runs|steps` writes one JSON object per line,
+  `{"messages": [user, assistant]}` or with `--format prompt` `{"prompt",
+  "completion"}`; `--meta` adds where it came from. `eval`: passed cases
+  (`--include-failed` for all); `runs`: finished productions, from the
+  input kept in their record; `steps`: each cached model answer with its
+  prompt. Duplicates and empty answers are skipped.
 
 ## Library
 

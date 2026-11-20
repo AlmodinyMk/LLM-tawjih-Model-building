@@ -8,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.6.2, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.7.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -214,7 +214,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `new TITLE [--parent REF] [--level L] [--open]` | create a file |
 | `open REF [--editor CMD] [--reading]` | open one editor per side; save on close |
 | `tree [--branch REF]` | show the trees; `H I C R` mark the sides that have content, `!` a stale machine side |
-| `search QUERY [--branch REF] [--side S]` | search titles and sides |
+| `search QUERY [--branch REF] [--side S] [--tag T] [--rank \| --semantic]` | search titles and sides; see [Managing a project](#managing-a-project) for the other commands added in 0.7 |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
 | `contract REF [--expects S] [--produces S] [--model M]` | show or set a file's contracts and model |
@@ -233,6 +233,60 @@ arXiv) publish their source; look for it before using a PDF.
 | `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path; the format follows the `-o` extension (`.mmd`, `.dot`, `.gv`) unless given |
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
+
+## Managing a project
+
+Since 0.7 Tawjih has commands to reorganise trees, read the saved versions
+of files, see what is unfinished, and take knowledge out of a project.
+
+**Restructuring.** Paths name files by their id, so moving files never
+breaks a path; only the positional numbers change.
+
+| Command | Does |
+|---|---|
+| `move REF --to REF` (`mv`) | moves a file and its branch; levels shift with it; `--root` makes a new tree; `--position`, `--before`, `--after` place it |
+| `rename REF TITLE` | changes the title; a file that chooses it with `AMONG` and names it in its instructions gets the new title |
+| `copy REF --to REF [--branch]` (`cp`) | copies sides, contracts, model and tags; links inside a copied branch point to the copies |
+| `rm REF [--branch] [--unlink] --yes` | refuses while a saved path uses the file; without `--yes` it only lists; a copy stays in `history/` |
+| `split REF --passages 3-5 --title T` | moves reading passages into a new file placed after it (without `--passages` it lists them) |
+| `merge A B [--keep]` | appends B's human and reading sides to A; links to B come to A; B is removed unless `--keep` |
+
+**Versions.** Every command that changes a file keeps the previous version
+in `history/`.
+
+| Command | Does |
+|---|---|
+| `log REF` | the saved versions, newest first (1), and what changed after each |
+| `diff REF [--version K] [--side S]` | a unified diff of a saved version against the current file |
+| `revert REF [--version K] [--side S] [--header]` | brings back sides of a version (the current one is saved first); brings back a removed file; a reverted machine side comes back with the digest of the sources it was built from |
+
+**State.**
+
+| Command | Does |
+|---|---|
+| `status [--branch REF]` | only what is unfinished: stale files, path steps without a machine side, machine sides without contracts, empty human sides, edits made outside Tawjih, edits left in `work/` |
+| `tag REF WORD...` / `untag` / `tag` | labels across trees; `tag` alone lists them; `search --tag` filters by one |
+| `sync [--confirm-machine] [--clean-work] [--watch S]` | finds files edited outside Tawjih (in another editor, by git) since the last sync and reports which sides; a machine side rebuilt by hand can be recorded as built |
+| `refs REF` | links in and out, every path that uses the file with its neighbours, `AMONG` choices, shared tags, machine sides that mention its title |
+| `clean [--runs DAYS] --yes` | removes unfinished edits in `work/` and old run records, removes broken links; reports paths and files it cannot fix |
+| `audit [REF \| --path NAME]` | reads the code sides for what touches the system (running programs, deleting or writing files, the network, running text as code); `produce` and `run` print its warnings before running code. A check of what the code says, not a sandbox |
+
+**Search, outputs and services.**
+
+| Command | Does |
+|---|---|
+| `search QUERY --rank` | ranks titles, paragraphs and reading passages by relevance (BM25), any of the words |
+| `index --backend ollama [--model M]` then `search QUERY --semantic` | search by meaning with an embedding model (default `nomic-embed-text`); only changed pieces are embedded again |
+| `export [--branch REF] [-o book.html] [--machine] [--no-reading]` | the trees as one book in Markdown or HTML, with the reading passages and their sources; HTML shows formulas with MathJax, loaded from the web (`--no-mathjax` for an offline page) |
+| `pack --branch REF \| --path NAME -o F.zip` / `unpack F.zip [--parent REF] [--new-ids]` | moves a branch with its paths to another project; clashing ids are refused unless `--new-ids` |
+| `ingest FILE [--deposit]` | turns `.docx` (headings, lists, tables; formulas as plain text to check) and `.epub` into Markdown; `.pdf` through `pdftotext` when installed, with a warning |
+| `serve [--port P] [--backend B] [--allow-code]` | offers saved paths over HTTP on this computer: `GET /paths`, `POST /paths/NAME` with `{"input": "..."}` and the printed token; one run at a time |
+| `eval NAME [--cases F]` | runs a path on cases with known answers (`paths/NAME.cases.jsonl`: `{"input": ..., "expect": ..., "match": contains \| not-contains \| equals \| regex \| json}`) and reports how many pass; exits with 1 if any fails |
+| `dataset -o F.jsonl [--source eval\|runs\|steps]` | writes question-answer pairs in the chat format (or prompt/completion) for fine-tuning tools such as Unsloth or axolotl. Tawjih does not train models; read the pairs before training |
+
+`eval` is how the central claim of the method can be tested: write the
+questions and the answers you expect, then run the same cases with a path
+and with a model asked directly.
 
 ## Desktop windows, for Linux users
 
@@ -307,6 +361,9 @@ runs/     log, result and state of every run   (git-ignored)
 cache/    kept model answers, for --resume     (git-ignored)
 history/  production records, and previous
           versions of edited files             (git-ignored)
+index/    the semantic search index            (git-ignored)
+state.json  digests of the files as Tawjih last
+          wrote them, for sync and status      (git-ignored)
 ```
 
 ## Limitations
@@ -327,13 +384,19 @@ history/  production records, and previous
   the model; it is checked, not trusted.
 - `tangle` exports code only: instructions need a model, and the exported
   module does not run the path.
-- Books are read from text, Markdown, LaTeX, HTML or XML (PreTeXt). PDF
-  and Word are refused; the LaTeX and HTML readers handle common markup, not
-  every package or page layout.
+- Books are read from text, Markdown, LaTeX, HTML or XML (PreTeXt); `ingest`
+  turns Word, EPUB and (through `pdftotext`) PDF into Markdown first. The
+  LaTeX and HTML readers handle common markup, not every package or page
+  layout; Word formulas come out as plain text.
+- `search --semantic` is only as good as the embedding model; `--rank`
+  matches words, not meanings.
+- `serve` runs one path at a time and keeps no accounts: anyone with the
+  token can run the offered paths with your provider and, with
+  `--allow-code`, their code.
 - Filtering makes one model call per passage, and copies kept passages
   verbatim; it does not summarise.
-- Staleness is recorded only when a machine side is written through
-  `open`, `edit` or the Linux windows, not when you edit a file by hand.
+- Staleness is recorded when a machine side is written through `open`,
+  `edit` or the Linux windows. After editing files by hand, run `sync`.
 - A line consisting only of `=== human ===` (or another section marker)
   inside your text will be read as a section boundary.
 - External providers receive whatever you send them: with `edit`, the file's
@@ -348,7 +411,9 @@ running paths and cross-tree productions with branching, joining, `IF`,
 `AMONG` and `THROUGH` (including that the human and reading sides never reach the
 model), `edit`, the deposit → filter → accept pipeline, `open` with a
 scripted stand-in editor, contracts, model choice, staleness, `steps` and
-`linked`, `tangle`, `graph` and `generate`. The diagrams from `graph` were
+`linked`, `tangle`, `graph` and `generate`; and since 0.7 every command in
+[Managing a project](#managing-a-project), with `serve` called over HTTP
+and the embedding provider replaced by a stand-in. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 
 The same tests pass on Windows and Linux, on Python 3.11 and 3.13, in the

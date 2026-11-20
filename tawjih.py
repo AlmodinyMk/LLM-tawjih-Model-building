@@ -21,6 +21,7 @@ import difflib
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -36,7 +37,7 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -158,7 +159,7 @@ def _validate_contract(text, spec, label):
 class Node:
     def __init__(self, id="", title="", level=1, parent="", order=0,
                  links=None, model="", expects="", produces="", built_sha="",
-                 human="", instructions="", code="", reading=""):
+                 human="", instructions="", code="", reading="", tags=None):
         self.id, self.title, self.level = id, title, int(level)
         self.parent, self.order = parent, int(order)
         self.links = links or []          # [(target_id, type)]
@@ -168,6 +169,7 @@ class Node:
         self.built_sha = built_sha.strip()
         self.human, self.instructions, self.code = human, instructions, code
         self.reading = reading
+        self.tags = list(tags or [])          # cross-tree labels
 
     def source_digest(self):
         """SHA-256 prefix of build-time material (human + reading)."""
@@ -196,6 +198,8 @@ class Node:
             out.append("produces: " + self.produces)
         if self.built_sha:
             out.append("built_sha: " + self.built_sha)
+        if self.tags:
+            out.append("tags: " + ", ".join(self.tags))
         out.append("---")
         for s in SECTIONS:
             out += [MARK.format(s), getattr(self, s).strip("\n")]
@@ -237,6 +241,8 @@ class Node:
                     expects=meta.get("expects", ""),
                     produces=meta.get("produces", ""),
                     built_sha=meta.get("built_sha", ""),
+                    tags=[t.strip() for t in meta.get("tags", "").split(",")
+                          if t.strip()],
                     **{s: "\n".join(sec[s]).strip("\n") for s in SECTIONS})
 
 
@@ -263,9 +269,58 @@ class Store:
     def file_of(self, nid):
         return self.fdir / (nid + ".md")
 
+    # The digests of each file's sides as Tawjih last wrote them, so that
+    # edits made outside the program can be found (sync, status).
+    @property
+    def state(self):
+        if not hasattr(self, "_state"):
+            f = self.root / "state.json"
+            try:
+                self._state = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self._state = {}
+        return self._state
+
+    @staticmethod
+    def side_digests(n):
+        def d(t):
+            return hashlib.sha256(t.strip("\n").encode("utf-8")).hexdigest()[:16]
+        return {"human": d(n.human), "machine": d(n.instructions + "\0" + n.code),
+                "reading": d(n.reading)}
+
+    def _write_state(self):
+        (self.root / "state.json").write_text(
+            json.dumps(self.state, indent=0, sort_keys=True), encoding="utf-8")
+
+    def record(self, n):
+        if not (self.root / "state.json").exists():
+            # the first write in a project made before 0.7: every file as
+            # it is now is the starting point
+            self._state = {i: self.side_digests(m)
+                           for i, m in self.nodes.items()}
+        self.state[n.id] = self.side_digests(n)
+        self._write_state()
+
+    def record_all(self):
+        self._state = {i: self.side_digests(n) for i, n in self.nodes.items()}
+        self._write_state()
+
+    def forget(self, nid):
+        if self.state.pop(nid, None) is not None:
+            self._write_state()
+
+    def outside_changes(self, nid):
+        """Sides changed since Tawjih last wrote the file ([] if unknown)."""
+        old = self.state.get(nid)
+        if not old:
+            return []
+        new = self.side_digests(self.nodes[nid])
+        return [k for k in ("human", "machine", "reading") if old.get(k) != new[k]]
+
     def save(self, n):
         self.file_of(n.id).write_text(n.dump(), encoding="utf-8")
         self.nodes[n.id] = n
+        self.record(n)
 
     def children(self, pid):
         return sorted((n for n in self.nodes.values() if n.parent == pid),
@@ -1055,7 +1110,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     record = {"tawjih": __version__, "name": name,
               "started": time.strftime("%Y-%m-%d %H:%M:%S"),
               "backend": backend, "allow_code": bool(allow_code),
-              "input_chars": len(text),
+              "input_chars": len(text), "input": text,
               "input_sha": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
               "trees": trees, "cross_tree": len(trees) > 1, "handoffs": 0,
               "flow": [" ".join(l) for l in flow.lines],
@@ -1206,7 +1261,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 if cfile is not None:
                     cfile.parent.mkdir(exist_ok=True)
                     cfile.write_text(json.dumps({
-                        "answer": out, "backend": backend,
+                        "answer": out, "prompt": prompt, "backend": backend,
                         "model": step_model,
                         "step": n.id, "machine_sha": p["machine_sha"],
                         "saved": time.strftime("%Y-%m-%d %H:%M:%S")},
@@ -1311,39 +1366,6 @@ def cmd_tree(a):
         walk(root, 1)
     else:
         walk("", 0)
-
-
-def cmd_search(a):
-    """Search across trees or within a specific branch and side."""
-    st = Store(a.project)
-    root = st.resolve(a.branch) if a.branch else ""
-    ids = st.subtree_ids(root)
-    side_map = {"h": "human", "human": "human",
-                "i": "instructions", "instructions": "instructions",
-                "c": "code", "code": "code",
-                "r": "reading", "reading": "reading"}
-    target_sides = [side_map[a.side.lower()]] if a.side else SECTIONS
-    q = a.query.casefold()
-    hits = 0
-    for nid in ids:
-        n = st.nodes[nid]
-        matched = []
-        if q in n.title.casefold() or q in nid.casefold():
-            matched.append(("title", n.title))
-        for sec in target_sides:
-            text = getattr(n, sec)
-            if q in text.casefold():
-                line = next((l.strip() for l in text.splitlines()
-                             if q in l.casefold()), "")
-                matched.append((sec, line[:90]))
-        if matched:
-            hits += 1
-            num = st.number(nid)
-            print("%-8s [%s] %-8s %s" % (num, nid, LEVELS[n.level - 1],
-                                         n.title))
-            for sec, snippet in matched:
-                print("         (%s) %s" % (sec, snippet))
-    print("%d matching file(s)" % hits)
 
 
 def cmd_show(a):
@@ -1564,6 +1586,8 @@ def _run_from_args(st, a, flow):
     if redo and not a.resume:
         die("--redo goes with --resume (without --resume every step is "
             "asked again anyway)")
+    if a.allow_code:
+        audit_warnings(st, flow)
     return run_flow(st, a.name, text, a.backend, a.allow_code, flow,
                     resume=a.resume, use_cache=not a.no_cache, redo=redo,
                     model_override=getattr(a, "model", None) or "",
@@ -3088,8 +3112,8 @@ def source_to_text(path):
     if ext in (".pdf", ".docx", ".doc", ".epub", ".odt", ".rtf"):
         die("%s is not a source format. Look for the book's source first "
             "(LaTeX, PreTeXt XML, HTML or Markdown: arXiv and open textbooks "
-            "often publish it); otherwise convert it to text or Markdown with "
-            "a tool of your choice and deposit that." % ext)
+            "often publish it); otherwise turn it into Markdown with: "
+            "ingest %s --deposit" % (ext, path.name))
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -3344,6 +3368,1798 @@ def cmd_read(a):
         print("nothing to read here yet (deposit a book, then filter and accept)")
 
 
+# ------------------------------------------------------- managing the trees
+# Restructuring keeps ids, so paths (which store ids) stay valid; only the
+# positional numbers change.
+
+def _paths_using(st, ids):
+    """{path name: [ids of the given set it uses]} over saved paths."""
+    out = {}
+    ids = set(ids)
+    if st.pdir.is_dir():
+        for f in sorted(st.pdir.glob("*.path")):
+            try:
+                lines = st.load_path(f.stem, True)       # comments removed
+            except Die:
+                continue
+            toks = set(re.findall(r"\b[0-9a-f]{6}\b", " ".join(lines)))
+            hit = sorted(toks & ids)
+            if hit:
+                out[f.stem] = hit
+    return out
+
+
+def _renumber(st, parent, keep_first=None):
+    """Give the children of parent the orders 1, 2, ...; keep_first is a
+    list of ids placed in that order (the rest follow as they were)."""
+    kids = st.children(parent)
+    if keep_first is not None:
+        kids = [st.nodes[i] for i in keep_first]
+    for k, n in enumerate(kids, 1):
+        if n.order != k:
+            n.order = k
+            st.save(n)
+
+
+def _place(st, nid, parent, position=None, before=None, after=None):
+    """Put nid among the children of parent at a position (1-based) or
+    before / after a sibling; default last."""
+    sibs = [s.id for s in st.children(parent) if s.id != nid]
+    if before:
+        if before not in sibs:
+            die("--before must name a child of the new parent")
+        k = sibs.index(before)
+    elif after:
+        if after not in sibs:
+            die("--after must name a child of the new parent")
+        k = sibs.index(after) + 1
+    elif position:
+        k = max(0, min(len(sibs), position - 1))
+    else:
+        k = len(sibs)
+    sibs.insert(k, nid)
+    _renumber(st, parent, sibs)
+
+
+def _shift_levels(st, ids, delta):
+    deepest = max(st.nodes[i].level for i in ids) + delta
+    if deepest > len(LEVELS):
+        die("the branch would go deeper than level %d (%s)"
+            % (len(LEVELS), LEVELS[-1]))
+    if min(st.nodes[i].level for i in ids) + delta < 1:
+        die("the branch would go above level 1")
+    for i in ids:
+        if delta:
+            st.nodes[i].level += delta
+
+
+def _target_parent(st, a):
+    if getattr(a, "root", False):
+        return ""
+    if not a.to:
+        die("give the new parent with --to REF, or --root for a new tree")
+    return st.resolve(a.to)
+
+
+def cmd_move(a):
+    """Move a file and everything under it to a new parent."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    ids = st.subtree_ids(nid)
+    parent = _target_parent(st, a)
+    if parent in ids:
+        die("a file cannot move under itself or its own branch")
+    before = {i: st.number(i) for i in ids}
+    old_parent = st.nodes[nid].parent
+    new_level = st.nodes[parent].level + 1 if parent else (
+        a.level and parse_level(a.level) or st.nodes[nid].level)
+    delta = new_level - st.nodes[nid].level
+    for i in ids:
+        _backup(st, st.nodes[i])
+    _shift_levels(st, ids, delta)
+    st.nodes[nid].parent = parent
+    for i in ids:
+        st.save(st.nodes[i])
+    _place(st, nid, parent, a.position,
+           st.resolve(a.before) if a.before else None,
+           st.resolve(a.after) if a.after else None)
+    if old_parent != parent:
+        _renumber(st, old_parent)
+    for i in ids:
+        print("%-10s -> %-10s [%s] %s" % (before[i], st.number(i), i,
+                                         st.nodes[i].title))
+    used = _paths_using(st, ids)
+    if used:
+        print("paths name files by id and need no change: "
+              + ", ".join(sorted(used)))
+
+
+def _among_deciders(st, nid):
+    """Ids of files that choose nid with AMONG in some saved path."""
+    out = set()
+    for name in _paths_using(st, [nid]):
+        try:
+            flow = st.load_flow(name)
+        except FlowError:
+            continue
+        out |= {e["src"] for e in flow.edges
+                if e["among"] is not None and e["dst"] == nid}
+    return sorted(out)
+
+
+def cmd_rename(a):
+    """Change a file's title; AMONG deciders that name it get the new one."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    n = st.nodes[nid]
+    old, new = n.title, " ".join(a.title.split())
+    if not new:
+        die("the title is empty")
+    if old == new:
+        print("no change")
+        return
+    _backup(st, n)
+    n.title = new
+    st.save(n)
+    print("%s [%s] %s -> %s" % (st.number(nid), nid, old, new))
+    pat = re.compile(re.escape(old), re.I)
+    for d in _among_deciders(st, nid):
+        dn = st.nodes[d]
+        if pat.search(dn.instructions) and not a.no_update:
+            _backup(st, dn)
+            dn.instructions = pat.sub(new, dn.instructions)
+            st.save(dn)
+            print("  updated the instructions of %s [%s] %s, which choose "
+                  "among files by title" % (st.number(d), d, dn.title))
+        elif pat.search(dn.instructions):
+            print("  left as is (--no-update): %s [%s] names the old title"
+                  % (st.number(d), d))
+    others = [m for m in st.nodes.values() if m.id != nid
+              and m.id not in _among_deciders(st, nid)
+              and pat.search(m.instructions + "\n" + m.code)]
+    for m in others:
+        print("  note: %s [%s] %s mentions the old title in its machine side"
+              % (st.number(m.id), m.id, m.title))
+
+
+def cmd_copy(a):
+    """Copy a file (or with --branch, its whole branch) under a new parent,
+    with its sides, contracts, model and tags; links inside the copied set
+    point to the copies."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    ids = st.subtree_ids(nid) if a.branch else [nid]
+    parent = _target_parent(st, a)
+    if a.branch and parent in ids:
+        die("a branch cannot be copied into itself")
+    base = st.nodes[nid].level
+    new_level = st.nodes[parent].level + 1 if parent else base
+    delta = new_level - base
+    if max(st.nodes[i].level for i in ids) + delta > len(LEVELS):
+        die("the copy would go deeper than level %d" % len(LEVELS))
+    mapping = {}
+    for i in ids:
+        nn = uuid.uuid4().hex[:6]
+        while nn in st.nodes or nn in mapping.values():
+            nn = uuid.uuid4().hex[:6]
+        mapping[i] = nn
+    for i in ids:
+        o = st.nodes[i]
+        c = Node(id=mapping[i], title=o.title, level=o.level + delta,
+                 parent=mapping.get(o.parent, parent) if i != nid else parent,
+                 order=o.order, links=[(mapping.get(t, t), ty) for t, ty in o.links],
+                 model=o.model, expects=o.expects, produces=o.produces,
+                 built_sha=o.built_sha, human=o.human,
+                 instructions=o.instructions, code=o.code, reading=o.reading,
+                 tags=list(o.tags))
+        st.save(c)
+    if a.title:
+        st.nodes[mapping[nid]].title = " ".join(a.title.split())
+        st.save(st.nodes[mapping[nid]])
+    _place(st, mapping[nid], parent)
+    for i in ids:
+        print("%s [%s] copied to %s [%s]" % (st.number(i), i,
+                                             st.number(mapping[i]), mapping[i]))
+
+
+def _links_into(st, ids, exclude=()):
+    ids = set(ids)
+    return [(m.id, t) for m in st.nodes.values() if m.id not in exclude
+            for t, _ in m.links if t in ids]
+
+
+def _remove_files(st, ids):
+    for i in ids:
+        _backup(st, st.nodes[i])
+        st.file_of(i).unlink()
+        del st.nodes[i]
+        st.forget(i)
+
+
+def cmd_rm(a):
+    """Remove a file, or a branch with --branch, only when no saved path
+    uses it; a copy of each file stays in history/ (revert brings it back)."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    ids = st.subtree_ids(nid)
+    if len(ids) > 1 and not a.branch:
+        die("%s has %d file(s) under it; move them first, or remove the whole "
+            "branch with --branch" % (st.nodes[nid].title, len(ids) - 1))
+    used = _paths_using(st, ids)
+    if used:
+        die("not removed: used by path(s) %s. Change or remove those paths "
+            "first" % ", ".join("%s (%s)" % (p, ", ".join(v))
+                                for p, v in sorted(used.items())))
+    links = _links_into(st, ids, exclude=ids)
+    if links and not a.unlink:
+        die("not removed: linked from %s. Add --unlink to remove those links"
+            % ", ".join("%s [%s]" % (st.nodes[s].title, s) for s, _ in links))
+    for i in ids:
+        print("%s %s [%s] %s" % ("remove" if a.yes else "would remove",
+                                 st.number(i), i, st.nodes[i].title))
+    if not a.yes:
+        print("nothing removed; run again with --yes")
+        return
+    for s, _ in links:
+        m = st.nodes[s]
+        _backup(st, m)
+        m.links = [(t, ty) for t, ty in m.links if t not in ids]
+        st.save(m)
+    parent = st.nodes[nid].parent
+    _remove_files(st, ids)
+    _renumber(st, parent)
+    print("removed %d file(s); copies are in history/ (bring one back with: "
+          "revert ID)" % len(ids))
+
+
+def _passages(reading):
+    """The reading side cut into its '## ' passages (text before the first
+    one, if any, comes first)."""
+    parts, cur = [], []
+    for line in reading.split("\n"):
+        if line.startswith("## ") and cur:
+            parts.append("\n".join(cur).strip("\n"))
+            cur = []
+        cur.append(line)
+    if "\n".join(cur).strip():
+        parts.append("\n".join(cur).strip("\n"))
+    return parts
+
+
+def _pick(spec, count):
+    out = set()
+    for part in spec.replace(" ", "").split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        try:
+            lo, hi = int(lo), int(hi or lo)
+        except ValueError:
+            die("passages are given as numbers and ranges, such as 2,4-6")
+        if not (1 <= lo <= hi <= count):
+            die("passage numbers run from 1 to %d" % count)
+        out |= set(range(lo, hi + 1))
+    return sorted(out)
+
+
+def cmd_split(a):
+    """Move some reading passages of a file into a new file placed right
+    after it; without --passages, list the passages."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    n = st.nodes[nid]
+    parts = _passages(n.reading)
+    if not a.passages:
+        for k, p in enumerate(parts, 1):
+            print("%3d  %s  (%d characters)" % (k, p.split("\n")[0][:70],
+                                                 len(p)))
+        print("split with: split %s --passages 3-5 --title TITLE" % a.ref)
+        return
+    if not a.title:
+        die("give the new file a --title")
+    picked = _pick(a.passages, len(parts))
+    if len(picked) == len(parts):
+        die("that is every passage; use move or rename instead")
+    _backup(st, n)
+    new = st.new_node(a.title, n.level, n.parent)
+    new.reading = "\n\n".join(parts[k - 1] for k in picked)
+    new.tags = list(n.tags)
+    st.save(new)
+    n.reading = "\n\n".join(p for k, p in enumerate(parts, 1)
+                            if k not in picked)
+    st.save(n)
+    _place(st, new.id, n.parent, after=nid)
+    print("%d passage(s) moved to %s [%s] %s" % (len(picked),
+                                                 st.number(new.id), new.id,
+                                                 new.title))
+    if n.is_stale():
+        print("note: %s [%s] is now stale (its reading side changed); "
+              "review its machine side, then: confirm %s" % (n.title, nid,
+                                                             nid))
+
+
+def cmd_merge(a):
+    """Merge the human and reading sides of B into A, then remove B
+    (unless --keep). Links to B come to A."""
+    st = Store(a.project)
+    aid, bid = st.resolve(a.a), st.resolve(a.b)
+    if aid == bid:
+        die("a file cannot merge with itself")
+    A, B = st.nodes[aid], st.nodes[bid]
+    if not a.keep:
+        if st.children(bid):
+            die("%s has files under it; move them first, or use --keep"
+                % B.title)
+        if B.instructions.strip() or B.code.strip():
+            die("%s has a machine side, which merge does not move; clear it "
+                "or use --keep" % B.title)
+        used = _paths_using(st, [bid])
+        if used:
+            die("%s is used by path(s) %s; change them first, or use --keep"
+                % (B.title, ", ".join(sorted(used))))
+    _backup(st, A)
+    note = "<!-- merged from %s [%s] -->" % (B.title, bid)
+    if B.human.strip():
+        A.human = "\n\n".join(x for x in (A.human.strip("\n"), note,
+                                          B.human.strip("\n")) if x)
+    if B.reading.strip():
+        A.reading = "\n\n".join(x for x in (A.reading.strip("\n"),
+                                            B.reading.strip("\n")) if x)
+    for t, ty in B.links:
+        if t != aid and (t, ty) not in A.links:
+            A.links.append((t, ty))
+    A.tags = sorted(set(A.tags) | set(B.tags))
+    st.save(A)
+    print("merged %s [%s] into %s [%s]" % (B.title, bid, A.title, aid))
+    if not a.keep:
+        for s, _ in _links_into(st, [bid], exclude=[bid]):
+            m = st.nodes[s]
+            if m.id == aid:
+                m.links = [(t, ty) for t, ty in m.links if t != bid]
+            else:
+                _backup(st, m)
+                m.links = [(aid if t == bid else t, ty) for t, ty in m.links]
+            st.save(m)
+        parent = B.parent
+        _remove_files(st, [bid])
+        _renumber(st, parent)
+        print("removed %s [%s]; a copy is in history/" % (B.title, bid))
+    if A.is_stale():
+        print("note: %s is now stale; review its machine side, then: "
+              "confirm %s" % (A.title, aid))
+
+
+# ---------------------------------------------------------------- history
+def _versions(st, nid):
+    """Saved versions of a file, newest first: [(label, path, Node)]."""
+    hdir = st.root / "history"
+    out = []
+    if hdir.is_dir():
+        for f in hdir.glob(nid + "-*.md"):
+            m = re.fullmatch(re.escape(nid) + r"-(\d{8})-(\d{6})(?:-(\d+))?\.md",
+                             f.name)
+            if not m:
+                continue
+            try:
+                node = Node.parse(f.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            key = (m.group(1), m.group(2), int(m.group(3) or 1))
+            out.append((key, f, node))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return [("%s-%s-%s %s:%s:%s" % (k[0][:4], k[0][4:6], k[0][6:], k[1][:2],
+                                     k[1][2:4], k[1][4:]), f, node)
+            for k, f, node in out]
+
+
+HEADER_FIELDS = ("title", "parent", "level", "order", "links", "model",
+                 "expects", "produces", "tags")
+
+
+def _changes(old, new):
+    """What differs between two versions of a file."""
+    out = [s for s in SECTIONS
+           if getattr(old, s).strip("\n") != getattr(new, s).strip("\n")]
+    out += [h for h in HEADER_FIELDS if getattr(old, h) != getattr(new, h)]
+    return out
+
+
+def _resolve_any(st, ref):
+    """A file id even when the file was removed (it has saved versions)."""
+    if ref not in st.nodes and re.fullmatch(r"[0-9a-f]{6}", ref) \
+            and _versions(st, ref):
+        return ref
+    return st.resolve(ref)
+
+
+def cmd_log(a):
+    """The saved versions of a file, newest first, and what changed."""
+    st = Store(a.project)
+    nid = _resolve_any(st, a.ref)
+    cur = st.nodes.get(nid)
+    vers = _versions(st, nid)
+    if cur:
+        print("current  %s [%s] %s%s" % (st.number(nid), nid, cur.title,
+                                         "  (stale)" if cur.is_stale() else ""))
+    else:
+        print("removed  [%s]: bring it back with: revert %s" % (nid, nid))
+    later = cur
+    for k, (stamp, f, node) in enumerate(vers, 1):
+        what = _changes(node, later) if later else []
+        print("%3d  %s  %s" % (k, stamp, ("then changed: " + ", ".join(what))
+                               if what else "(nothing changed after it)"))
+        later = node
+    if not vers:
+        print("no saved versions yet (they are kept whenever a command "
+              "changes the file)")
+
+
+def _side_names(spec):
+    if not spec:
+        return list(SECTIONS)
+    out = []
+    for s in spec:
+        s = {"h": "human", "i": "instructions", "c": "code", "r": "reading"
+             }.get(s, s)
+        if s == "machine":
+            out += ["instructions", "code"]
+        elif s in SECTIONS:
+            out.append(s)
+        else:
+            die("unknown side '%s' (human, instructions, code, machine, "
+                "reading)" % s)
+    return out
+
+
+def _version(st, nid, k):
+    vers = _versions(st, nid)
+    if not vers:
+        die("no saved versions of %s" % nid)
+    if not 1 <= k <= len(vers):
+        die("versions run from 1 (newest) to %d; see: log %s" % (len(vers),
+                                                                 nid))
+    return vers[k - 1]
+
+
+def cmd_diff(a):
+    """Differences between a saved version (1 = newest) and the current
+    file, side by side as a unified diff."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    stamp, f, old = _version(st, nid, a.version)
+    cur = st.nodes[nid]
+    shown = 0
+    for h in HEADER_FIELDS:
+        if getattr(old, h) != getattr(cur, h):
+            print("%s: %s -> %s" % (h, getattr(old, h), getattr(cur, h)))
+            shown += 1
+    for s in _side_names(a.side):
+        o, c = getattr(old, s).strip("\n"), getattr(cur, s).strip("\n")
+        if o == c:
+            continue
+        shown += 1
+        sys.stdout.writelines(difflib.unified_diff(
+            (o + "\n").splitlines(True), (c + "\n").splitlines(True),
+            "%s version %d (%s)" % (s, a.version, stamp), "%s current" % s))
+    if not shown:
+        print("no differences")
+
+
+def cmd_revert(a):
+    """Bring back sides of a saved version (1 = newest). The current file is
+    saved first, so a revert can itself be reverted. A removed file comes
+    back whole."""
+    st = Store(a.project)
+    nid = _resolve_any(st, a.ref)
+    stamp, f, old = _version(st, nid, a.version)
+    if nid not in st.nodes:
+        if old.parent and old.parent not in st.nodes:
+            die("its parent [%s] no longer exists; restore that first"
+                % old.parent)
+        st.save(old)
+        _place(st, nid, old.parent)
+        print("restored %s [%s] %s from %s" % (st.number(nid), nid, old.title,
+                                               stamp))
+        return
+    cur = st.nodes[nid]
+    sides = _side_names(a.side)
+    _backup(st, cur)
+    for s in sides:
+        setattr(cur, s, getattr(old, s))
+    if a.header:
+        for h in ("title", "links", "model", "expects", "produces", "tags"):
+            setattr(cur, h, getattr(old, h))
+    if any(s in sides for s in ("instructions", "code")):
+        # the machine side comes back with the sources it was built from
+        cur.built_sha = old.built_sha
+    st.save(cur)
+    print("reverted %s of %s [%s] to %s%s" % (", ".join(sides), cur.title,
+                                              nid, stamp,
+                                              " (and its header)" if a.header
+                                              else ""))
+    if cur.is_stale():
+        print("note: the machine side is older than the current human or "
+              "reading side (stale)")
+
+
+# ------------------------------------------------------- state, tags, sync
+def cmd_status(a):
+    """Only what is unfinished: stale files, steps without a machine side,
+    machine sides without contracts, empty human sides, edits made outside
+    Tawjih, edits left in work/."""
+    st = Store(a.project)
+    scope = st.subtree_ids(st.resolve(a.branch)) if a.branch else \
+        st.subtree_ids("")
+    in_paths = set()
+    for v in _paths_using(st, scope).values():
+        in_paths |= set(v)
+    def has_machine(i):
+        return bool(st.nodes[i].instructions.strip() or st.nodes[i].code.strip())
+    groups = [
+        ("stale (the human or reading side changed after the machine side "
+         "was built)", [i for i in scope if st.nodes[i].is_stale()]),
+        ("in a path but without a machine side",
+         [i for i in scope if i in in_paths and not has_machine(i)]),
+        ("machine side without contracts",
+         [i for i in scope if has_machine(i)
+          and not (st.nodes[i].expects or st.nodes[i].produces)]),
+        ("empty human side", [i for i in scope if not st.nodes[i].human.strip()]),
+        ("changed outside Tawjih since the last sync",
+         [i for i in scope if st.outside_changes(i)]),
+    ]
+    total = 0
+    for title, ids in groups:
+        if not ids:
+            continue
+        total += len(ids)
+        print("%s: %d" % (title, len(ids)))
+        for i in ids:
+            print("  %-10s [%s] %s" % (st.number(i), i, st.nodes[i].title))
+    work = st.root / "work"
+    if work.is_dir():
+        left = sorted(d.name for d in work.iterdir() if d.is_dir())
+        if left:
+            total += len(left)
+            print("edits left unfinished in work/: %s (see: sync "
+                  "--clean-work)" % ", ".join(left))
+    if not total:
+        print("nothing unfinished in %d file(s)" % len(scope))
+
+
+def _clean_tags(words):
+    out = []
+    for w in words:
+        for t in w.split(","):
+            t = t.strip().lstrip("#")
+            if t and not re.fullmatch(r"[\w\-.]+", t):
+                die("a tag is one word (letters, digits, '-', '_', '.'): " + t)
+            if t:
+                out.append(t)
+    return out
+
+
+def cmd_tag(a):
+    """Add tags to a file; without tags, list every tag and its files."""
+    st = Store(a.project)
+    if not a.ref:
+        tags = {}
+        for n in st.nodes.values():
+            for t in n.tags:
+                tags.setdefault(t, []).append(n.id)
+        for t in sorted(tags):
+            print("%s (%d)" % (t, len(tags[t])))
+            for i in sorted(tags[t], key=st.number):
+                print("  %-10s [%s] %s" % (st.number(i), i, st.nodes[i].title))
+        if not tags:
+            print("no tags yet (add one with: tag REF WORD)")
+        return
+    nid = st.resolve(a.ref)
+    n = st.nodes[nid]
+    if not a.tags:
+        print(", ".join(n.tags) or "no tags")
+        return
+    add = [t for t in _clean_tags(a.tags) if t not in n.tags]
+    if add:
+        n.tags = n.tags + add
+        st.save(n)
+    print("%s [%s] tags: %s" % (n.title, nid, ", ".join(n.tags)))
+
+
+def cmd_untag(a):
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    n = st.nodes[nid]
+    drop = set(_clean_tags(a.tags))
+    missing = drop - set(n.tags)
+    if missing:
+        print("not tagged: " + ", ".join(sorted(missing)))
+    n.tags = [t for t in n.tags if t not in drop]
+    st.save(n)
+    print("%s [%s] tags: %s" % (n.title, nid, ", ".join(n.tags) or "none"))
+
+
+def cmd_sync(a):
+    """Find files edited outside Tawjih since the last sync, record them,
+    and with --clean-work remove unfinished edits left in work/."""
+    while True:
+        st = Store(a.project)
+        changed = {i: st.outside_changes(i) for i in st.nodes}
+        changed = {i: c for i, c in changed.items() if c}
+        new = [i for i in st.nodes if i not in st.state]
+        gone = [i for i in st.state if i not in st.nodes]
+        for i, sides in sorted(changed.items(), key=lambda x: st.number(x[0])):
+            n = st.nodes[i]
+            note = ""
+            if "machine" in sides and a.confirm_machine:
+                n.built_sha = n.source_digest()
+                st.save(n)
+                note = "  (machine side recorded as built from the current "\
+                       "sides)"
+            elif "machine" in sides and n.built_sha:
+                note = "  (if you rebuilt the machine side by hand: sync "\
+                       "--confirm-machine)"
+            print("changed outside Tawjih: %-10s [%s] %s: %s%s" % (
+                st.number(i), i, n.title, ", ".join(sides), note))
+            if n.is_stale():
+                print("  now stale: the machine side is older than its "
+                      "sources")
+        for i in new:
+            if st.state:
+                print("new file, not made by Tawjih: %s [%s] %s" % (
+                    st.number(i), i, st.nodes[i].title))
+        for i in gone:
+            print("removed outside Tawjih: [%s]" % i)
+        st.record_all()
+        work = st.root / "work"
+        if work.is_dir():
+            for d in sorted(x for x in work.iterdir() if x.is_dir()):
+                if a.clean_work:
+                    shutil.rmtree(str(d), ignore_errors=True)
+                    print("removed the unfinished edit in work/%s" % d.name)
+                else:
+                    print("unfinished edit in work/%s (open in an editor, or "
+                          "left by an interrupted open); remove it with "
+                          "--clean-work" % d.name)
+            if a.clean_work:
+                with contextlib.suppress(OSError):
+                    work.rmdir()
+        if not (changed or gone or (new and st.state)):
+            print("in sync: %d file(s)" % len(st.nodes))
+        if not a.watch:
+            return
+        try:
+            time.sleep(a.watch)
+        except KeyboardInterrupt:
+            return
+
+
+def cmd_refs(a):
+    """Everything that refers to a file: links in and out, paths and their
+    neighbours, AMONG choices, shared tags, mentions of its title."""
+    st = Store(a.project)
+    nid = st.resolve(a.ref)
+    n = st.nodes[nid]
+
+    def name(i):
+        return "%s [%s] %s" % (st.number(i), i, st.nodes[i].title) \
+            if i in st.nodes else "[%s] (missing)" % i
+    print("%s" % name(nid))
+    if n.parent:
+        print("  parent: " + name(n.parent))
+    kids = st.children(nid)
+    if kids:
+        print("  files under it: %d" % len(st.subtree_ids(nid)[1:]))
+    for t, ty in n.links:
+        print("  links to: %s (%s)" % (name(t), ty))
+    for s, _ in _links_into(st, [nid]):
+        ty = next(ty for t, ty in st.nodes[s].links if t == nid)
+        print("  linked from: %s (%s)" % (name(s), ty))
+    for p in sorted(_paths_using(st, [nid])):
+        try:
+            flow = st.load_flow(p)
+        except FlowError as e:
+            print("  path %s: unreadable (%s)" % (p, e))
+            continue
+        ins = [e for e in flow.edges if e["dst"] == nid]
+        outs = [e for e in flow.edges if e["src"] == nid]
+        print("  path %s: from %s; to %s" % (
+            p, ", ".join(name(e["src"]) + (" (AMONG)" if e["among"] is not None
+                                           else "") for e in ins) or "the request",
+            ", ".join(name(e["dst"]) for e in outs) or "the result"))
+    for t in n.tags:
+        same = [m.id for m in st.nodes.values() if t in m.tags and m.id != nid]
+        if same:
+            print("  tag %s also on: %s" % (t, "; ".join(name(i) for i in same)))
+    pat = re.compile(re.escape(n.title), re.I)
+    for m in st.nodes.values():
+        if m.id != nid and pat.search(m.instructions + "\n" + m.code):
+            print("  machine side mentions its title: " + name(m.id))
+
+
+def cmd_clean(a):
+    """Report (and with --yes, fix) leftovers: unfinished edits in work/,
+    old runs, broken links, files whose parent is missing, paths naming
+    missing files."""
+    st = Store(a.project)
+    acts = []
+    work = st.root / "work"
+    if work.is_dir():
+        for d in sorted(x for x in work.iterdir() if x.is_dir()):
+            acts.append(("unfinished edit work/%s" % d.name,
+                         lambda d=d: shutil.rmtree(str(d), ignore_errors=True)))
+    if a.runs is not None and st.rdir.is_dir():
+        limit = time.time() - a.runs * 86400
+        for f in sorted(st.rdir.iterdir()):
+            if f.is_file() and f.stat().st_mtime < limit:
+                acts.append(("run record older than %d day(s): runs/%s"
+                             % (a.runs, f.name), lambda f=f: f.unlink()))
+    for n in list(st.nodes.values()):
+        bad = [t for t, _ in n.links if t not in st.nodes]
+        if bad:
+            def fix(n=n, bad=bad):
+                _backup(st, n)
+                n.links = [(t, ty) for t, ty in n.links if t not in bad]
+                st.save(n)
+            acts.append(("broken link(s) in %s [%s]: %s" % (
+                n.title, n.id, ", ".join(bad)), fix))
+        if n.parent and n.parent not in st.nodes:
+            print("problem (not fixed automatically): %s [%s] has a missing "
+                  "parent [%s]; give it one with move" % (n.title, n.id,
+                                                          n.parent))
+    if st.pdir.is_dir():
+        for f in sorted(st.pdir.glob("*.path")):
+            try:
+                st.load_flow(f.stem)
+            except FlowError as e:
+                print("problem (not fixed automatically): path %s: %s"
+                      % (f.stem, e))
+    for what, _ in acts:
+        print(("fixed: " if a.yes else "found: ") + what)
+    if a.yes:
+        for _, fn in acts:
+            fn()
+        with contextlib.suppress(OSError):
+            work.rmdir()
+    elif acts:
+        print("nothing changed; run again with --yes")
+    if not acts:
+        print("nothing to clean")
+
+
+# -------------------------------------------------------------------- audit
+AUDIT_CALLS = {
+    "os.system": "runs a shell command", "os.popen": "runs a shell command",
+    "os.remove": "deletes a file", "os.unlink": "deletes a file",
+    "os.rmdir": "deletes a folder", "os.removedirs": "deletes folders",
+    "os.rename": "moves a file", "os.replace": "overwrites a file",
+    "os.chmod": "changes permissions", "os.chown": "changes ownership",
+    "os.kill": "stops a process", "os.fork": "starts a process",
+    "shutil.rmtree": "deletes a folder tree", "shutil.move": "moves files",
+    "shutil.copy": "writes files", "shutil.copyfile": "writes files",
+    "shutil.copytree": "writes files", "shutil.make_archive": "writes files",
+    "eval": "runs text as code", "exec": "runs text as code",
+    "compile": "turns text into code", "__import__": "imports by name",
+    "getattr": "reaches attributes by name (cannot be checked)",
+    "globals": "changes the program's state", "setattr": "changes objects by name",
+}
+AUDIT_PREFIX = {"subprocess.": "runs programs", "os.exec": "replaces the process",
+                "os.spawn": "starts programs", "socket.": "opens network "
+                "connections", "urllib.": "uses the network", "http.": "uses "
+                "the network", "requests.": "uses the network", "ctypes.":
+                "calls machine code", "importlib.": "imports by name",
+                "pickle.load": "runs code from data", "marshal.load":
+                "runs code from data", "shelve.": "writes files"}
+AUDIT_METHODS = {"unlink": "deletes a file", "rmdir": "deletes a folder",
+                 "write_text": "writes a file", "write_bytes": "writes a file",
+                 "touch": "creates a file", "chmod": "changes permissions",
+                 "rename": "moves a file", "replace": "overwrites a file",
+                 "mkdir": "creates a folder"}
+AUDIT_MODULES = {"subprocess", "socket", "ctypes", "urllib", "http", "requests",
+                 "shutil", "importlib", "pickle", "marshal", "multiprocessing",
+                 "threading", "asyncio", "ftplib", "smtplib", "telnetlib",
+                 "webbrowser"}
+
+
+def audit_code(code):
+    """Findings in a code side: [(line, level, message)], level 'danger'
+    or 'note'. A static check: it finds what is written, not everything a
+    program can do."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return [(e.lineno or 0, "danger", "syntax error: %s" % e.msg)]
+    alias, out = {}, []
+
+    def dotted(node):
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if isinstance(node, ast.Name):
+            parts.append(alias.get(node.id, node.id))
+            return ".".join(reversed(parts))
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            mod = node.module if isinstance(node, ast.ImportFrom) else None
+            for al in node.names:
+                if mod:
+                    alias[al.asname or al.name] = mod + "." + al.name
+                elif al.asname:
+                    alias[al.asname] = al.name
+                else:
+                    alias[al.name.split(".")[0]] = al.name.split(".")[0]
+                top = (mod or al.name).split(".")[0]
+                if top in AUDIT_MODULES:
+                    out.append((node.lineno, "danger" if top in (
+                        "subprocess", "socket", "ctypes", "shutil",
+                        "multiprocessing") else "note",
+                        "imports %s" % (mod or al.name)))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = dotted(node.func)
+        if name is None:
+            if isinstance(node.func, ast.Attribute) and \
+                    node.func.attr in AUDIT_METHODS:
+                out.append((node.lineno, "danger", "%s: %s" % (
+                    node.func.attr, AUDIT_METHODS[node.func.attr])))
+            continue
+        msg = AUDIT_CALLS.get(name)
+        if not msg:
+            msg = next((m for p, m in AUDIT_PREFIX.items()
+                        if name.startswith(p)), None)
+        if not msg and isinstance(node.func, ast.Attribute) and \
+                node.func.attr in AUDIT_METHODS and not name.startswith(
+                    ("vars.", "steps.", "str.")):
+            msg = AUDIT_METHODS[node.func.attr]
+        if name == "open":
+            mode = ""
+            if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                mode = str(node.args[1].value)
+            for kw in node.keywords:
+                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                    mode = str(kw.value.value)
+            if set(mode) & set("wax+"):
+                msg = "opens a file for writing"
+            elif len(node.args) > 1 and not isinstance(node.args[1],
+                                                        ast.Constant):
+                msg = "opens a file in a mode that cannot be checked"
+        if msg:
+            level = "note" if name in ("getattr", "setattr", "globals") \
+                or msg.endswith("(cannot be checked)") else "danger"
+            out.append((node.lineno, level, "%s: %s" % (name, msg)))
+    return sorted(set(out))
+
+
+def cmd_audit(a):
+    """Look through code sides for what touches the system: running
+    programs, deleting or writing files, the network, running text as code.
+    A warning, not a sandbox: it cannot prove code harmless."""
+    st = Store(a.project)
+    if a.path:
+        ids = list(_flow_from_args(st, a.path, []).nodes)
+    elif a.ref:
+        ids = st.subtree_ids(st.resolve(a.ref))
+    else:
+        ids = st.subtree_ids("")
+    dangers = 0
+    checked = 0
+    for i in ids:
+        n = st.nodes[i]
+        if not n.code.strip():
+            continue
+        checked += 1
+        found = audit_code(n.code)
+        if not found:
+            continue
+        print("%s [%s] %s" % (st.number(i), i, n.title))
+        for line, level, msg in found:
+            print("  line %-4s %-6s %s" % (line, level, msg))
+            dangers += level == "danger"
+    print("%d code side(s) checked, %d finding(s) to read before "
+          "--allow-code. This is a check of what the code says, not a "
+          "sandbox." % (checked, dangers))
+    return 1 if dangers else 0
+
+
+def audit_warnings(st, flow):
+    """Short warnings printed before a run with --allow-code."""
+    for i in flow.nodes:
+        found = [f for f in audit_code(st.nodes[i].code)
+                 if f[1] == "danger"] if st.nodes[i].code.strip() else []
+        if found:
+            print("  audit: %s [%s]: %s" % (st.nodes[i].title, i, "; ".join(
+                "line %d %s" % (l, m) for l, _, m in found[:3])),
+                file=sys.stderr)
+
+
+# ---------------------------------------------------------- ranked search
+def _words(text):
+    return [w.casefold() for w in re.findall(r"\w+", text) if len(w) > 1]
+
+
+def _search_chunks(st, ids, sides):
+    """Searchable pieces: the title, each reading passage, each paragraph
+    of the other sides. [(id, side, text)]"""
+    out = []
+    for i in ids:
+        n = st.nodes[i]
+        out.append((i, "title", n.title))
+        for s in sides:
+            text = getattr(n, s)
+            if not text.strip():
+                continue
+            pieces = _passages(text) if s == "reading" else \
+                [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+            for p in pieces:
+                out.append((i, s, p.strip()))
+    return out
+
+
+def bm25(query, chunks, k1=1.5, b=0.75):
+    """Okapi BM25 scores of chunks [(.., .., text)] for a query."""
+    docs = [_words(c[2]) for c in chunks]
+    if not docs:
+        return []
+    avg = sum(len(d) for d in docs) / len(docs) or 1
+    df = {}
+    for d in docs:
+        for w in set(d):
+            df[w] = df.get(w, 0) + 1
+    q = _words(query)
+    scores = []
+    for d in docs:
+        tf, s = {}, 0.0
+        for w in d:
+            tf[w] = tf.get(w, 0) + 1
+        for w in q:
+            if w in tf:
+                idf = math.log(1 + (len(docs) - df[w] + 0.5) / (df[w] + 0.5))
+                s += idf * tf[w] * (k1 + 1) / (
+                    tf[w] + k1 * (1 - b + b * len(d) / avg))
+        scores.append(s)
+    return scores
+
+
+# embeddings: a provider turns texts into vectors
+def embed_ollama(texts, model):
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    if not host.startswith("http"):
+        host = "http://" + host
+    return _post(host + "/api/embed", {"model": model, "input": texts},
+                 {})["embeddings"]
+
+
+def embed_openai(texts, model):
+    """The same provider settings as the openai backend."""
+    base = os.environ.get("TAWJIH_BASE_URL", "https://api.openai.com/v1")
+    key = os.environ.get("TAWJIH_API_KEY", "")
+    data = _post(base.rstrip("/") + "/embeddings",
+                 {"model": model, "input": texts},
+                 {"Authorization": "Bearer " + key} if key else {})["data"]
+    return [d["embedding"] for d in sorted(data, key=lambda d: d["index"])]
+
+
+EMBEDDERS = {"ollama": embed_ollama, "openai": embed_openai}
+
+
+def _cosine(u, v):
+    num = sum(x * y for x, y in zip(u, v))
+    den = math.sqrt(sum(x * x for x in u)) * math.sqrt(sum(y * y for y in v))
+    return num / den if den else 0.0
+
+
+def _index_file(st):
+    return st.root / "index" / "embeddings.json"
+
+
+def cmd_index(a):
+    """Build or update the semantic index of the human and reading sides
+    (and titles) with an embedding model. Only new or changed pieces are
+    sent to the provider."""
+    st = Store(a.project)
+    model = a.model or os.environ.get("TAWJIH_EMBED_MODEL", "nomic-embed-text")
+    f = _index_file(st)
+    old = {}
+    if f.is_file():
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if data.get("backend") == a.backend and data.get("model") == model:
+            old = {c["sha"]: c["vector"] for c in data["chunks"]}
+    chunks = _search_chunks(st, st.subtree_ids(""), ["human", "reading"])
+    rows, todo = [], []
+    for i, side, text in chunks:
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        rows.append({"id": i, "side": side, "sha": sha, "text": text[:4000]})
+        if sha not in old:
+            todo.append(rows[-1])
+    print("%d piece(s), %d to embed with %s/%s" % (len(rows), len(todo),
+                                                   a.backend, model),
+          file=sys.stderr)
+    for k in range(0, len(todo), 32):
+        batch = todo[k:k + 32]
+        try:
+            vecs = EMBEDDERS[a.backend]([r["text"] for r in batch], model)
+        except Exception as e:
+            die("the embedding provider failed: %s: %s" % (type(e).__name__, e))
+        for r, v in zip(batch, vecs):
+            old[r["sha"]] = v
+    for r in rows:
+        r["vector"] = old[r["sha"]]
+        r.pop("text")
+    f.parent.mkdir(exist_ok=True)
+    f.write_text(json.dumps({"backend": a.backend, "model": model,
+                             "built": time.strftime("%Y-%m-%d %H:%M:%S"),
+                             "chunks": rows}), encoding="utf-8")
+    print("index: %s (%d pieces)" % (f, len(rows)))
+
+
+def search_ranked(st, query, ids, sides, semantic=False, top=10):
+    chunks = _search_chunks(st, ids, sides)
+    if semantic:
+        f = _index_file(st)
+        if not f.is_file():
+            die("no semantic index yet; build it with: index --backend ollama")
+        data = json.loads(f.read_text(encoding="utf-8"))
+        vecs = {c["sha"]: c["vector"] for c in data["chunks"]}
+        try:
+            q = EMBEDDERS[data["backend"]]([query], data["model"])[0]
+        except Exception as e:
+            die("the embedding provider failed: %s: %s" % (type(e).__name__, e))
+        scored, missing = [], 0
+        for c in chunks:
+            sha = hashlib.sha256(c[2].encode("utf-8")).hexdigest()[:16]
+            if sha in vecs:
+                scored.append((_cosine(q, vecs[sha]), c))
+            elif c[1] in ("human", "reading", "title"):
+                missing += 1
+        if missing:
+            print("note: %d piece(s) changed since the index was built; run "
+                  "index again" % missing, file=sys.stderr)
+    else:
+        scored = list(zip(bm25(query, chunks), chunks))
+        scored = [x for x in scored if x[0] > 0]
+    scored.sort(key=lambda x: -x[0])
+    return scored[:top]
+
+
+def cmd_search(a):
+    """Search across trees or within a branch and side: literal by default,
+    ranked by relevance with --rank (BM25), or by meaning with --semantic
+    (an index built by the index command)."""
+    st = Store(a.project)
+    root = st.resolve(a.branch) if a.branch else ""
+    ids = st.subtree_ids(root)
+    if a.tag:
+        ids = [i for i in ids if a.tag in st.nodes[i].tags]
+    side_map = {"h": "human", "human": "human",
+                "i": "instructions", "instructions": "instructions",
+                "c": "code", "code": "code",
+                "r": "reading", "reading": "reading"}
+    if a.side and a.side.lower() not in side_map:
+        die("unknown side '%s'" % a.side)
+    target_sides = [side_map[a.side.lower()]] if a.side else SECTIONS
+    if a.rank or a.semantic:
+        hits = search_ranked(st, a.query, ids, target_sides, a.semantic,
+                             a.top)
+        for score, (i, side, text) in hits:
+            print("%6.3f  %-8s [%s] %s  (%s)" % (score, st.number(i), i,
+                                                 st.nodes[i].title, side))
+            print("         " + " ".join(text.split())[:110])
+        print("%d result(s)" % len(hits))
+        return
+    q = a.query.casefold()
+    hits = 0
+    for nid in ids:
+        n = st.nodes[nid]
+        matched = []
+        if q in n.title.casefold() or q in nid.casefold():
+            matched.append(("title", n.title))
+        for sec in target_sides:
+            text = getattr(n, sec)
+            if q in text.casefold():
+                line = next((l.strip() for l in text.splitlines()
+                             if q in l.casefold()), "")
+                matched.append((sec, line[:90]))
+        if matched:
+            hits += 1
+            num = st.number(nid)
+            print("%-8s [%s] %-8s %s" % (num, nid, LEVELS[n.level - 1],
+                                         n.title))
+            for sec, snippet in matched:
+                print("         (%s) %s" % (sec, snippet))
+    print("%d matching file(s)" % hits)
+
+
+# ------------------------------------------------------------------ export
+def _md_to_html(md):
+    """The small Markdown that export writes: headings, paragraphs, '>'
+    quotes, '- ' lists, fenced code. Mathematics stays as written."""
+    import html as H
+
+    def inline(t):
+        t = H.escape(t)
+        t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+        return re.sub(r"(?<![*\w])\*([^*\n]+)\*(?![*\w])", r"<em>\1</em>", t)
+    out, para, quote, items, code = [], [], [], [], None
+
+    def flush():
+        if para:
+            out.append('<p dir="auto">%s</p>' % inline(" ".join(para)))
+            para.clear()
+        if quote:
+            paras, cur = [], []
+            for q in quote + [""]:
+                if q:
+                    cur.append(inline(q))
+                elif cur:
+                    paras.append("<br>".join(cur))
+                    cur = []
+            out.append('<blockquote dir="auto">%s</blockquote>' % "".join(
+                "<p>%s</p>" % p for p in paras))
+            quote.clear()
+        if items:
+            out.append("<ul>%s</ul>" % "".join('<li dir="auto">%s</li>'
+                                               % inline(x) for x in items))
+            items.clear()
+    for line in md.split("\n"):
+        if code is not None:
+            if line.startswith("```"):
+                out.append("<pre><code>%s</code></pre>" % H.escape(
+                    "\n".join(code)))
+                code = None
+            else:
+                code.append(line)
+            continue
+        if line.startswith("```"):
+            flush()
+            code = []
+            continue
+        m = re.match(r"(#{1,6}) (.*)", line)
+        if m:
+            flush()
+            out.append('<h%d dir="auto">%s</h%d>' % (
+                len(m.group(1)), inline(m.group(2)), len(m.group(1))))
+        elif line.startswith(">"):
+            if para or items:
+                flush()
+            quote.append(line[1:].strip())
+        elif line.startswith("- "):
+            if para or quote:
+                flush()
+            items.append(line[2:])
+        elif not line.strip():
+            if quote:
+                quote.append("")
+            else:
+                flush()
+        else:
+            if quote or items:
+                flush()
+            para.append(line.strip())
+    flush()
+    return "\n".join(out)
+
+
+def cmd_export(a):
+    """The trees (or one branch) as one readable book: the human side of
+    each file and, unless left out, its reading passages with sources;
+    --machine adds the machine side."""
+    st = Store(a.project)
+    root = st.resolve(a.branch) if a.branch else ""
+    ids = st.subtree_ids(root)
+    if not ids:
+        die("nothing to export")
+    top = min(st.nodes[i].level for i in ids)
+    parts = []
+    for i in ids:
+        n = st.nodes[i]
+        depth = min(6, n.level - top + 1)
+        parts.append("%s %s %s" % ("#" * depth, st.number(i), n.title))
+        if n.tags:
+            parts.append("*%s*" % ", ".join(n.tags))
+        if n.human.strip():
+            parts.append(n.human.strip())
+        if a.machine and (n.instructions.strip() or n.code.strip()):
+            if n.instructions.strip():
+                parts.append("**Instructions**\n\n" + n.instructions.strip())
+            if n.code.strip():
+                parts.append("```python\n%s\n```" % n.code.strip())
+        if n.reading.strip() and not a.no_reading:
+            for p in _passages(n.reading):
+                lines = p.split("\n")
+                if lines[0].startswith("## "):
+                    lines[0] = "**%s**" % lines[0][3:]
+                parts.append("\n".join("> " + l if l.strip() else ">"
+                                       for l in lines))
+    md = "\n\n".join(parts) + "\n"
+    title = st.nodes[root].title if root else "Tawjih project"
+    fmt = a.format or ("html" if (a.out or "").lower().endswith((".html",
+                                                                 ".htm"))
+                       else "md")
+    if fmt == "html":
+        import html as H
+        mathjax = ""
+        if not a.no_mathjax and re.search(r"\$[^$\n]+\$", md):
+            # formulas are shown by MathJax, loaded from the web when the
+            # page is opened; --no-mathjax keeps the page offline
+            mathjax = ("<script>window.MathJax={tex:{inlineMath:[['$','$']]}};"
+                       "</script><script defer src=\"https://cdn.jsdelivr.net/"
+                       "npm/mathjax@3.2.2/es5/tex-chtml.js\"></script>")
+        text = ("<!doctype html>\n<html><head><meta charset=\"utf-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width, "
+                "initial-scale=1\"><title>%s</title><style>body{max-width:"
+                "46rem;margin:2rem auto;padding:0 1rem;font-family:serif;"
+                "line-height:1.6}blockquote{border-inline-start:3px solid #bbb;"
+                "margin:1rem 0;padding:0 1rem;color:#333}pre{background:#f4f4f4;"
+                "padding:.8rem;overflow:auto}</style>%s</head><body>\n%s\n"
+                "</body></html>\n" % (H.escape(title), mathjax,
+                                       _md_to_html(md)))
+    else:
+        text = md
+    if a.out:
+        Path(a.out).write_text(text, encoding="utf-8")
+        print("exported %d file(s) to %s (%s)" % (len(ids), a.out, fmt))
+    else:
+        sys.stdout.write(text)
+
+
+# -------------------------------------------------------------- pack, unpack
+def cmd_pack(a):
+    """A branch (or the files of paths) with their sides, contracts and the
+    paths among them, in one zip file for another project."""
+    import zipfile
+    st = Store(a.project)
+    ids, names = [], list(a.path or [])
+    for ref in a.branch or []:
+        ids += [i for i in st.subtree_ids(st.resolve(ref)) if i not in ids]
+    for name in names:
+        ids += [i for i in _flow_from_args(st, name, []).nodes if i not in ids]
+    if not ids:
+        die("give --branch REF and/or --path NAME")
+    for name, used in _paths_using(st, ids).items():
+        try:
+            if name not in names and set(st.load_flow(name).nodes) <= set(ids):
+                names.append(name)
+        except FlowError:
+            pass
+    roots = [i for i in ids if st.nodes[i].parent not in ids]
+    manifest = {"tawjih": __version__, "created": time.strftime(
+        "%Y-%m-%d %H:%M:%S"), "files": ids, "roots": roots,
+        "paths": sorted(names)}
+    out = Path(a.out)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False,
+                                               indent=2))
+        for i in ids:
+            z.write(st.file_of(i), "files/%s.md" % i)
+        for name in names:
+            z.write(st.pdir / (name + ".path"), "paths/%s.path" % name)
+    print("packed %d file(s) and %d path(s) into %s" % (len(ids), len(names),
+                                                       out))
+
+
+def cmd_unpack(a):
+    """Add a pack to this project: its trees become new trees, or go under
+    --parent. Ids that already exist are refused unless --new-ids."""
+    import zipfile
+    st = Store(a.project)
+    try:
+        z = zipfile.ZipFile(a.file)
+    except (OSError, zipfile.BadZipFile) as e:
+        die("not a pack: %s" % e)
+    with z:
+        bad = [n for n in z.namelist() if not re.fullmatch(
+            r"manifest\.json|files/[0-9a-f]{6}\.md|paths/[\w\-]+\.path", n)]
+        if bad:
+            die("not a Tawjih pack (unexpected entries: %s)" % ", ".join(bad[:5]))
+        try:
+            man = json.loads(z.read("manifest.json"))
+            files, pnames = list(man["files"]), list(man.get("paths", []))
+        except (KeyError, ValueError, TypeError):
+            die("the pack has no readable manifest.json")
+        if not all(isinstance(i, str) and re.fullmatch(r"[0-9a-f]{6}", i)
+                   for i in files) or not all(
+                isinstance(p, str) and re.fullmatch(r"[\w\-]+", p)
+                for p in pnames):
+            die("the pack's manifest names files or paths that are not valid")
+        nodes = {}
+        for i in files:
+            try:
+                nodes[i] = Node.parse(z.read("files/%s.md" % i).decode("utf-8"))
+            except (KeyError, ValueError) as e:
+                die("pack file %s: %s" % (i, e))
+        try:
+            paths = {p: z.read("paths/%s.path" % p).decode("utf-8")
+                     for p in pnames}
+        except (KeyError, UnicodeDecodeError) as e:
+            die("pack path: %s" % e)
+    clash = [i for i in nodes if i in st.nodes]
+    if clash and not a.new_ids:
+        die("%d file id(s) already exist here (%s); add --new-ids to give the "
+            "unpacked files new ones" % (len(clash), ", ".join(clash[:5])))
+    mapping = {i: i for i in nodes}
+    if a.new_ids:
+        for i in nodes:
+            nn = uuid.uuid4().hex[:6]
+            while nn in st.nodes or nn in mapping.values():
+                nn = uuid.uuid4().hex[:6]
+            mapping[i] = nn
+    parent = st.resolve(a.parent) if a.parent else ""
+    roots = [i for i in nodes if nodes[i].parent not in nodes]
+    for r in roots:
+        delta = (st.nodes[parent].level + 1 - nodes[r].level) if parent else 0
+        sub = [i for i in nodes if r in _chain(nodes, i)]
+        if max(nodes[i].level for i in sub) + delta > len(LEVELS):
+            die("%s would go deeper than level %d under that parent"
+                % (nodes[r].title, len(LEVELS)))
+        for i in sub:
+            nodes[i].level += delta
+    for i, n in nodes.items():
+        n.id = mapping[i]
+        n.parent = mapping[n.parent] if n.parent in nodes else (
+            parent if i in roots else n.parent)
+        n.links = [(mapping.get(t, t), ty) for t, ty in n.links]
+        st.save(n)
+    for r in roots:
+        _place(st, mapping[r], parent)
+    for name, text in paths.items():
+        for old, new in mapping.items():
+            text = re.sub(r"\b%s\b" % old, new, text)
+        target, k = name, 1
+        while (st.pdir / (target + ".path")).exists():
+            k += 1
+            target = "%s-%d" % (name, k)
+        st.pdir.mkdir(exist_ok=True)
+        (st.pdir / (target + ".path")).write_text(text, encoding="utf-8")
+        print("path %s%s" % (target, "" if target == name else
+                             " (renamed: %s exists)" % name))
+    for r in roots:
+        print("unpacked %s [%s] %s" % (st.number(mapping[r]), mapping[r],
+                                       nodes[r].title))
+    print("%d file(s) added" % len(nodes))
+
+
+def _chain(nodes, i):
+    seen = []
+    while i in nodes and i not in seen:
+        seen.append(i)
+        i = nodes[i].parent
+    return seen
+
+
+# ------------------------------------------------------------------ ingest
+def _docx_to_md(path):
+    """Word .docx to Markdown: headings by style, lists, tables, text.
+    Formulas (Office Math) are kept as their plain text between $ signs
+    and counted, since they need checking."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+    with zipfile.ZipFile(path) as z:
+        doc = ET.fromstring(z.read("word/document.xml"))
+        try:
+            styles = ET.fromstring(z.read("word/styles.xml"))
+        except KeyError:
+            styles = None
+    level_of = {}
+    if styles is not None:
+        for s in styles.iter(W + "style"):
+            sid = s.get(W + "styleId", "")
+            name = s.find(W + "name")
+            name = name.get(W + "val", "") if name is not None else ""
+            ol = s.find(".//" + W + "outlineLvl")
+            m = re.search(r"(?:heading|عنوان)\s*(\d)", name, re.I) or \
+                re.search(r"heading\s*(\d)", sid, re.I)
+            if ol is not None:
+                level_of[sid] = int(ol.get(W + "val", "0")) + 1
+            elif m:
+                level_of[sid] = int(m.group(1))
+            elif name.lower() == "title" or sid.lower() == "title":
+                level_of[sid] = 1
+    formulas = [0]
+
+    def para_text(p):
+        parts = []
+        for el in p.iter():
+            if el.tag == M + "oMath":
+                formulas[0] += 1
+                parts.append("$%s$" % "".join(t.text or "" for t in
+                                              el.iter(M + "t")))
+            elif el.tag == W + "t" and not _inside(el, p, M + "oMath"):
+                parts.append(el.text or "")
+            elif el.tag == W + "tab":
+                parts.append("\t")
+            elif el.tag in (W + "br", W + "cr"):
+                parts.append("\n")
+        return "".join(parts)
+    parents = {c: q for q in doc.iter() for c in q}
+
+    def _inside(el, stop, tag):
+        while el is not None and el is not stop:
+            if el.tag == tag:
+                return True
+            el = parents.get(el)
+        return False
+    out = []
+    body = doc.find(W + "body")
+    for block in (body if body is not None else []):
+        if block.tag == W + "p":
+            text = para_text(block).strip()
+            if not text:
+                continue
+            ps = block.find(W + "pPr/" + W + "pStyle")
+            sid = ps.get(W + "val", "") if ps is not None else ""
+            if sid in level_of:
+                out.append("%s %s" % ("#" * min(6, level_of[sid]),
+                                      " ".join(text.split())))
+            elif block.find(W + "pPr/" + W + "numPr") is not None:
+                out.append("- " + text)
+            else:
+                out.append(text)
+        elif block.tag == W + "tbl":
+            for row in block.iter(W + "tr"):
+                cells = [" ".join(para_text(p).strip() for p in
+                                  c.iter(W + "p")) for c in row.iter(W + "tc")]
+                out.append("| %s |" % " | ".join(cells))
+    md = ""
+    for k, line in enumerate(out):
+        both = k and out[k - 1].startswith(("- ", "| ")) and \
+            line[:2] == out[k - 1][:2]
+        md += ("\n" if both else "\n\n" if k else "") + line
+    return _tidy(md), formulas[0]
+
+
+def _epub_to_md(path):
+    import xml.etree.ElementTree as ET
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        cont = ET.fromstring(z.read("META-INF/container.xml"))
+        opf_path = next(e.get("full-path") for e in cont.iter()
+                        if e.get("full-path"))
+        opf = ET.fromstring(z.read(opf_path))
+        base = opf_path.rsplit("/", 1)[0] + "/" if "/" in opf_path else ""
+        items = {e.get("id"): e.get("href") for e in opf.iter()
+                 if e.tag.endswith("item")}
+        spine = [e.get("idref") for e in opf.iter() if e.tag.endswith("itemref")]
+        parts = []
+        for ref in spine:
+            href = items.get(ref)
+            if href:
+                try:
+                    parts.append(from_html(z.read(base + href).decode(
+                        "utf-8", "replace")))
+                except KeyError:
+                    pass
+    return _tidy("\n\n".join(parts))
+
+
+def cmd_ingest(a):
+    """Turn an office document into Markdown for deposit: Word (.docx),
+    EPUB, or PDF through pdftotext when it is installed. PDF loses the
+    structure and damages mathematics; prefer the book's source."""
+    src = Path(a.file)
+    if not src.is_file():
+        die("no such file: %s" % src)
+    ext = src.suffix.lower()
+    note = ""
+    if ext == ".docx":
+        md, formulas = _docx_to_md(src)
+        if formulas:
+            note = ("%d formula(s) kept as plain text between $ signs; check "
+                    "them" % formulas)
+    elif ext == ".epub":
+        md = _epub_to_md(src)
+    elif ext == ".pdf":
+        tool = shutil.which("pdftotext")
+        if not tool:
+            die("reading PDF needs pdftotext (poppler-utils), which is not "
+                "installed. Better: look for the book's source (LaTeX, "
+                "PreTeXt, HTML) and deposit that")
+        r = subprocess.run([tool, "-enc", "UTF-8", str(src), "-"],
+                           capture_output=True, text=True, encoding="utf-8")
+        if r.returncode:
+            die("pdftotext failed: " + r.stderr.strip())
+        md = _tidy(r.stdout.replace("\f", "\n\n"))
+        note = ("PDF text has no headings and damages formulas (exponents, "
+                "fractions, arrows); add '#' headings and check the "
+                "mathematics before filtering")
+    elif ext in SOURCE_FORMATS:
+        md = source_to_text(src)[0]
+    else:
+        die("ingest reads .docx, .epub and .pdf (and the deposit formats)")
+    out = Path(a.out) if a.out else src.with_suffix(".md")
+    if out.resolve() == src.resolve():
+        die("the output would overwrite the input; give -o")
+    out.write_text(md, encoding="utf-8")
+    heads = sum(1 for l in md.split("\n") if re.match(r"#{1,6} \S", l))
+    print("written %s (%d characters, %d headings)" % (out, len(md), heads))
+    if note:
+        print("note: " + note)
+    if a.deposit:
+        a.file = str(out)
+        a.part = None
+        cmd_deposit(a)
+
+
+# -------------------------------------------------------------------- serve
+def cmd_serve(a):
+    """Offer saved paths to other programs over HTTP on this computer.
+    POST /paths/NAME with {"input": "..."} and the token runs the path and
+    returns its result; GET /paths lists them. One run at a time."""
+    import http.server
+    import secrets
+    import threading
+    st = Store(a.project)
+    token = a.token or os.environ.get("TAWJIH_TOKEN") or secrets.token_urlsafe(18)
+    allowed = set(a.paths.split(",")) if a.paths else None
+    lock = threading.Lock()
+    if a.host not in ("127.0.0.1", "localhost", "::1"):
+        print("warning: serving on %s makes the paths reachable from other "
+              "computers" % a.host, file=sys.stderr)
+
+    def path_names():
+        names = sorted(f.stem for f in st.pdir.glob("*.path"))
+        return [n for n in names if allowed is None or n in allowed]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def send(self, code, obj):
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def authorized(self):
+            return secrets.compare_digest(
+                self.headers.get("Authorization", ""), "Bearer " + token)
+
+        def log_message(self, fmt, *args):
+            print("serve: " + fmt % args, file=sys.stderr)
+
+        def do_GET(self):
+            if self.path == "/health":
+                return self.send(200, {"tawjih": __version__})
+            if not self.authorized():
+                return self.send(401, {"error": "missing or wrong token"})
+            if self.path == "/paths":
+                fresh = Store(a.project)
+                out = []
+                for name in path_names():
+                    try:
+                        flow = fresh.load_flow(name)
+                    except FlowError as e:
+                        out.append({"name": name, "error": str(e)})
+                        continue
+                    out.append({"name": name, "steps": len(flow.nodes),
+                                "code": any(fresh.nodes[i].code.strip()
+                                            for i in flow.nodes)})
+                return self.send(200, out)
+            self.send(404, {"error": "unknown address"})
+
+        def do_POST(self):
+            if not self.authorized():
+                return self.send(401, {"error": "missing or wrong token"})
+            m = re.fullmatch(r"/paths/([\w\-]+)", self.path)
+            if not m or m.group(1) not in path_names():
+                return self.send(404, {"error": "no such path"})
+            size = int(self.headers.get("Content-Length", "0") or 0)
+            if size > 1_000_000:
+                return self.send(413, {"error": "the request is too large"})
+            try:
+                req = json.loads(self.rfile.read(size) or b"{}")
+                text = req["input"]
+                if not isinstance(text, str):
+                    raise TypeError
+            except (ValueError, KeyError, TypeError):
+                return self.send(400, {"error": 'send JSON: {"input": "..."}'})
+            name = m.group(1)
+            with lock:
+                fresh = Store(a.project)
+                try:
+                    flow = fresh.load_flow(name)
+                except FlowError as e:
+                    return self.send(500, {"error": str(e)})
+                if any(fresh.nodes[i].code.strip() for i in flow.nodes) \
+                        and not a.allow_code:
+                    return self.send(403, {"error": "this path has code; "
+                                           "start serve with --allow-code"})
+                err = io.StringIO()
+                try:
+                    with contextlib.redirect_stderr(err):
+                        result = run_flow(fresh, name, text, a.backend,
+                                          a.allow_code, flow,
+                                          resume=a.resume,
+                                          code_timeout=a.code_timeout)
+                except Die as e:
+                    return self.send(500, {"error": str(e.code),
+                                           "messages": err.getvalue()})
+                except Exception as e:          # a fault in the program
+                    return self.send(500, {"error": "%s: %s" % (
+                        type(e).__name__, e), "messages": err.getvalue()})
+                return self.send(200, {"path": name, "result": result,
+                                       "messages": err.getvalue()})
+
+    server = http.server.ThreadingHTTPServer((a.host, a.port), Handler)
+    host, port = server.server_address[:2]
+    print("serving %d path(s) on http://%s:%d  (backend %s%s)" % (
+        len(path_names()), host, port, a.backend,
+        ", code allowed" if a.allow_code else ""))
+    print("token: %s" % token)
+    print('try: curl -H "Authorization: Bearer %s" http://%s:%d/paths'
+          % (token, host, port))
+    if getattr(a, "_ready", None):
+        a._ready(server)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+# --------------------------------------------------------------------- eval
+def _case_passes(case, output):
+    how = case.get("match", "json" if isinstance(case.get("expect"), dict)
+                   else "contains")
+    exp = case.get("expect")
+    if how == "json":
+        obj, _ = _json_in(output)
+        if not isinstance(obj, dict):
+            return False, "the output is not a JSON object"
+        wrong = [k for k, v in exp.items() if obj.get(k) != v]
+        return (not wrong), ("wrong or missing: " + ", ".join(wrong)
+                             if wrong else "")
+    exps = exp if isinstance(exp, list) else [exp]
+    if how == "contains":
+        miss = [e for e in exps if str(e).casefold() not in output.casefold()]
+        return (not miss), ("missing: " + "; ".join(map(str, miss))
+                            if miss else "")
+    if how == "equals":
+        ok = output.strip() == str(exps[0]).strip()
+        return ok, "" if ok else "not equal"
+    if how == "regex":
+        miss = [e for e in exps if not re.search(str(e), output, re.S)]
+        return (not miss), ("no match: " + "; ".join(miss) if miss else "")
+    if how == "not-contains":
+        hit = [e for e in exps if str(e).casefold() in output.casefold()]
+        return (not hit), ("present: " + "; ".join(map(str, hit))
+                           if hit else "")
+    return False, "unknown match '%s' (contains, not-contains, equals, regex, json)" % how
+
+
+def cmd_eval(a):
+    """Run a path on test cases with known answers and report how many
+    pass. Cases: paths/NAME.cases.jsonl (or --cases), one JSON object per
+    line: {"input": ..., "expect": ..., "match": contains | not-contains |
+    equals | regex | json}."""
+    st = Store(a.project)
+    flow = _flow_from_args(st, a.name, [])
+    cfile = Path(a.cases) if a.cases else st.pdir / (a.name + ".cases.jsonl")
+    if not cfile.is_file():
+        die("no test cases: write %s, one JSON object per line, such as\n"
+            '  {"input": "Is Z6 cyclic?", "expect": ["cyclic", "1", "5"]}'
+            % cfile)
+    cases = []
+    for k, line in enumerate(cfile.read_text(encoding="utf-8").splitlines(), 1):
+        if line.strip() and not line.lstrip().startswith("#"):
+            try:
+                c = json.loads(line)
+                if "input" not in c or "expect" not in c:
+                    raise ValueError("needs input and expect")
+            except ValueError as e:
+                die("%s line %d: %s" % (cfile, k, e))
+            c.setdefault("name", "case %d" % (len(cases) + 1))
+            cases.append(c)
+    if not cases:
+        die("%s has no cases" % cfile)
+    coded = [i for i in flow.nodes if st.nodes[i].code.strip()]
+    if coded and not a.allow_code:
+        die("the path has code; pass --allow-code after reading it")
+    use_model(a)
+    results, passed = [], 0
+    for c in cases:
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                out = run_flow(st, a.name, c["input"], a.backend, a.allow_code,
+                               flow, resume=a.resume,
+                               model_override=getattr(a, "model", None) or "",
+                               code_timeout=a.code_timeout)
+            ok, why = _case_passes(c, out)
+        except Die as e:
+            out, ok, why = "", False, "the run failed: %s" % e.code
+        except Exception as e:                  # a fault in the program
+            out, ok, why = "", False, "the run failed: %s: %s" % (
+                type(e).__name__, e)
+        log = next((l.split(": ", 1)[1] for l in err.getvalue().splitlines()
+                    if l.startswith("log: ")), "")
+        passed += ok
+        results.append({"name": c["name"], "input": c["input"],
+                        "expect": c["expect"], "match": c.get("match", ""),
+                        "output": out, "pass": ok, "why": why, "log": log})
+        print("%-4s %-28s %s" % ("PASS" if ok else "FAIL", c["name"][:28],
+                                 why[:90]))
+    rec = _stamped(st.rdir, "eval-" + a.name, ".json")
+    rec.write_text(json.dumps({"tawjih": __version__, "path": a.name,
+                               "backend": a.backend, "model": os.environ.get(
+                                   "TAWJIH_MODEL", ""),
+                               "passed": passed, "total": len(cases),
+                               "cases": results}, ensure_ascii=False,
+                              indent=2), encoding="utf-8")
+    print("%d of %d passed (%.0f%%); record: %s" % (
+        passed, len(cases), 100 * passed / len(cases), rec))
+    return 0 if passed == len(cases) else 1
+
+
+# ------------------------------------------------------------------ dataset
+def cmd_dataset(a):
+    """Write question-answer pairs as JSONL for fine-tuning tools (Unsloth,
+    axolotl and the like): from passed evaluations (default), from finished
+    runs, or each model step's prompt and answer (--steps). Read them
+    before training: Tawjih does not judge their quality."""
+    st = Store(a.project)
+    rows = []
+    if a.source == "eval":
+        for f in sorted(st.rdir.glob("eval-*.json")) if st.rdir.is_dir() else []:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if a.path and data.get("path") != a.path:
+                continue
+            for c in data["cases"]:
+                if c["pass"] or a.include_failed:
+                    rows.append((c["input"], c["output"], {
+                        "path": data["path"], "case": c["name"],
+                        "pass": c["pass"]}))
+    elif a.source == "runs":
+        hdir = st.root / "history"
+        for f in sorted(hdir.glob("production-*.json")) if hdir.is_dir() else []:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            if rec.get("status") != "done" or "input" not in rec:
+                continue
+            if a.path and rec.get("name") != a.path:
+                continue
+            try:        # the record may hold a path relative to another folder
+                out = (st.rdir / Path(rec["result"]).name).read_text(
+                    encoding="utf-8").strip()
+            except (OSError, KeyError):
+                continue
+            rows.append((rec["input"], out, {"path": rec["name"],
+                                             "time": rec.get("finished", "")}))
+    else:
+        cdir = st.root / "cache"
+        for f in sorted(cdir.glob("*.json")) if cdir.is_dir() else []:
+            c = json.loads(f.read_text(encoding="utf-8"))
+            if "prompt" in c and (not a.step or c.get("step") == a.step):
+                rows.append((c["prompt"], c["answer"], {
+                    "step": c.get("step", ""), "model": c.get("model", "")}))
+    seen, out = set(), []
+    for q, ans, meta in rows:
+        key = (q, ans)
+        if key in seen or not ans.strip():
+            continue
+        seen.add(key)
+        if a.format == "chat":
+            item = {"messages": [{"role": "user", "content": q},
+                                 {"role": "assistant", "content": ans}]}
+        else:
+            item = {"prompt": q, "completion": ans}
+        if a.meta:
+            item["meta"] = meta
+        out.append(json.dumps(item, ensure_ascii=False))
+    Path(a.out).write_text("\n".join(out) + ("\n" if out else ""),
+                           encoding="utf-8")
+    print("%d example(s) written to %s (from %s). Read them before training."
+          % (len(out), a.out, a.source))
+    if not out:
+        hint = {"eval": "run eval first", "runs": "runs made before 0.7 do "
+                "not keep their input", "steps": "answers cached before 0.7 "
+                "do not keep their prompt"}[a.source]
+        print("note: nothing found (%s)" % hint)
+
+
 def main():
     for s in (sys.stdout, sys.stderr, sys.stdin):
         try:
@@ -3392,7 +5208,228 @@ def main():
     s.add_argument("--side", choices=["H", "I", "C", "R", "h", "i", "c", "r",
                                       "human", "instructions", "code", "reading"],
                    help="limit search to one side")
+    s.add_argument("--tag", help="only files with this tag")
+    s.add_argument("--rank", action="store_true",
+                   help="rank by relevance (BM25), any of the words")
+    s.add_argument("--semantic", action="store_true",
+                   help="rank by meaning, with the index built by: index")
+    s.add_argument("--top", type=int, default=10,
+                   help="results shown with --rank or --semantic")
     s.set_defaults(fn=cmd_search)
+
+    s = sub.add_parser("index", help="build the semantic search index "
+                       "(embeddings of the human and reading sides)")
+    s.add_argument("--backend", choices=sorted(EMBEDDERS), default="ollama")
+    s.add_argument("--model", help="embedding model (default: "
+                   "TAWJIH_EMBED_MODEL, else nomic-embed-text)")
+    s.set_defaults(fn=cmd_index)
+
+    # restructuring
+    def where(s):
+        s.add_argument("--to", metavar="REF", help="the new parent")
+        s.add_argument("--root", action="store_true",
+                       help="make it the root of a new tree")
+    s = sub.add_parser("move", aliases=["mv"], help="move a file and its "
+                       "branch to a new parent (ids, and so paths, stay)")
+    s.add_argument("ref")
+    where(s)
+    s.add_argument("--position", type=int, help="place among the new siblings")
+    s.add_argument("--before", metavar="REF")
+    s.add_argument("--after", metavar="REF")
+    s.add_argument("--level", help="with --root: the level of the new root")
+    s.set_defaults(fn=cmd_move)
+
+    s = sub.add_parser("rename", help="change a file's title; AMONG "
+                       "deciders that name it are updated")
+    s.add_argument("ref")
+    s.add_argument("title")
+    s.add_argument("--no-update", action="store_true",
+                   help="leave the instructions of AMONG deciders as they are")
+    s.set_defaults(fn=cmd_rename)
+
+    s = sub.add_parser("copy", aliases=["cp"], help="copy a file (or a "
+                       "branch) with its sides and contracts")
+    s.add_argument("ref")
+    where(s)
+    s.add_argument("--branch", action="store_true",
+                   help="copy everything under it too")
+    s.add_argument("--title", help="title of the copy")
+    s.set_defaults(fn=cmd_copy)
+
+    s = sub.add_parser("rm", aliases=["remove"], help="remove a file that no "
+                       "path uses (a copy stays in history/)")
+    s.add_argument("ref")
+    s.add_argument("--branch", action="store_true",
+                   help="remove everything under it too")
+    s.add_argument("--unlink", action="store_true",
+                   help="also remove links to it from other files")
+    s.add_argument("--yes", action="store_true", help="really remove")
+    s.set_defaults(fn=cmd_rm)
+
+    s = sub.add_parser("split", help="move reading passages into a new file "
+                       "placed after it (without --passages: list them)")
+    s.add_argument("ref")
+    s.add_argument("--passages", help="numbers and ranges, such as 3-5,7")
+    s.add_argument("--title", help="title of the new file")
+    s.set_defaults(fn=cmd_split)
+
+    s = sub.add_parser("merge", help="merge B's human and reading sides "
+                       "into A, then remove B")
+    s.add_argument("a")
+    s.add_argument("b")
+    s.add_argument("--keep", action="store_true", help="keep B")
+    s.set_defaults(fn=cmd_merge)
+
+    # versions
+    s = sub.add_parser("log", help="saved versions of a file and what "
+                       "changed")
+    s.add_argument("ref")
+    s.set_defaults(fn=cmd_log)
+
+    s = sub.add_parser("diff", help="a saved version against the current file")
+    s.add_argument("ref")
+    s.add_argument("--version", type=int, default=1,
+                   help="1 is the newest saved version (see: log)")
+    s.add_argument("--side", action="append", help="human, instructions, "
+                   "code, machine or reading (repeatable)")
+    s.set_defaults(fn=cmd_diff)
+
+    s = sub.add_parser("revert", help="bring back sides of a saved version, "
+                       "or a removed file")
+    s.add_argument("ref")
+    s.add_argument("--version", type=int, default=1,
+                   help="1 is the newest saved version (see: log)")
+    s.add_argument("--side", action="append", help="human, instructions, "
+                   "code, machine or reading (default: all four)")
+    s.add_argument("--header", action="store_true", help="also the title, "
+                   "links, model, contracts and tags")
+    s.set_defaults(fn=cmd_revert)
+
+    # state
+    s = sub.add_parser("status", help="only what is unfinished")
+    s.add_argument("--branch", help="limit to this branch")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("tag", help="add tags to a file; without arguments "
+                       "list all tags")
+    s.add_argument("ref", nargs="?")
+    s.add_argument("tags", nargs="*")
+    s.set_defaults(fn=cmd_tag)
+
+    s = sub.add_parser("untag", help="remove tags from a file")
+    s.add_argument("ref")
+    s.add_argument("tags", nargs="+")
+    s.set_defaults(fn=cmd_untag)
+
+    s = sub.add_parser("sync", help="find files edited outside Tawjih and "
+                       "unfinished edits in work/")
+    s.add_argument("--confirm-machine", action="store_true",
+                   help="machine sides edited by hand count as rebuilt")
+    s.add_argument("--clean-work", action="store_true",
+                   help="remove unfinished edits left in work/")
+    s.add_argument("--watch", type=float, metavar="SECONDS",
+                   help="check again every SECONDS until Ctrl+C")
+    s.set_defaults(fn=cmd_sync)
+
+    s = sub.add_parser("refs", help="everything that refers to a file")
+    s.add_argument("ref")
+    s.set_defaults(fn=cmd_refs)
+
+    s = sub.add_parser("clean", help="find (and with --yes remove) leftovers "
+                       "and broken links")
+    s.add_argument("--runs", type=int, metavar="DAYS",
+                   help="also run records older than DAYS")
+    s.add_argument("--yes", action="store_true", help="really clean")
+    s.set_defaults(fn=cmd_clean)
+
+    s = sub.add_parser("audit", help="look through code sides for what "
+                       "touches the system (not a sandbox)")
+    s.add_argument("ref", nargs="?", help="a file or branch (default: all)")
+    s.add_argument("--path", help="the code steps of a path")
+    s.set_defaults(fn=cmd_audit)
+
+    # outputs
+    s = sub.add_parser("export", help="the trees as one readable book "
+                       "(Markdown or HTML)")
+    s.add_argument("--branch", help="only this branch")
+    s.add_argument("--format", choices=["md", "html"],
+                   help="default: from the -o extension, else md")
+    s.add_argument("--machine", action="store_true",
+                   help="include the machine sides")
+    s.add_argument("--no-reading", action="store_true",
+                   help="leave out the reading passages")
+    s.add_argument("--no-mathjax", action="store_true",
+                   help="HTML without MathJax (formulas stay as LaTeX text; "
+                   "otherwise MathJax is loaded from the web)")
+    s.add_argument("-o", "--out", help="output file (default: print)")
+    s.set_defaults(fn=cmd_export)
+
+    s = sub.add_parser("pack", help="a branch or the files of paths in one "
+                       "zip file for another project")
+    s.add_argument("--branch", action="append", metavar="REF")
+    s.add_argument("--path", action="append", metavar="NAME")
+    s.add_argument("-o", "--out", required=True)
+    s.set_defaults(fn=cmd_pack)
+
+    s = sub.add_parser("unpack", help="add a pack to this project")
+    s.add_argument("file")
+    s.add_argument("--parent", help="put its trees under this file")
+    s.add_argument("--new-ids", action="store_true",
+                   help="give the files new ids (needed when they clash)")
+    s.set_defaults(fn=cmd_unpack)
+
+    s = sub.add_parser("ingest", help="turn .docx, .epub or .pdf into "
+                       "Markdown for deposit")
+    s.add_argument("file")
+    s.add_argument("-o", "--out", help="output file (default: FILE.md)")
+    s.add_argument("--deposit", action="store_true",
+                   help="deposit the result too")
+    s.set_defaults(fn=cmd_ingest)
+
+    s = sub.add_parser("serve", help="offer saved paths to other programs "
+                       "over HTTP on this computer")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--paths", help="only these paths, comma separated")
+    s.add_argument("--token", help="access token (default: TAWJIH_TOKEN, "
+                   "else a new one is printed)")
+    s.add_argument("--allow-code", action="store_true",
+                   help="allow paths with code steps")
+    s.add_argument("--resume", action="store_true",
+                   help="take kept answers from the cache")
+    s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
+                   metavar="SECONDS")
+    s.set_defaults(fn=cmd_serve)
+
+    s = sub.add_parser("eval", help="run a path on test cases with known "
+                       "answers")
+    s.add_argument("name")
+    s.add_argument("--cases", help="JSONL file (default: "
+                   "paths/NAME.cases.jsonl)")
+    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--model", help="model for every step")
+    s.add_argument("--allow-code", action="store_true")
+    s.add_argument("--resume", action="store_true",
+                   help="take kept answers from the cache")
+    s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
+                   metavar="SECONDS")
+    s.set_defaults(fn=cmd_eval)
+
+    s = sub.add_parser("dataset", help="question-answer pairs as JSONL for "
+                       "fine-tuning tools")
+    s.add_argument("-o", "--out", required=True)
+    s.add_argument("--source", choices=["eval", "runs", "steps"],
+                   default="eval", help="passed evaluations (default), "
+                   "finished runs, or each model step")
+    s.add_argument("--path", help="only this path")
+    s.add_argument("--step", help="with --source steps: only this file id")
+    s.add_argument("--include-failed", action="store_true",
+                   help="with --source eval: failed cases too")
+    s.add_argument("--format", choices=["chat", "prompt"], default="chat")
+    s.add_argument("--meta", action="store_true",
+                   help="add where each example came from")
+    s.set_defaults(fn=cmd_dataset)
 
     s = sub.add_parser("show", help="print one file and its location")
     s.add_argument("ref")
@@ -3565,7 +5602,9 @@ def main():
     s.set_defaults(fn=cmd_read)
 
     a = p.parse_args()
-    a.fn(a)
+    rc = a.fn(a)
+    if isinstance(rc, int) and rc:
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

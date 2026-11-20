@@ -10,3 +10,5 @@ cache/
 history/
 work/
 tasks.json
+state.json
+index/
