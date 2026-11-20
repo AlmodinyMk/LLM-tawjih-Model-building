@@ -9,7 +9,7 @@ beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.12.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.13.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -253,6 +253,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path; the format follows the `-o` extension (`.mmd`, `.dot`, `.gv`) unless given |
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
+| `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
 | `do STATEMENTS [--file F] [--run] [--yes]` | management statements in English or Arabic, translated into commands (see [Management statements](#management-statements-do)) |
 | `lock`, `alias`, `review`, `stage`, `mount`, `sandbox`, `trace`, `release`, `snapshot`, `seal`, `verify`, `inherit`, `template`, `scaffold`, `gc`, `compact`, `format`, `archive`, `glossary`, `doctor`, `repair`, `schedule`, `trigger`, `pause`, `resume`, `cancel` | see [Governance](#governance-locks-reviews-releases-schedules) (0.10) |
 
@@ -427,6 +428,56 @@ first failure stops the rest. `DELETE`, `GC` and `MERGE` remove nothing
 without `--yes`. Numbers are read when each statement runs, so after a
 `MOVE` they may name other files: in scripts, use ids or aliases. These
 words are not words of the path language, so في and من stay free there.
+
+## AI assistants: the MCP server
+
+`mcp` lets an AI assistant that speaks the Model Context Protocol (Claude
+Desktop, Claude Code and others) work on one project through tools.
+
+```
+claude mcp add tawjih -- python /path/to/tawjih.py -p /path/to/project mcp --allow-write
+```
+
+or, in a client's configuration file:
+
+```
+{"mcpServers": {"tawjih": {"command": "python",
+  "args": ["/path/to/tawjih.py", "-p", "/path/to/project", "mcp"]}}}
+```
+
+| Level | Tools |
+|---|---|
+| reading (always) | `tawjih_tree`, `tawjih_show`, `tawjih_search`, `tawjih_paths`, `tawjih_plan`, `tawjih_check`, `tawjih_status`, `tawjih_impact`, `tawjih_staged`, `tawjih_language` |
+| `--allow-write` | `tawjih_new`, `tawjih_contract`, `tawjih_link`, `tawjih_move`, `tawjih_define_path` (replaces a path only with `replace=true`), and `tawjih_propose`: the new text of a side, kept in `stage/` until a person runs `stage --show` and `stage --apply` |
+| `--allow-run` | `tawjih_run` and `tawjih_eval`, with the provider and model given at start (`--backend`, `--model`); code steps only with `--allow-code`, and then always in the sandbox |
+
+What it does for safety:
+
+- **Files and trees.** One project, fixed at start; no tool takes a folder
+  or a file name, so nothing outside the project can be named. Files are
+  named by id, number or alias, checked against a pattern (no `..`, `/`
+  or leading `-`). No tool removes a file, applies a proposal, unlocks,
+  rolls back, or changes `redact.txt`; locked and mounted files stay as they
+  are. Sides change only through proposals that a person applies.
+- **Connections.** No network port: the client starts the server and talks
+  through its standard input and output. Runs reach only the provider
+  chosen at start, through redaction as usual; the client cannot choose
+  another provider or model, or turn on code.
+- **Arguments.** Every argument is checked against its type, size and
+  pattern, and unknown arguments are refused. Text from the client is
+  never read as a command-line option (a title `--yes` stays a title).
+  Approval steps are denied, and nothing reads the terminal.
+- **Output.** The protocol has its own copy of standard output; anything
+  else a library or a program prints goes to standard error. A reply is
+  cut at 100,000 characters.
+- **Record.** Every call goes to `history/mcp-YYYYMMDD.jsonl`: the tool,
+  its arguments with free text replaced by its length, and the outcome.
+
+What it cannot do: text in your files reaches the assistant, and a file may
+contain instructions written to mislead it (prompt injection); the server
+tells the assistant to treat file content as data, which lowers the risk
+but does not remove it. Give `--allow-run` only with a provider whose cost
+and data handling you accept.
 
 ## Governance: locks, reviews, releases, schedules
 
@@ -611,7 +662,7 @@ datasets/ compiled training data (neural bridge; git-ignored)
 The program itself is `tawjih.py`, which runs and imports the package
 `tawjihlib/`: `core` (file model, store, path language), `providers`,
 `engine` (code and path execution), `commands`, `library`, `manage`,
-`outputs`, `evaluate`, `governance`, `script` and `cli`. Each module imports only from
+`outputs`, `evaluate`, `governance`, `script`, `mcpserver` and `cli`. Each module imports only from
 the ones before it, and everything is reachable as `tawjih.NAME`. Keep the
 two together when you copy the program.
 
@@ -679,7 +730,8 @@ usage and `stats`, with Docling, Marker and Pandoc replaced by stand-in
 scripts; and since 0.10 every command in
 [Governance](#governance-locks-reviews-releases-schedules), with the sandbox
 tested on Linux only and GnuPG signing not tested; since 0.11 every word of
-the path language and since 0.12 the statements of `do`. The neural bridge
+the path language, since 0.12 the statements of `do`, and since 0.13 the
+MCP server, also with the official MCP Python SDK as the client. The neural bridge
 has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.

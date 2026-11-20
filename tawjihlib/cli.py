@@ -51,6 +51,9 @@ from .governance import (
 from .script import (
     translate_script,
 )
+from .mcpserver import (
+    Server, serve_stdio,
+)
 
 
 def main():
@@ -110,6 +113,31 @@ def cmd_do(a):
         if isinstance(rc, int) and rc:
             die("stopped at statement %d (%s): exit status %d" % (k, stmt,
                                                                    rc))
+    return 0
+
+
+def cmd_mcp(a):
+    """An MCP server for AI assistants, over standard input and output,
+    on this project only. Reading always; --allow-write for new files,
+    contracts, links, moves, paths and proposals (which a person applies
+    with stage --apply); --allow-run to run paths with the provider fixed
+    here; --allow-code to let them run code, always in the sandbox."""
+    if a.backend == "manual":
+        die("the manual provider reads the terminal, which the protocol uses")
+    if a.allow_code and not a.allow_run:
+        die("--allow-code needs --allow-run")
+    server = Server(a.project, build_parser, a.allow_write, a.allow_run,
+                    a.allow_code, a.backend, a.model or "")
+    # the protocol gets its own copy of standard output; anything else that
+    # writes to standard output (a library, a child program) goes to stderr
+    proto = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8",
+                      newline="\n")
+    sys.stdout.flush()
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    print("tawjih MCP server on %s: %s" % (
+        Path(a.project).resolve(), ", ".join(sorted(server.allow))),
+        file=sys.stderr)
+    serve_stdio(server, sys.stdin, proto)
     return 0
 
 
@@ -834,6 +862,20 @@ def build_parser():
     s.add_argument("--all", action="store_true", help="include the subtree")
     s.set_defaults(fn=cmd_read)
 
+    s = sub.add_parser("mcp", help="an MCP server for AI assistants on "
+                       "this project (standard input and output)")
+    s.add_argument("--allow-write", action="store_true",
+                   help="new files, contracts, links, moves, paths, and "
+                   "proposals for sides (applied by a person)")
+    s.add_argument("--allow-run", action="store_true",
+                   help="run and evaluate paths")
+    s.add_argument("--allow-code", action="store_true",
+                   help="let runs execute code steps (always sandboxed)")
+    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry",
+                   help="the provider for runs (fixed for the session)")
+    s.add_argument("--model", help="the model for runs")
+    s.set_defaults(fn=cmd_mcp)
+
     s = sub.add_parser("do", help="management statements: CREATE, EDIT, "
                        "MOVE, COPY, MERGE, DELETE, CHECK, GC, PATH (Arabic "
                        "too); shown unless --run")
@@ -849,5 +891,5 @@ def build_parser():
 
 
 __all__ = [
-    'build_parser', 'cmd_do', 'main',
+    'build_parser', 'cmd_do', 'cmd_mcp', 'main',
 ]

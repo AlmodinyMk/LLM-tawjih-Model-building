@@ -1,4 +1,4 @@
-# Tawjih specification (0.12.0)
+# Tawjih specification (0.13.0)
 
 This is the contract the program and the tests follow.
 
@@ -580,11 +580,38 @@ commands run in order and the first failure stops the rest; `MERGE` is
 skipped without `--yes`. These words are a vocabulary of their own, not
 reserved in the path language.
 
+## MCP server
+
+`mcp` speaks JSON-RPC 2.0, one message per line, over standard input and
+output (MCP stdio transport; protocol versions 2025-06-18, 2025-03-26 and
+2024-11-05, the client's choice when supported). Methods: `initialize`,
+`ping`, `tools/list`, `tools/call`; notifications get no reply; a batch, an
+unknown method or a malformed message gets a JSON-RPC error. A tool that is
+not allowed is a JSON-RPC error (-32602); a refused or failed call is a
+result with `isError: true` and the reason as text.
+
+Tools take only the arguments of their `inputSchema`: strings with a
+pattern and length, enums and booleans. A file is a string matching
+`^\w[\w.\-]{0,63}$`, resolved as `resolve` does. Free text is set on the
+command's arguments after parsing, never parsed itself. Commands run with
+standard input empty, standard output and error captured, and approval
+`deny`. Before serving, the process duplicates its standard output for the
+protocol and points file descriptor 1 at standard error.
+
+`tawjih_propose` calls `stage_change` (Governance, Stage) with `why`
+prefixed `(proposed through MCP)`; it refuses locked and mounted files.
+`tawjih_run` and `tawjih_eval` use `--backend` and `--model` from the
+command line, `allow_code` and `sandbox` both equal to `--allow-code`.
+`manual` is refused as a backend, and `--allow-code` needs `--allow-run`.
+Each call appends `{time, tool, args, status}` to
+`history/mcp-YYYYMMDD.jsonl`, with `title`, `text`, `input`,
+`statements`, `why` and `query` replaced by `<N characters>`.
+
 ## Program layout
 
 `tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
 copies every name of its modules into its own namespace and runs `main()`.
 The modules, in order: `core`, `providers`, `engine`, `commands`,
-`library`, `manage`, `outputs`, `evaluate`, `governance`, `script`, `cli`. A module
+`library`, `manage`, `outputs`, `evaluate`, `governance`, `script`, `mcpserver`, `cli`. A module
 imports only from those before it, by name, and only the standard library
 from outside; each lists its names in `__all__`.
