@@ -20,7 +20,8 @@ from .core import (
     conform, die,
 )
 from .providers import (
-    call_model,
+    POLICY_FILE, backend_kind, call_model, default_backend, load_policy,
+    load_providers,
 )
 
 
@@ -373,6 +374,25 @@ def print_plan(store, name, plan, out):
               sent, sum(1 for p in plan if p["instructions"])), file=out)
 
 
+def choose_by_key(store, output, candidates, key):
+    """AMONG ... BY key: the candidate whose id, number, alias or title is
+    exactly the value of the JSON key; None when there is none."""
+    obj, _ = _json_in(output)
+    if not isinstance(obj, dict):
+        return None, "the output is not a JSON object with the key '%s'" % key
+    val = next((v for k, v in obj.items() if k.casefold() == key.casefold()),
+               None)
+    if val is None or isinstance(val, (dict, list)):
+        return None, "the output has no usable value for '%s'" % key
+    want = str(val).strip().casefold()
+    for nid in candidates:
+        n = store.nodes[nid]
+        names = [nid, store.number(nid), n.title.strip()] + list(n.aliases)
+        if want in (x.casefold() for x in names if x):
+            return nid, None
+    return None, "'%s' = %s names none of the candidates" % (key, val)
+
+
 def choose_among(store, output, candidates):
     """The candidate named first in the output (by id, number or title),
     falling back to contract compatibility if a single candidate matches."""
@@ -396,7 +416,8 @@ def choose_among(store, output, candidates):
     contract_hits = [
         nid for nid in candidates
         if store.nodes[nid].expects
-        and _validate_contract(output, store.nodes[nid].expects, "") is None
+        and _validate_contract(output, store.nodes[nid].expects, "",
+                               store.root) is None
     ]
     if len(contract_hits) == 1:
         return contract_hits[0]
@@ -468,7 +489,13 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     the files that feed it and receives their outputs; a file none of whose
     connections is active is skipped. Writes the log, state snapshot and
     result to runs/ and a record of the operation to history/."""
-    use_cache = use_cache and backend != "dry"
+    backend = backend or default_backend(store.root)
+    pol = load_policy(store.root)
+    if allow_code and not pol["allow_code"]:
+        die("the project's policy (%s) does not allow running code"
+            % POLICY_FILE)
+    sandbox = sandbox or pol["sandbox"]
+    use_cache = use_cache and backend_kind(store.root, backend) != "dry"
     if approve is None:
         approve = "ask" if sys.stdin is not None and sys.stdin.isatty() \
             else "deny"
@@ -482,7 +509,10 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     logfile = _stamped(store.rdir, name, ".md")
     resfile = logfile.with_name(logfile.stem + ".result.txt")
     statefile = logfile.with_name(logfile.stem + ".state.json")
-    default_model = os.environ.get("TAWJIH_MODEL", "")
+    # after --model, USING and the file's model: the provider's, then
+    # TAWJIH_MODEL
+    default_model = (load_providers(store.root)["providers"].get(backend)
+                     or {}).get("model") or os.environ.get("TAWJIH_MODEL", "")
     record = {"tawjih": __version__, "name": name,
               "started": time.strftime("%Y-%m-%d %H:%M:%S"),
               "backend": backend, "allow_code": bool(allow_code),
@@ -593,12 +623,12 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
         asked again, up to the retries allowed."""
         ins, code, _ = machine_side(n)
         ps = settings(p, n)
-        # --model > the path's USING > the file's model: > TAWJIH_MODEL
+        # --model > USING > the file's model: > the provider's > TAWJIH_MODEL
         step_model = model_override or ps.get("using") or n.model or \
             default_model
         p["model"] = step_model
         if n.expects:
-            prev, cerr = conform(prev, n.expects, "input")
+            prev, cerr = conform(prev, n.expects, "input", store.root)
             if cerr:
                 raise StepFailure("input contract", ValueError(cerr))
         code_out, out, emptied = "", prev, False
@@ -673,7 +703,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                     if not out.strip():
                         problem = "the model returned an empty answer"
                     elif n.produces:   # never keep an answer the contract rejects
-                        problem = conform(out, n.produces, "output")[1]
+                        problem = conform(out, n.produces, "output",
+                                          store.root)[1]
                     if not problem:
                         break
                 if problem:
@@ -695,7 +726,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             raise StepFailure("output", ValueError(
                 "the step produced no output, so nothing can be passed on"))
         if n.produces:
-            out, cerr = conform(out, n.produces, "output")
+            out, cerr = conform(out, n.produces, "output", store.root)
             if cerr:
                 raise StepFailure("contract", ValueError(cerr))
         return out
@@ -797,7 +828,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             if edited is not None:
                 log.append("(output replaced by hand at approval)")
                 if n.produces:
-                    edited, cerr = conform(edited, n.produces, "output")
+                    edited, cerr = conform(edited, n.produces, "output",
+                                           store.root)
                     if cerr:
                         fail(p, n, "contract", ValueError(cerr), outputs)
                 out = edited
@@ -818,10 +850,15 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             if e["src"] == n.id and e["among"] is not None:
                 groups.setdefault(e["among"], []).append(e["dst"])
         for gid, cands in groups.items():
-            pick = choose_among(store, out, cands)
+            key = flow.among_by.get(gid)
+            if key:
+                pick, why = choose_by_key(store, out, cands, key)
+            else:
+                pick, why = choose_among(store, out, cands), None
             if pick is None:
                 fail(p, n, "AMONG", ValueError(
-                    "the output names none of: " + ", ".join(
+                    (why + "; candidates: " if why else
+                     "the output names none of: ") + ", ".join(
                         "%s %s" % (store.number(c), store.nodes[c].title)
                         for c in cands)), outputs)
             chosen[(n.id, gid)] = pick
@@ -852,7 +889,8 @@ __all__ = [
     'CODE_TIMEOUT', 'CodeTimeout', 'SANDBOX_BOOT', 'SANDBOX_FILE_MB',
     'SANDBOX_LIMITS', 'SANDBOX_MEMORY_MB', 'SandboxError', 'StepFailure',
     'StepOutputs', '_ask_approval', '_exec_limited', '_stamped',
-    'build_prompt', 'cache_file', 'choose_among', 'edge_text',
+    'build_prompt', 'cache_file', 'choose_among', 'choose_by_key',
+    'edge_text',
     'flow_text', 'machine_side', 'plan_steps', 'print_plan', 'run_code',
     'run_code_sandboxed', 'run_flow', 'split_statements', 'write_flow',
 ]

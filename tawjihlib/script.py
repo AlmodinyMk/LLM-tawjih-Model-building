@@ -83,7 +83,7 @@ def split_script(text):
     return out
 
 
-def translate(tokens, backend="dry", yes=False):
+def translate(tokens, backend="dry", yes=False, providers=()):
     """One management statement as the argument list of a command, and
     whether it removes or overwrites something."""
     if not tokens:
@@ -145,6 +145,8 @@ def translate(tokens, backend="dry", yes=False):
             else:
                 if rest[i + 1].lower() in BACKENDS:
                     back = rest[i + 1].lower()
+                elif rest[i + 1] in providers:
+                    back = rest[i + 1]
                 else:
                     model = rest[i + 1]
             i += 2
@@ -191,7 +193,7 @@ def translate(tokens, backend="dry", yes=False):
     return ["path", name] + rest[1:], False
 
 
-def translate_script(text, backend="dry", yes=False):
+def translate_script(text, backend="dry", yes=False, providers=()):
     """All statements of a script, each as (statement, argv, destructive);
     every statement is checked before anything runs."""
     out, problems = [], []
@@ -201,7 +203,7 @@ def translate_script(text, backend="dry", yes=False):
         return [], [str(e)]
     for k, st in enumerate(statements, 1):
         try:
-            argv, bad = translate(st, backend, yes)
+            argv, bad = translate(st, backend, yes, providers)
             out.append((" ".join(st), argv, bad))
         except (ScriptError, FlowError) as e:
             problems.append("statement %d: %s" % (k, e))

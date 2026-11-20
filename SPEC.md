@@ -1,4 +1,4 @@
-# Tawjih specification (0.13.1)
+# Tawjih specification (0.14.0)
 
 This is the contract the program and the tests follow.
 
@@ -64,7 +64,7 @@ machine side (it was reviewed and still fits); so does `edit` on
 
 ## Contracts
 
-A contract is `json`, `json(key, ...)` or `text`. Any other value is an
+A contract is `json`, `json(key, ...)`, `schema(NAME)` or `text`. Any other value is an
 error reported by `check` and at run time, so a typo cannot switch the check
 off.
 
@@ -73,6 +73,20 @@ off.
   inside a code fence, or between its first `{` and last `}`. The keys
   listed must be present. The bare JSON, without the fence or the sentences
   around it, is what the step passes on.
+- `schema(NAME)` accepts what `json` accepts, when the JSON value also
+  conforms to the JSON Schema in `schemas/NAME.json` (NAME: letters, digits,
+  `_` and `-`). The supported keywords are `$schema`, `$id`, `$comment`,
+  `title`, `description`, `default`, `examples`, `type` (one or a list of
+  object, array, string, number, integer, boolean, null), `properties`,
+  `required`, `additionalProperties` (false or a schema), `items` (a schema),
+  `enum`, `const`, `minimum`, `maximum`, `exclusiveMinimum`,
+  `exclusiveMaximum`, `minLength`, `maxLength`, `pattern` (Python `re`,
+  searched), `minItems`, `maxItems`, `uniqueItems`, `minProperties` and
+  `maxProperties`. A schema with any other keyword is an error, as is a
+  missing or unreadable schema file: `check` reports both. At most ten
+  violations are reported, each with its JSON location. For `check`, a
+  produced schema promises the keys of its `properties`, and an expected one
+  needs the keys in its `required`.
 - `expects` is checked on the step's input before the step runs; `produces`
   on its output. A model answer that breaks `produces` stops the run and is
   not kept in the cache.
@@ -82,8 +96,57 @@ off.
 
 ## Model
 
-The model of a step is, in order: `--model` on the command line, the file's
-`model` header, the `TAWJIH_MODEL` environment variable.
+The model of a step is, in order: `--model` on the command line, the path's
+`USING`, the file's `model` header, the provider's `model` in
+`providers.json`, the `TAWJIH_MODEL` environment variable.
+
+## Providers
+
+`--backend NAME` names a built-in kind (`dry`, `manual`, `ollama`, `openai`,
+`anthropic`) or a provider in `providers.json`; without it, the file's
+`default`, else `dry`. An unknown name is an error.
+
+```
+{"default": "local",
+ "providers": {"local": {"kind": "ollama", "base_url": "http://localhost:11434",
+                         "model": "llama3.2"},
+               "cloud": {"kind": "openai", "base_url": "https://...",
+                         "api_key_env": "EXAMPLE_KEY", "model": "m",
+                         "timeout": 600, "retries": 2,
+                         "retry_status": [429, 500, 502, 503, 504],
+                         "backoff": "exponential", "backoff_seconds": 2}},
+ "fallback": {"local": ["cloud"]}}
+```
+
+A provider's settings come before the environment variables of its kind
+(`OLLAMA_HOST`, `TAWJIH_BASE_URL`, `ANTHROPIC_BASE_URL`); its key is read
+from the variable named by `api_key_env`, else the kind's usual variable.
+No key is ever written to a file. A built-in kind without an entry uses the
+defaults shown. A call that fails with no connection, a timeout or a status
+in `retry_status` is made again up to `retries` times; the wait is
+`backoff_seconds`, times 2 to the number of tries before with `exponential`,
+or the server's `Retry-After` in seconds; never more than 60 seconds. Any
+other failure, or the last try, moves to the next provider in
+`fallback[NAME]` (each tried once in the chain, with its own retries). The
+first provider gets the step's model, or its own when the step names none; a
+fallback gets its own model, else the step's. When every provider fails, the
+step fails as for any model call (and its `fallback:` file runs). Usage
+records `provider` and `attempts`.
+
+## Policy
+
+`tawjih.policy.json` restricts the project; nothing in it can allow what the
+command line does not.
+
+| Key | Values (default first) | Effect |
+|---|---|---|
+| `allow_code` | `true`, `false` | `false`: `--allow-code` and `sandbox` are refused, and a run asked to run code fails |
+| `allow_network` | `true`, `"local"`, `false` | `false`: only `dry` and `manual` (and other non-network kinds); `"local"`: network providers only at `localhost`, `127.0.0.1` or `::1`, fallbacks included |
+| `sandbox` | `false`, `true` | `true`: code steps always run in the sandbox |
+| `human_approval` | `"never"`, `"run"`, `"always"` | the least `--human-approval` an MCP server may start with |
+
+An unknown key or value is an error. `policy set` changes keys and needs
+`--yes` for a looser value; `policy reset --yes` removes the file.
 
 ## Path language
 
@@ -97,8 +160,9 @@ in brackets.
 | `A TO B` [إلى] | A's output is B's input |
 | `A TO B AND C` [و] | A's output goes to both B and C |
 | `B AND C TO D` | D receives the outputs of B and C together |
-| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite |
+| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false |
 | `A AMONG B C D` [بين] | A decides: the candidate named first in A's output (by number, id or title) is the only one that runs; if none is named and exactly one candidate's `expects` accepts the output, that one runs |
+| `A AMONG B C D BY key` [حسب] | A's output must be a JSON object; the value of its top-level `key` (case-insensitive) must equal, ignoring case, a candidate's id, number, title or alias, and that one runs. Otherwise the step fails with the reason; nothing is guessed from the rest of the text |
 | `A TO D THROUGH B C` [عبر] | A → B → C → D |
 | `A TO B IF word ELSE C` [وإلا، والا] | also `A TO C IF NOT word` |
 | `A LINK B` [ارتبط، اربط] | an order-only connection: B runs after A, is skipped if A is, and does not receive A's output; a file fed only by LINKs receives the original request. LINK takes no `IF` or `THROUGH` |
@@ -108,7 +172,7 @@ in brackets.
 | `APPROVE A` [اعتمد] | A is approved before it runs in this path (with `approve: after` in the file: both) |
 | `A USING m` [بواسطة] | A's model in this path: `--model` > `USING` > `model:` > `TAWJIH_MODEL` |
 | `A RETRY n` [أعد، اعد] | n from 1 to 20: A's retries in this path (`--retries` wins) |
-| `A UNTIL [NOT] w` [حتى] | needs `RETRY n` on A: while the condition (as for `IF`) does not hold for A's output, A runs again, at most n more times, with its previous answer and the reason appended to its prompt; then the step fails (and its fallback, if any, runs) |
+| `A UNTIL [NOT] w` [حتى] | needs `RETRY n` on A: while the condition (as for `IF`, including `key = value`) does not hold for A's output, A runs again, at most n more times, with its previous answer and the reason appended to its prompt; then the step fails (and its fallback, if any, runs) |
 | `A PICK k` [انتق] | after A's contract and approval, only the value of key `k` of A's JSON object output is kept and passed on (a string as is, anything else as JSON); without that key the step fails. Contract checks skip connections out of A |
 
 Statements chain left to right: `A TO B AND C TO D` connects A to B and C,

@@ -11,7 +11,7 @@ beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.13.1, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.14.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -111,7 +111,9 @@ Use `-p FOLDER` before the command to work on a project elsewhere.
 | `A TO B AND C` | ... to both B and C (branching) |
 | `B AND C TO D` | D receives both outputs (joining) |
 | `A TO B IF word` | when A's output is JSON with that key: only when its value is true or non-empty; otherwise only when the output contains the word. `IF NOT word` for the opposite |
+| `A TO B IF key = value` | when A's output is JSON whose `key` equals `value` (`true`, `false`, `null` and numbers compare as JSON; anything else as text). No JSON, or no such key: false |
 | `A AMONG B C D` | A's output names one of them; only that one runs |
+| `A AMONG B C D BY key` | A's output is JSON, and the value of `key` names the one that runs, exactly (its number, id, title or alias) |
 | `A TO D THROUGH B C` | A → B → C → D |
 | `A TO B IF word ELSE C` | B when the word holds, otherwise C (the same as adding `A TO C IF NOT word`) |
 | `A LINK B` | B runs after A but does not receive its output (it receives the original request) |
@@ -120,14 +122,14 @@ Use `-p FOLDER` before the command to work on a project elsewhere.
 | `A TO APPROVE B` | a person approves B's input before it runs (as `approve: before`, in this path only) |
 | `A TO CALL other TO B` | the saved path `other` is spliced in: A feeds its first files, its last files feed B. It is read every time, so a change to it reaches every path that calls it |
 | `B USING model` | B uses that model in this path (`--model` still wins) |
-| `B RETRY 3 UNTIL word` | B is run again, told why, until its output meets the word (as for `IF`), at most 3 more times; `UNTIL NOT word` for the opposite. `RETRY n` alone sets the retries for a broken contract |
+| `B RETRY 3 UNTIL word` | B is run again, told why, until its output meets the word (as for `IF`), at most 3 more times; `UNTIL NOT word` for the opposite. `RETRY n` alone sets the retries for a broken contract. `UNTIL key = value` waits for that value in a JSON output |
 | `A PICK key TO B` | only the value of `key` in A's JSON output is passed on |
 
 `EACH` and `APPROVE` come before a file; `USING`, `RETRY`, `UNTIL` and
 `PICK` after it, and belong to that file in that path only. Statements chain
 (`A TO B AND C TO D`), and several are separated by `,` or `/` (use `/` in
 PowerShell). Arabic words work too: إلى، مرر، و، إذا، ليس، وإلا، بين، عبر،
-ارتبط، لكل، اعتمد، نفذ، بواسطة، أعد، حتى، انتق; and `؛` or `،` separate
+ارتبط، لكل، اعتمد، نفذ، بواسطة، أعد، حتى، انتق، حسب; and `؛` or `،` separate
 statements. Files written with no connecting word are a plain sequence.
 `PARALLEL` and `CACHE` are refused with a reason: branches joined by `AND`
 are already independent, and every answer is already kept for `--resume`.
@@ -162,13 +164,22 @@ expects: json(a, b, c)    what its input must be
 produces: json(roots)     what its output must be
 ```
 
-A contract is `json`, `json(key, ...)` or `text`. A JSON answer is accepted
+A contract is `json`, `json(key, ...)`, `schema(NAME)` or `text`. A JSON answer is accepted
 when it is wrapped in a code fence or has a sentence around it, as models
 often write; the bare JSON is what goes to the next step. An answer that
 breaks the contract stops the run, is not kept in the cache, and the error
 names the step to ask again. `check` compares the contracts of connected
 files before anything runs, and reports an unknown contract (a typo) as an
 error.
+
+`schema(NAME)` checks the JSON against `schemas/NAME.json`, a JSON Schema.
+`contract REF --produces-schema FILE` (or `--expects-schema`) checks the
+file, copies it to `schemas/` and sets the contract. Only part of JSON Schema
+is supported: `type`, `properties`, `required`, `additionalProperties`,
+`items`, `enum`, `const`, the number and length limits, `pattern`,
+`uniqueItems`, and the property counts. A schema using anything else
+(`oneOf`, `$ref`, `if` ...) is refused rather than half-checked. Connected
+files are compared through the keys a schema requires.
 
 The model of a step is `--model` if given, else the path's `USING`, else
 the file's `model`, else `TAWJIH_MODEL`.
@@ -249,7 +260,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `search QUERY [--branch REF] [--side S] [--tag T] [--rank \| --semantic]` | search titles and sides; see [Managing a project](#managing-a-project) for the other commands added in 0.7 |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
-| `contract REF [--expects S] [--produces S] [--model M] [--retries N] [--fallback REF] [--approve WHEN] [--split S] [--weight W] [--each yes\|KEY]` | show or set a file's contracts, model, retries, fallback, approval, split, weight and FOR EACH |
+| `contract REF [--expects S \| --expects-schema FILE] [--produces S \| --produces-schema FILE] [--model M] [--retries N] [--fallback REF] [--approve WHEN] [--split S] [--weight W] [--each yes\|KEY]` | show or set a file's contracts, model, retries, fallback, approval, split, weight and FOR EACH |
 | `redact [TEXT] [--init]` / `stats` | private data hidden before model calls / what runs cost; see [Failures, approval, privacy and cost](#failures-approval-privacy-and-cost) |
 | `check [--branch REF]` | validate parents, levels, cycles, links, paths, code syntax, contracts, staleness |
 | `trees` | list the available trees |
@@ -267,6 +278,8 @@ arXiv) publish their source; look for it before using a PDF.
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
 | `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code] [--human-approval always\|run\|never]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
+| `provider list\|add\|policy\|rm\|default\|fallback\|test [NAME] ...` | named providers, retries and fallback chains; see [AI providers](#ai-providers) |
+| `policy show\|set\|reset` | the project's own limits, which only restrict; see [The project's policy](#the-projects-policy) |
 | `approve [ID ...] [--yes \| --no]` | requests from the assistant waiting for a person: list, read, run or decline |
 | `do STATEMENTS [--file F] [--run] [--yes]` | management statements in English or Arabic, translated into commands (see [Management statements](#management-statements-do)) |
 | `lock`, `alias`, `review`, `stage`, `mount`, `sandbox`, `trace`, `release`, `snapshot`, `seal`, `verify`, `inherit`, `template`, `scaffold`, `gc`, `compact`, `format`, `archive`, `glossary`, `doctor`, `repair`, `schedule`, `trigger`, `pause`, `resume`, `cancel` | see [Governance](#governance-locks-reviews-releases-schedules) (0.10) |
@@ -644,6 +657,8 @@ the file already has passages, or with `--reading`.
 
 ## AI providers
 
+The built-in kinds:
+
 | `--backend` | Talks to | Environment |
 |---|---|---|
 | `dry` (default) | nothing; shows what would be sent | — |
@@ -655,6 +670,56 @@ the file already has passages, or with `--reading`.
 Name the model with `--model NAME` or the `TAWJIH_MODEL` variable, for all
 three network backends. Keys are
 read from the environment and never written to disk.
+
+**Named providers.** `providers.json` in the project gives providers names,
+each with a kind, an address, a model, the *name* of the environment
+variable holding its key (never the key), and what to do when a call fails:
+
+```
+tawjih.py provider add local --kind ollama --base-url http://localhost:11434 --model llama3.2
+tawjih.py provider add cloud --kind openai --base-url https://api.example.com/v1 \
+    --api-key-env EXAMPLE_KEY --model some-model --retries 3 --backoff exponential
+tawjih.py provider default local
+tawjih.py provider fallback local cloud      # if local fails, try cloud
+tawjih.py provider list                      # says whether each key variable is set
+tawjih.py provider test local                # a real call; also: provider test all
+```
+
+`--backend NAME` then takes a provider's name as well as a kind; without it
+the project's default is used (`dry` when there is none). A lost connection,
+a timeout, or a status in `--retry-status` (429, 500, 502, 503 and 504 by
+default) is tried again `--retries` times (2 by default), waiting
+`--backoff-seconds` (2), doubled each time with `exponential`, or as long as
+the server's `Retry-After` asks, at most 60 seconds. Other errors are not
+tried again. When a provider still fails, the next one in its fallback chain
+is called with that provider's own model; the run's usage records which
+provider answered and after how many attempts. A step's `fallback:` file
+still runs when every provider failed. `provider policy NAME --retries ...`
+changes these settings, `provider rm` removes one, and `provider test`
+writes each result to `runs/provider-tests.jsonl`. Live tests:
+`TAWJIH_LIVE_TESTS=1 TAWJIH_LIVE_PROJECT=folder python -m unittest
+tests.test_live`.
+
+## The project's policy
+
+`tawjih.policy.json` holds limits a project sets for itself. It can only
+restrict: what it allows still needs the usual options, because a file in
+the project could be changed by an assistant that was misled, and must not
+be able to turn anything on.
+
+```
+tawjih.py policy set --allow-code false        # refuse --allow-code and sandbox runs
+tawjih.py policy set --allow-network local     # only providers on this computer
+tawjih.py policy set --sandbox true            # code always runs in the sandbox
+tawjih.py policy set --human-approval run      # the least an MCP server may use
+tawjih.py policy show
+tawjih.py policy reset --yes
+```
+
+`--allow-network false` allows only `dry` and `manual`; `local` allows
+providers whose address is `localhost`, `127.0.0.1` or `::1`, fallbacks
+included. Setting a limit back to a looser value, and `reset`, need
+`--yes`.
 
 ## Code steps
 
@@ -695,6 +760,9 @@ index/    the semantic search index            (git-ignored)
 state.json  digests of the files as Tawjih last
           wrote them, for sync and status      (git-ignored)
 redact.txt  what to hide before model calls  (optional)
+providers.json  named providers, default, fallbacks (optional)
+tawjih.policy.json  the project's own limits      (optional)
+schemas/  JSON Schemas used by schema(NAME) contracts
 prices.json price per million tokens, for stats (optional)
 releases/ releases and snapshots (zip files)
 archive/  archived branches
@@ -732,9 +800,9 @@ two together when you copy the program.
   (`verify` and `sync` show such edits afterwards).
 - A kept answer is reused as it is. Models answer differently each time, so
   `--resume` freezes the first answer until the prompt changes.
-- `IF` only tests a key of a JSON output or whether a word appears in the
-  text, and `AMONG` only
-  finds a candidate's number, id or title in it. Both depend on the model
+- `IF` and `UNTIL` only test a key of a JSON output (its truth, or
+  `key = value`) or whether a word appears in the text, and `AMONG` only
+  finds a candidate's number, id or title in it, or in one key with `BY`. Both depend on the model
   wording its answer as the instructions ask.
 - A JSON contract tolerates a code fence and sentences around the JSON, but
   a step still fails when the model gives no JSON at all.
@@ -791,8 +859,9 @@ were driven by a script on a virtual display; see
 [linux/README.md](linux/README.md).
 
 Not yet verified: real editors and the desktop windows used by a person, and
-real providers. The three network backends were checked only
-against a local mock server that imitates the response formats.
+real providers. The three network backends, and the retries and fallback
+chains of named providers, were checked only against a local mock server
+that imitates the response formats and the busy statuses.
 
 ## License
 

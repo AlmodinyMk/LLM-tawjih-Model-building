@@ -21,11 +21,11 @@ from pathlib import Path
 from .core import (
     CONTRACT_HELP, Die, EXTRA, FlowError, LEVELS, MARK, SECTIONS, SPLITS,
     Store, _parse_contract, build_flow, contract_fits, die,
-    flow_condition_notes, flow_contract_errors, parse_examples,
-    parse_level,
+    flow_condition_notes, flow_contract_errors, load_schema, parse_examples,
+    parse_level, schema_file, schema_problems,
 )
 from .providers import (
-    call_model, use_model,
+    backend_kind, call_model, use_model,
 )
 from .engine import (
     flow_text, plan_steps, print_plan, run_flow, split_statements,
@@ -104,10 +104,44 @@ def cmd_link(a):
     print("linked %s -> %s (%s)" % (src, dst, a.type))
 
 
+def install_schema(st, src):
+    """Copy a JSON Schema file into the project's schemas/ (named by the
+    file's stem) after checking it uses only what is checked. Returns the
+    name."""
+    f = Path(src)
+    if not f.is_file():
+        die("no such file: %s" % src)
+    name = re.sub(r"[^\w\-]", "_", f.stem)
+    try:
+        schema = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError as e:
+        die("%s is not JSON (%s)" % (src, e))
+    probs = schema_problems(schema)
+    if probs:
+        die("%s uses what Tawjih does not check: %s" % (src, "; ".join(
+            probs[:5])))
+    target = schema_file(st.root, name)
+    if target.resolve() != f.resolve():
+        if target.is_file() and json.loads(target.read_text(
+                encoding="utf-8")) != schema:
+            die("schemas/%s.json exists with other content; rename the file"
+                % name)
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(json.dumps(schema, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+    return name
+
+
 def cmd_contract(a):
     """Show or set a file's contracts (expects, produces) and model."""
     st = Store(a.project)
     n = st.nodes[st.resolve(a.ref)]
+    for side in ("expects", "produces"):          # --expects-schema FILE
+        src = getattr(a, side + "_schema", None)
+        if src:
+            if getattr(a, side):
+                die("give --%s or --%s-schema, not both" % (side, side))
+            setattr(a, side, "schema(%s)" % install_schema(st, src))
     changes = {k: v for k, v in (("expects", a.expects),
                                  ("produces", a.produces),
                                  ("model", a.model),
@@ -152,6 +186,12 @@ def cmd_contract(a):
         kind, keys = _parse_contract(v)
         if kind == "unknown":
             die("%s: unknown contract '%s' (%s)" % (k, v, CONTRACT_HELP))
+        if kind == "schema":
+            err = load_schema(st.root, keys[0])[1]
+            if err:
+                die("%s: %s" % (k, err))
+            changes[k] = "schema(%s)" % keys[0]
+            continue
         changes[k] = "json(%s)" % ", ".join(keys) if kind == "json" and keys \
             else kind
     if changes:
@@ -602,7 +642,7 @@ def contract_route(st, start, end, allowed):
         sp, de = _parse_contract(pu), _parse_contract(ev)
         if de[0] == "json" and de[1] and not sp[1]:
             return False                    # keys required but not promised
-        return contract_fits(pu, ev) is None
+        return contract_fits(pu, ev, st.root) is None
     prev, todo = {start: None}, [start]
     while todo:
         nxt = []
@@ -708,7 +748,7 @@ def cmd_generate(a):
                   " expects | produces)\n%s\n\n# Goal\n%s" % (
                       GENERATE_HEAD, "\n".join(rows), a.goal))
         use_model(a)
-        if a.backend == "dry":
+        if backend_kind(st.root, a.backend) == "dry":
             print(prompt)
             print("\n[dry run: nothing was sent; choose --backend]",
                   file=sys.stderr)
@@ -869,7 +909,7 @@ def cmd_edit(a):
     use_model(a)
     step_model = (getattr(a, "model", None) or n.model
                   or os.environ.get("TAWJIH_MODEL", ""))
-    if a.backend == "dry":
+    if backend_kind(st.root, a.backend) == "dry":
         print(prompt)
         print("\n[dry run: %d characters; choose --backend to send it]"
               % len(prompt), file=sys.stderr)

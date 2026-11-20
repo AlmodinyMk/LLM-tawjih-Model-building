@@ -42,6 +42,9 @@ import time
 from .core import (
     Die, FlowError, SECTIONS, EXTRA, Store, __version__,
 )
+from .providers import (
+    backend_kind,
+)
 from .engine import (
     plan_steps,
 )
@@ -465,7 +468,7 @@ class Server:
                "  code steps: %s" % (
                    "run, in the sandbox" if self.allow_code else
                    "not run (the server has no --allow-code)")]
-        if self.backend not in ("dry",):
+        if backend_kind(self.project, self.backend) != "dry":
             out.append("  this sends project text to %s and may cost money"
                        % self.backend)
         return out

@@ -21,6 +21,10 @@ from .core import (
     Die, EXTRA, FlowError, LEVELS, Node, SECTIONS, Store, __version__,
     _kw, die, parse_examples,
 )
+from .providers import (
+    BACKENDS, DEFAULT_POLICY, POLICY_DEFAULT, POLICY_FILE, POLICY_KEYS,
+    ProviderError, call_model, load_policy, load_providers, providers_file,
+)
 from .engine import (
     CodeTimeout, SANDBOX_LIMITS, machine_side, run_code, run_flow,
 )
@@ -279,6 +283,9 @@ def cmd_sandbox(a):
     n = st.nodes[nid]
     if not n.code.strip():
         die("%s has no code side" % n.title)
+    if not load_policy(st.root)["allow_code"]:
+        die("the project's policy (%s) does not allow running code"
+            % POLICY_FILE)
     text = Path(a.input_file).read_text(encoding="utf-8") if a.input_file \
         else (a.input or "")
     shared, before = {}, dict(SANDBOX_LIMITS)
@@ -1325,7 +1332,239 @@ def _sched_flag(a, what):
                               "cancel": "cancelled"}[what]))
 
 
+
+# ---------------------------------------------------------------- providers
+def _save_providers(root, data):
+    f = providers_file(root)
+    f.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                 encoding="utf-8")
+
+
+def _provider_line(name, cfg, data):
+    kind = cfg.get("kind", name)
+    env = cfg.get("api_key_env") or {"openai": "TAWJIH_API_KEY",
+                                     "anthropic": "ANTHROPIC_API_KEY"}.get(kind)
+    bits = [name + (" (default)" if data.get("default") == name else ""),
+            "kind " + kind]
+    if cfg.get("base_url"):
+        bits.append(cfg["base_url"])
+    if cfg.get("model"):
+        bits.append("model " + cfg["model"])
+    if env:
+        bits.append("key in %s: %s" % (env, "set" if os.environ.get(env)
+                                       else "NOT set"))
+    pol = dict(DEFAULT_POLICY, **{k: cfg[k] for k in DEFAULT_POLICY
+                                  if k in cfg})
+    bits.append("retries %s, %s backoff %ss, timeout %ss" % (
+        pol["retries"], pol["backoff"], pol["backoff_seconds"],
+        pol["timeout"]))
+    if data["fallback"].get(name):
+        bits.append("then " + " -> ".join(data["fallback"][name]))
+    return "  ".join(bits)
+
+
+def cmd_provider(a):
+    """Named providers in providers.json: kind, address, model, the name of
+    the environment variable holding the key (never the key), the retry
+    policy, the default and fallback chains; test one with a real call."""
+    st = Store(a.project)
+    data = load_providers(st.root)
+    provs = data["providers"]
+    if a.action == "list":
+        if not provs and not data["fallback"]:
+            print("no providers.json; built in: %s (default: %s)" % (
+                ", ".join(sorted(BACKENDS)), data["default"] or "dry"))
+            return 0
+        for name in sorted(set(provs) | set(data["fallback"])):
+            print(_provider_line(name, provs.get(name) or {"kind": name},
+                                 data))
+        if not data["default"]:
+            print("default: dry (set one with: provider default NAME)")
+        return 0
+    if not a.name:
+        die("provider %s needs a NAME" % a.action)
+    name = a.name
+    if a.action == "test" and name == "all":
+        names = sorted(provs) or [data["default"] or "dry"]
+        bad = 0
+        for x in names:
+            a.name = x
+            bad += cmd_provider(a)
+        return 1 if bad else 0
+    if a.action in ("add", "set", "policy"):
+        if a.action == "policy" and name not in provs:
+            die("%s is not in providers.json; add it first" % name)
+        if name in BACKENDS and a.kind and a.kind != name:
+            die("%s is a built-in kind; give this provider another name"
+                % name)
+        cfg = dict(provs.get(name) or {})
+        kind = a.kind or cfg.get("kind") or (name if name in BACKENDS
+                                             else None)
+        if kind not in BACKENDS:
+            die("give --kind (%s)" % ", ".join(sorted(BACKENDS)))
+        cfg["kind"] = kind
+        if a.api_key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",
+                                              a.api_key_env):
+            die("--api-key-env takes the NAME of an environment variable "
+                "(the key itself is never stored)")
+        if a.base_url and not re.match(r"https?://", a.base_url):
+            die("--base-url must start with http:// or https://")
+        for key, val in (("base_url", a.base_url), ("model", a.model),
+                         ("api_key_env", a.api_key_env),
+                         ("timeout", a.timeout), ("retries", a.retries),
+                         ("backoff", a.backoff),
+                         ("backoff_seconds", a.backoff_seconds)):
+            if val is not None:
+                cfg[key] = val
+        if a.retry_status is not None:
+            try:
+                cfg["retry_status"] = sorted({int(x) for x in
+                                              a.retry_status.split(",") if x})
+            except ValueError:
+                die("--retry-status takes numbers: 429,500,502,503,504")
+        if (a.retries or 0) < 0 or (a.timeout is not None and a.timeout <= 0):
+            die("retries must be 0 or more, and timeout more than 0")
+        provs[name] = cfg
+        if not data["default"] and a.action == "add":
+            data["default"] = name
+        _save_providers(st.root, data)
+        print(("added " if a.action == "add" and name not in
+               load_providers(st.root)["providers"] else "saved ") +
+              _provider_line(name, cfg, data))
+        return 0
+    if a.action == "rm":
+        if name not in provs:
+            die("%s is not in providers.json" % name)
+        used = [k for k, v in data["fallback"].items() if name in v]
+        if used and not a.yes:
+            die("%s is a fallback of %s; add --yes to remove it from those "
+                "chains too" % (name, ", ".join(used)))
+        del provs[name]
+        data["fallback"].pop(name, None)
+        for k in used:
+            data["fallback"][k] = [x for x in data["fallback"][k] if x != name]
+        if data["default"] == name:
+            data["default"] = ""
+        _save_providers(st.root, data)
+        print("removed %s" % name)
+        return 0
+    known = set(provs) | set(BACKENDS)
+    if a.action == "default":
+        if name not in known:
+            die("unknown provider '%s'" % name)
+        data["default"] = name
+        _save_providers(st.root, data)
+        print("default provider: %s" % name)
+        return 0
+    if a.action == "fallback":
+        others = list(a.others or [])
+        for x in [name] + others:
+            if x not in known:
+                die("unknown provider '%s'" % x)
+        if name in others or len(set(others)) != len(others):
+            die("a chain cannot repeat a provider")
+        if others:
+            data["fallback"][name] = others
+            print("%s, then %s" % (name, " -> ".join(others)))
+        else:
+            data["fallback"].pop(name, None)
+            print("%s has no fallback now" % name)
+        _save_providers(st.root, data)
+        return 0
+    if a.action == "test":
+        prompt = ('Answer with exactly this JSON and nothing else: '
+                  '{"status": "ok"}')
+        t0 = time.time()
+        try:
+            answer, usage = call_model(st.root, name, prompt, a.model or "",
+                                       fallback=False)
+            got = answer.strip().strip("`").strip()
+            if got.lower().startswith("json"):
+                got = got[4:].strip()
+            try:
+                ok = json.loads(got).get("status") == "ok"
+            except (ValueError, AttributeError):
+                ok = got.lower().rstrip(".") == "ok"
+            err = "" if ok else "unexpected answer: " + answer[:200]
+        except ProviderError as e:
+            ok, usage, err = False, {}, str(e)
+        rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "provider": name,
+               "model": a.model or "", "ok": ok, "error": err,
+               "seconds": round(time.time() - t0, 3),
+               "attempts": usage.get("attempts", 0)}
+        (st.root / "runs").mkdir(exist_ok=True)
+        with open(st.root / "runs" / "provider-tests.jsonl", "a",
+                  encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        if a.json:
+            print(json.dumps(rec, ensure_ascii=False))
+        else:
+            print("%s: %s (%.1f s%s)" % (
+                name, "ok" if ok else "FAILED", rec["seconds"],
+                ", " + err if err else ""))
+        return 0 if ok else 1
+    die("unknown action %s" % a.action)
+
+
+# ------------------------------------------------------------------- policy
+def cmd_policy(a):
+    """tawjih.policy.json: limits the project sets for itself. It only
+    restricts; what it allows still needs the usual options."""
+    st = Store(a.project)
+    f = st.root / POLICY_FILE
+    if a.action == "show":
+        pol = load_policy(st.root)
+        print("%s%s" % (POLICY_FILE, "" if f.is_file() else
+                        " (none; these are the defaults)"))
+        for k in POLICY_KEYS:
+            print("  %-15s %s" % (k, json.dumps(pol[k])))
+        return 0
+    if a.action == "reset":
+        if not f.is_file():
+            print("no %s" % POLICY_FILE)
+            return 0
+        if not a.yes:
+            die("reset removes the project's limits; add --yes")
+        print("it was: " + " ".join(f.read_text(encoding="utf-8").split()))
+        f.unlink()
+        print("removed %s; the project has no limits of its own now"
+              % POLICY_FILE)
+        return 0
+    data = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    load_policy(st.root)                       # refuse a broken file
+    given = {"allow_code": a.allow_code, "allow_network": a.allow_network,
+             "sandbox": a.sandbox, "human_approval": a.human_approval}
+    given = {k: v for k, v in given.items() if v is not None}
+    if not given:
+        die("give at least one of --allow-code, --allow-network, --sandbox, "
+            "--human-approval")
+    conv = {"true": True, "false": False}
+    for k, v in given.items():
+        v = conv.get(v, v)
+        if v not in POLICY_KEYS[k]:
+            die("%s cannot be %s" % (k, v))
+        looser = _looser(k, data.get(k, POLICY_DEFAULT[k]), v)
+        if looser and not a.yes:
+            die("%s=%s loosens the project's policy; add --yes" % (k, v))
+        data[k] = v
+    f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    for k in POLICY_KEYS:
+        if k in data:
+            print("  %-15s %s" % (k, json.dumps(data[k])))
+    return 0
+
+
+_STRICT = {"allow_code": [True, False], "sandbox": [False, True],
+           "allow_network": [True, "local", False],
+           "human_approval": ["never", "run", "always"]}
+
+
+def _looser(key, old, new):
+    order = _STRICT[key]
+    return order.index(new) < order.index(old)
+
 __all__ = [
+    '_looser', '_provider_line', '_save_providers', 'cmd_policy', 'cmd_provider',
     'INHERITABLE', 'RELEASE_EXTRA', 'RELEASE_KEEP', '_change_digest',
     '_digest_map', '_due', '_every_seconds', '_formatted', '_overall',
     '_project_entries', '_release_has', '_release_read', '_sched_file',

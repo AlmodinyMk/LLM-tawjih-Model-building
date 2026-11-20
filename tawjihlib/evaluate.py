@@ -18,7 +18,7 @@ from .core import (
     Die, Store, __version__, _json_in, _norm_q, die, parse_examples,
 )
 from .providers import (
-    call_model, use_model,
+    backend_kind, call_model, use_model,
 )
 from .engine import (
     _stamped, run_flow,
@@ -364,7 +364,7 @@ def _eval_synthesize(a, args):
         prop.unlink()
         print("%d case(s) added to %s" % (len(cases), f))
         return
-    if a.backend == "dry":
+    if backend_kind(st.root, a.backend) == "dry":
         die("choose a --backend for the model that writes the cases")
     ids = st.subtree_ids(st.resolve(a.branch)) if a.branch else (
         list(_flow_from_args(st, name, []).nodes)

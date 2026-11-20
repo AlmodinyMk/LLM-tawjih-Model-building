@@ -19,10 +19,16 @@ tawjih new "Algebra" --parent 1
 tawjih tree
 ```
 
-- A path language in English and Arabic: `TO`, `AND`, `IF … ELSE`, `AMONG`,
+- A path language in English and Arabic: `TO`, `AND`, `IF … ELSE` (also `IF key = value`), `AMONG … BY key`,
   `THROUGH`, `LINK`, `CALL`, with per-step `EACH`, `APPROVE`, `USING`,
   `RETRY … UNTIL`, `PICK`.
-- Contracts between steps, staleness when sources change, a cache to resume.
+- Contracts between steps (keys or a JSON Schema), staleness when sources
+  change, a cache to resume.
+- Named providers (`providers.json`): Ollama, any OpenAI-compatible server,
+  Anthropic, with retries, backoff and fallback chains; keys stay in
+  environment variables.
+- A project policy that can only restrict: no code, local providers only,
+  always sandboxed, a least level of human approval.
 - Evaluation: cases from the examples, a path compared with the model asked
   directly, baselines, datasets with SHA-256 manifests, lineage with `trace`.
 - Governance: locks, review, staged proposals, sealed releases, schedules.

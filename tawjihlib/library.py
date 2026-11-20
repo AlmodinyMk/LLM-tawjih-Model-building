@@ -16,7 +16,7 @@ from .core import (
     LEVELS, MARK, SECTIONS, Store, die,
 )
 from .providers import (
-    call_model, use_model,
+    backend_kind, call_model, use_model,
 )
 from .commands import (
     _backup,
@@ -978,7 +978,7 @@ def cmd_filter(a):
     def prompt_for(title, body):
         return ("%s\n\n# Tree files (id | number | level | title)\n%s\n\n"
                 "# Passage: %s\n%s" % (head, table, title, body))
-    if a.backend == "dry":
+    if backend_kind(st.root, a.backend) == "dry":
         print(prompt_for(*chunks[0]))
         print("\n[dry run: %d passages = %d model calls, %d characters in the "
               "book]" % (len(chunks), len(chunks), len(text)), file=sys.stderr)

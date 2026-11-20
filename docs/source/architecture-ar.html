@@ -66,7 +66,7 @@
 </head>
 <body>
 <div class="page">
-  <h1>Tawjih — شكل البرنامج <span>توجيه أوامر الآلة · الإصدار 0.13.1</span></h1>
+  <h1>Tawjih — شكل البرنامج <span>توجيه أوامر الآلة · الإصدار 0.14.0</span></h1>
   <div class="sub">المعرفة في أشجار من ملفات ثلاثية الوجوه، تُبنى منها لغة الآلة، وتُربط الملفات في مسارات تُنفَّذ خطوة خطوة، ويحفظ صدقَها التقييمُ والحوكمة وجسرُ تدريب اختياري</div>
 
   <div class="layer ui">
@@ -102,7 +102,7 @@
       <div class="file">
         <div class="title">ملف: موضوع</div>
         <div class="hdr"><span class="en">id</span> تعريفة ثابتة · رقم مثل <span class="en">1.1.1.1.2</span> · <span class="en">aliases</span><br>
-          <span class="en">model</span> · عقود <span class="en">expects</span> / <span class="en">produces</span> · <span class="en">retries</span> · <span class="en">fallback</span> · <span class="en">approve</span> · <span class="en">each</span><br>
+          <span class="en">model</span> · عقود <span class="en">expects</span> / <span class="en">produces</span>، ومنها مخطط JSON <span class="en">schema</span> · <span class="en">retries</span> · <span class="en">fallback</span> · <span class="en">approve</span> · <span class="en">each</span><br>
           <span class="en">split</span> · <span class="en">weight</span> · <span class="en">tags</span> · <span class="en">locked</span></div>
         <div class="sides">
           <div class="side s-h"><b>المفهوم التعبيري البشري</b>شرح الموضوع بلغة الإنسان</div>
@@ -122,7 +122,7 @@
         <div class="arrow">↓</div>
         <div class="step"><b>استخراج</b> لغة الآلة وحدها، و<b style="display:inline">إخفاء</b> البيانات الخاصة</div>
         <div class="arrow">↓</div>
-        <div class="step"><b>التنفيذ</b> الكود أولاً ثم النموذج<div class="chips"><span class="chip p">ollama</span><span class="chip p">openai</span><span class="chip p">anthropic</span><span class="chip p">manual</span><span class="chip p">dry</span></div><div class="m">«لكل» على عناصر قائمة · <span class="en">--sandbox</span> للكود</div></div>
+        <div class="step"><b>التنفيذ</b> الكود أولاً ثم النموذج<div class="chips"><span class="chip p">ollama</span><span class="chip p">openai</span><span class="chip p">anthropic</span><span class="chip p">manual</span><span class="chip p">dry</span></div><div class="m">مزوّدون مسمّون في <span class="en">providers.json</span>: إعادة محاولة بانتظار متزايد وسلسلة بديلة · «لكل» على عناصر قائمة · <span class="en">--sandbox</span> للكود</div></div>
         <div class="arrow">↓</div>
         <div class="step"><b>فحص العقود</b> على المدخل والناتج<div class="m">إعادة المحاولة · ملف بديل · موافقة إنسان</div></div>
         <div class="arrow">↓</div>
@@ -136,7 +136,7 @@
   <div class="layer net">
     <div class="tag">الشبكة <small>لغة المسار، ورسمه، وتوليده</small></div>
     <div class="row" style="grid-template-columns: 1.5fr 1fr 1fr;">
-      <div class="box"><b>لغة المسار</b>كلمات ربط بين الملفات وإعدادات للخطوات، وبالعربية أيضاً<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">ELSE</span><span class="chip k">AMONG</span><span class="chip k">THROUGH</span><span class="chip k">LINK</span><span class="chip k">CALL</span><span class="chip">EACH</span><span class="chip">APPROVE</span><span class="chip">USING</span><span class="chip">RETRY</span><span class="chip">UNTIL</span><span class="chip">PICK</span></div></div>
+      <div class="box"><b>لغة المسار</b>كلمات ربط بين الملفات وإعدادات للخطوات، وبالعربية أيضاً<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">ELSE</span><span class="chip k">AMONG</span><span class="chip k">BY</span><span class="chip k">THROUGH</span><span class="chip k">LINK</span><span class="chip k">CALL</span><span class="chip">EACH</span><span class="chip">APPROVE</span><span class="chip">USING</span><span class="chip">RETRY</span><span class="chip">UNTIL</span><span class="chip">PICK</span></div></div>
       <div class="box"><b>رسم الشبكة <span class="en">graph</span></b>الأشجار أو مسار، بصيغة <span class="en">Markdown</span> أو <span class="en">Mermaid</span> أو <span class="en">Graphviz</span><div class="m">التسليم بين الأشجار سهم سميك · الملف القديم معلَّم</div></div>
       <div class="box"><b>توليد المسار <span class="en">generate</span></b>بالعقود بلا نموذج، أو بهدف يقترحه نموذج<div class="m">اقتراح يُراجَع ثم <span class="en">--accept</span></div></div>
     </div>
@@ -148,7 +148,7 @@
       <div class="box"><b>التقييم <span class="en">eval</span></b>حالات من الأمثلة · نموذج حَكَم<div class="m"><span class="en">compare</span> مع سؤال النموذج مباشرة · <span class="en">baseline</span> · <span class="en">blame</span> · <span class="en">promote</span> · <span class="en">report</span></div></div>
       <div class="box"><b>التتبع <span class="en">trace</span></b><span class="en">--impact</span> قبل التعديل · <span class="en">--output</span> رجوعاً إلى الكتب<div class="m"><span class="en">dataset</span> مع بيان ببصمات SHA-256</div></div>
       <div class="box"><b>الإصدارات <span class="en">release</span></b>إنشاء · مقارنة · فحص · رجوع<div class="m"><span class="en">snapshot</span> · <span class="en">seal</span> / <span class="en">verify</span> (توقيع GnuPG اختياري)</div></div>
-      <div class="box"><b>الحماية</b><span class="en">lock</span> · <span class="en">review</span> · <span class="en">stage</span> · <span class="en">audit</span><div class="m"><span class="en">doctor</span> / <span class="en">repair</span> · <span class="en">format</span> · <span class="en">gc</span> · <span class="en">archive</span></div></div>
+      <div class="box"><b>الحماية</b><span class="en">lock</span> · <span class="en">review</span> · <span class="en">stage</span> · <span class="en">audit</span> · <span class="en">policy</span> (يضيّق فقط)<div class="m"><span class="en">doctor</span> / <span class="en">repair</span> · <span class="en">format</span> · <span class="en">gc</span> · <span class="en">archive</span></div></div>
     </div>
   </div>
 

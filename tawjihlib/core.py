@@ -28,7 +28,7 @@ from pathlib import Path
 
 
 
-__version__ = "0.13.1"
+__version__ = "0.14.0"
 
 DESCRIPTION = "tawjih - personal LLM command-directing (توجيه أوامر الآلة)."
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
@@ -65,15 +65,157 @@ def parse_level(text):
     die("unknown level '%s' (use 1-6, %s)" % (text, ", ".join(LEVELS)))
 
 
-CONTRACT_HELP = "use json, json(key, ...) or text"
+CONTRACT_HELP = "use json, json(key, ...), schema(NAME) or text"
+SCHEMA_KEYWORDS = {
+    "$schema", "$id", "$comment", "title", "description", "default",
+    "examples", "type", "properties", "required", "additionalProperties",
+    "items", "enum", "const", "minimum", "maximum", "exclusiveMinimum",
+    "exclusiveMaximum", "minLength", "maxLength", "pattern", "minItems",
+    "maxItems", "uniqueItems", "minProperties", "maxProperties"}
+SCHEMA_TYPES = {"object", "array", "string", "number", "integer", "boolean",
+                "null"}
+
+
+def schema_file(root, name):
+    return Path(root) / "schemas" / (name + ".json")
+
+
+def schema_problems(schema, where="$"):
+    """What in a JSON Schema this program does not check (it checks a subset:
+    SCHEMA_KEYWORDS); an unsupported keyword is an error, never ignored."""
+    if isinstance(schema, bool):
+        return []
+    if not isinstance(schema, dict):
+        return ["%s: a schema is an object" % where]
+    out = ["%s: '%s' is not supported" % (where, k) for k in schema
+           if k not in SCHEMA_KEYWORDS]
+    t = schema.get("type")
+    for x in (t if isinstance(t, list) else [t] if t else []):
+        if x not in SCHEMA_TYPES:
+            out.append("%s: unknown type '%s'" % (where, x))
+    for k, sub in (schema.get("properties") or {}).items():
+        out += schema_problems(sub, "%s.%s" % (where, k))
+    for key in ("items", "additionalProperties"):
+        if isinstance(schema.get(key), dict):
+            out += schema_problems(schema[key], where + "[]" if key == "items"
+                                   else where + ".*")
+    if "pattern" in schema:
+        try:
+            re.compile(schema["pattern"])
+        except re.error as e:
+            out.append("%s: bad pattern (%s)" % (where, e))
+    return out
+
+
+def schema_errors(value, schema, where="$", limit=10):
+    """Where value breaks schema (the subset in SCHEMA_KEYWORDS)."""
+    out = []
+
+    def add(msg):
+        if len(out) < limit:
+            out.append("%s: %s" % (where, msg))
+    if schema is True or schema == {}:
+        return out
+    if schema is False:
+        return ["%s: nothing is allowed here" % where]
+    t = schema.get("type")
+    if t:
+        kinds = t if isinstance(t, list) else [t]
+
+        def is_(k):
+            return {"object": isinstance(value, dict),
+                    "array": isinstance(value, list),
+                    "string": isinstance(value, str),
+                    "boolean": isinstance(value, bool),
+                    "null": value is None,
+                    "integer": isinstance(value, int) and not isinstance(
+                        value, bool) or (isinstance(value, float) and
+                                         value.is_integer()),
+                    "number": isinstance(value, (int, float)) and
+                    not isinstance(value, bool)}[k]
+        if not any(is_(k) for k in kinds):
+            add("expected %s, found %s" % (" or ".join(kinds),
+                                            type(value).__name__))
+            return out
+    if "enum" in schema and value not in schema["enum"]:
+        add("must be one of %s" % json.dumps(schema["enum"],
+                                             ensure_ascii=False))
+    if "const" in schema and value != schema["const"]:
+        add("must be %s" % json.dumps(schema["const"], ensure_ascii=False))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        for k, ok in (("minimum", lambda b: value >= b),
+                      ("maximum", lambda b: value <= b),
+                      ("exclusiveMinimum", lambda b: value > b),
+                      ("exclusiveMaximum", lambda b: value < b)):
+            if k in schema and not ok(schema[k]):
+                add("%s is outside %s %s" % (value, k, schema[k]))
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0):
+            add("shorter than %d characters" % schema["minLength"])
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            add("longer than %d characters" % schema["maxLength"])
+        if "pattern" in schema and not re.search(schema["pattern"], value):
+            add("does not match %s" % schema["pattern"])
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            add("fewer than %d items" % schema["minItems"])
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            add("more than %d items" % schema["maxItems"])
+        if schema.get("uniqueItems") and len({json.dumps(v, sort_keys=True)
+                                              for v in value}) < len(value):
+            add("items are not unique")
+        if isinstance(schema.get("items"), (dict, bool)):
+            for i, v in enumerate(value):
+                out += schema_errors(v, schema["items"], "%s[%d]" % (where, i),
+                                     limit - len(out))
+    if isinstance(value, dict):
+        for k in schema.get("required", []):
+            if k not in value:
+                add("missing key '%s'" % k)
+        props = schema.get("properties") or {}
+        for k, v in value.items():
+            if k in props:
+                out += schema_errors(v, props[k], "%s.%s" % (where, k),
+                                     limit - len(out))
+            elif schema.get("additionalProperties") is False:
+                add("key '%s' is not allowed" % k)
+            elif isinstance(schema.get("additionalProperties"), dict):
+                out += schema_errors(v, schema["additionalProperties"],
+                                     "%s.%s" % (where, k), limit - len(out))
+        if len(value) < schema.get("minProperties", 0):
+            add("fewer than %d keys" % schema["minProperties"])
+        if "maxProperties" in schema and len(value) > schema["maxProperties"]:
+            add("more than %d keys" % schema["maxProperties"])
+    return out[:limit]
+
+
+def load_schema(root, name):
+    """The schema schemas/NAME.json of a project, checked; or an error."""
+    if root is None:
+        return None, "schema(%s) needs the project's schemas/ folder" % name
+    f = schema_file(root, name)
+    if not f.is_file():
+        return None, "no schema %s (schemas/%s.json)" % (name, name)
+    try:
+        schema = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError as e:
+        return None, "schemas/%s.json is not JSON (%s)" % (name, e)
+    probs = schema_problems(schema)
+    if probs:
+        return None, "schemas/%s.json: %s" % (name, "; ".join(probs[:3]))
+    return schema, None
 
 
 def _parse_contract(spec):
-    """Parse a contract: 'json', 'json(a, b)' or 'text'. Anything else is
-    returned as ('unknown', [spec]) so that a typo is reported, not ignored."""
+    """Parse a contract: 'json', 'json(a, b)', 'schema(NAME)' or 'text'.
+    Anything else is returned as ('unknown', [spec]) so that a typo is
+    reported, not ignored."""
     spec = (spec or "").strip()
     if not spec:
         return None
+    m = re.fullmatch(r"schema\s*\(\s*([\w\-]+)\s*\)", spec, re.I)
+    if m:
+        return ("schema", [m.group(1)])
     m = re.fullmatch(r"json\s*(?:\(([^)]*)\))?", spec, re.I)
     if m:
         keys = [k.strip() for k in (m.group(1) or "").split(",") if k.strip()]
@@ -106,13 +248,38 @@ def _json_in(text):
 FALSE_WORDS = {"", "false", "no", "0", "none", "null", "لا", "خطأ"}
 
 
+def _same(v, want):
+    """Whether a JSON value equals the text of 'key=value'."""
+    w = want.strip()
+    if isinstance(v, bool) or w.casefold() in ("true", "false"):
+        return str(v).casefold() == w.casefold() or (
+            isinstance(v, str) and v.strip().casefold() == w.casefold())
+    if v is None:
+        return w.casefold() in ("null", "none", "")
+    if isinstance(v, (int, float)):
+        try:
+            return float(w) == float(v)
+        except ValueError:
+            return False
+    return str(v).strip().casefold() == w.casefold()
+
+
 def condition_holds(text, word):
-    """Whether 'IF word' holds for a step's output. When the output is a JSON
-    object with 'word' as a top-level key, the key's value decides: true,
-    non-zero and non-empty hold; false, 0, null, empty, and the strings
-    "false", "no", "0", "none", "null", "لا" and "خطأ" do not. Otherwise
-    the word must appear in the text (case-insensitive)."""
+    """Whether 'IF word' holds for a step's output. 'key=value': the output
+    is a JSON object whose key has that value (a missing key or no JSON:
+    false). A word: when the output is a JSON object with the word as a
+    top-level key, the key's value decides: true, non-zero and non-empty
+    hold; false, 0, null, empty, and the strings "false", "no", "0", "none",
+    "null", "لا" and "خطأ" do not. Otherwise the word must appear in the
+    text (case-insensitive)."""
     obj, _ = _json_in(text)
+    if "=" in word.strip("="):
+        key, want = word.split("=", 1)
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.casefold() == key.strip().casefold():
+                    return _same(v, want)
+        return False
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k.casefold() == word.casefold():
@@ -122,10 +289,11 @@ def condition_holds(text, word):
     return word.casefold() in text.casefold()
 
 
-def conform(text, spec, label):
+def conform(text, spec, label, root=None):
     """Check text against a contract. Returns (text to pass on, error).
     For a JSON contract the text passed on is the bare JSON, without the
-    fence or the sentences around it."""
+    fence or the sentences around it. A schema contract needs the project
+    root, where schemas/ is."""
     parsed = _parse_contract(spec)
     if not parsed:
         return text, None
@@ -135,6 +303,22 @@ def conform(text, spec, label):
             label, keys[0], CONTRACT_HELP)
     if kind == "text":
         return text, None
+    if kind == "schema":
+        schema, err = load_schema(root, keys[0])
+        if err:
+            return text, "%s: %s" % (label, err)
+        obj, raw = _json_in(text)
+        if raw is None:
+            try:
+                obj, raw = json.loads(text), text.strip()
+            except ValueError:
+                return text, "%s expected JSON for schema %s and none was " \
+                    "found" % (label, keys[0])
+        errs = schema_errors(obj, schema)
+        if errs:
+            return text, "%s does not match schema %s: %s" % (
+                label, keys[0], "; ".join(errs[:5]))
+        return raw, None
     obj, raw = _json_in(text)
     if raw is None:
         return text, "%s expected JSON and none was found" % label
@@ -146,9 +330,9 @@ def conform(text, spec, label):
     return raw, None
 
 
-def _validate_contract(text, spec, label):
+def _validate_contract(text, spec, label, root=None):
     """The error of conform(), or None."""
-    return conform(text, spec, label)[1]
+    return conform(text, spec, label, root)[1]
 
 
 # ---------------------------------------------------------------- file model
@@ -669,7 +853,7 @@ class Store:
                     errors.append(tag + ": fallback %s has no machine side"
                                   % n.fallback)
                 elif n.produces and fb.produces and contract_fits(
-                        fb.produces, n.produces):
+                        fb.produces, n.produces, self.root):
                     errors.append(tag + ": fallback %s produces %s, but this "
                                   "file promises %s" % (n.fallback,
                                                         fb.produces,
@@ -679,6 +863,10 @@ class Store:
                 if pc and pc[0] == "unknown":
                     errors.append(tag + ": unknown %s contract '%s' (%s)" % (
                         field, pc[1][0], CONTRACT_HELP))
+                if pc and pc[0] == "schema":
+                    err = load_schema(self.root, pc[1][0])[1]
+                    if err:
+                        errors.append(tag + ": %s: %s" % (field, err))
             if n.code.strip():
                 try:
                     compile(n.code, n.id + ".code", "exec")
@@ -720,6 +908,7 @@ KEYWORDS = {
     "EACH": "EACH", "APPROVE": "APPROVE", "CALL": "CALL",
     # how a step runs in this path
     "USING": "USING", "RETRY": "RETRY", "UNTIL": "UNTIL", "PICK": "PICK",
+    "BY": "BY",
     # reserved, with a reason (see UNSUPPORTED)
     "PARALLEL": "PARALLEL", "CACHE": "CACHE",
     "إلى": "TO", "الى": "TO", "مرر": "TO", "مرّر": "TO", "و": "AND",
@@ -728,7 +917,7 @@ KEYWORDS = {
     "اربط": "LINK", "لكل": "EACH", "اعتمد": "APPROVE", "نفذ": "CALL",
     "نفّذ": "CALL", "بواسطة": "USING", "أعد": "RETRY", "اعد": "RETRY",
     "حتى": "UNTIL", "انتق": "PICK", "انتقِ": "PICK", "توازي": "PARALLEL",
-    "بالتوازي": "PARALLEL", "مخزن": "CACHE"}
+    "بالتوازي": "PARALLEL", "مخزن": "CACHE", "حسب": "BY"}
 CONNECTING = {"TO", "AND", "IF", "NOT", "ELSE", "AMONG", "THROUGH", "LINK"}
 UNSUPPORTED = {
     "PARALLEL": "PARALLEL is not a word of the path language: files joined "
@@ -747,6 +936,7 @@ class Flow:
     def __init__(self):
         self.nodes, self.edges, self.lines, self._groups = [], [], [], 0
         self.steps, self.calls = {}, []    # per-file settings; CALLed paths
+        self.among_by = {}                 # AMONG group -> JSON key (BY)
 
     def add_node(self, nid):
         if nid not in self.nodes:
@@ -792,6 +982,8 @@ class Flow:
             if e["among"] is not None:
                 e["among"] += self._groups
             self.edges.append(e)
+        for g, key in sub.among_by.items():
+            self.among_by[g + self._groups] = key
         self._groups += sub._groups
         for nid, st in sub.steps.items():
             self.steps[nid] = dict(st)
@@ -823,6 +1015,30 @@ class Flow:
                                                                      text))
             w = tokens[pos]
             pos += 1
+            norm.append(shlex.quote(w))
+            return w
+
+        def test(what):
+            """A word, or key=value (also written key = value)."""
+            nonlocal pos
+            if pos >= len(tokens) or _kw(tokens[pos]):
+                raise FlowError("%s needs a word in: %s" % (what, text))
+            w = tokens[pos]
+            pos += 1
+            if pos + 1 < len(tokens) and tokens[pos] == "=" and \
+                    not _kw(tokens[pos + 1]):
+                w, pos = w + "=" + tokens[pos + 1], pos + 2
+            elif w.endswith("=") and pos < len(tokens) and \
+                    not _kw(tokens[pos]):
+                w, pos = w + tokens[pos], pos + 1
+            elif "=" not in w and pos < len(tokens) and \
+                    tokens[pos].startswith("=") and len(tokens[pos]) > 1:
+                w, pos = w + tokens[pos], pos + 1
+            if "#" in w:
+                raise FlowError("the %s word cannot contain '#'" % what)
+            if w.startswith("=") or w.endswith("="):
+                raise FlowError("%s key=value needs both in: %s" % (what,
+                                                                    text))
             norm.append(shlex.quote(w))
             return w
 
@@ -878,7 +1094,7 @@ class Flow:
                     neg = peek() == "NOT"
                     if neg:
                         take("NOT")
-                    self.setting(nid, "until", [neg, word("UNTIL")])
+                    self.setting(nid, "until", [neg, test("UNTIL")])
             return [nid], [nid]
 
         def group():                       # A AND B AND C
@@ -938,6 +1154,9 @@ class Flow:
                 self._groups += 1
                 for c in cands:
                     self.add_edge(cur[0][1][0], c[0][0], None, self._groups)
+                if peek() == "BY":
+                    take("BY")
+                    self.among_by[self._groups] = word("BY")
                 cur = cands
             elif k in ("TO", "LINK"):
                 take(k)
@@ -955,13 +1174,7 @@ class Flow:
                         neg = peek() == "NOT"
                         if neg:
                             take("NOT")
-                        if pos >= len(tokens):
-                            raise FlowError("IF needs a word in: " + text)
-                        if "#" in tokens[pos]:
-                            raise FlowError("the IF word cannot contain '#'")
-                        cond = [neg, tokens[pos]]
-                        norm.append(shlex.quote(tokens[pos]))
-                        pos += 1
+                        cond = [neg, test("IF")]
                     else:
                         if cond is None or other is not None:
                             raise FlowError("ELSE comes once, after an IF, "
@@ -1057,11 +1270,26 @@ def build_flow(statements, resolve, load=None, calling=()):
     return flow
 
 
-def contract_fits(produces, expects):
+def _as_keys(parsed, root, side):
+    """A schema contract seen as json(keys): the keys a produced object
+    promises (its properties), or those an expected one needs (required)."""
+    if not parsed or parsed[0] != "schema":
+        return parsed
+    schema, err = load_schema(root, parsed[1][0]) if root else (None, "x")
+    if err or not isinstance(schema, dict) or schema.get("type") not in (
+            None, "object"):
+        return None                         # no evidence
+    keys = list(schema.get("properties") or {}) if side == "produces" else \
+        list(schema.get("required") or [])
+    return ("json", keys)
+
+
+def contract_fits(produces, expects, root=None):
     """None if an output under contract `produces` may go to a step that
     expects `expects`, else the reason it may not. Undeclared or unknown
     contracts give no evidence either way (None)."""
-    sp, de = _parse_contract(produces), _parse_contract(expects)
+    sp = _as_keys(_parse_contract(produces), root, "produces")
+    de = _as_keys(_parse_contract(expects), root, "expects")
     if not (sp and de) or "unknown" in (sp[0], de[0]) or de[0] == "text":
         return None                         # any output is text
     if sp[0] != de[0]:
@@ -1081,7 +1309,7 @@ def flow_contract_errors(store, flow):
         if e.get("order") or flow.steps.get(e["src"], {}).get("pick"):
             continue                    # no output, or only one key of it
         src, dst = store.nodes[e["src"]], store.nodes[e["dst"]]
-        why = contract_fits(src.produces, dst.expects)
+        why = contract_fits(src.produces, dst.expects, store.root)
         if why:
             out.append("contract mismatch %s -> %s: %s %s" % (
                 src.id, dst.id, src.id, why))
@@ -1097,7 +1325,9 @@ def flow_condition_notes(store, flow):
         if not e["cond"]:
             continue
         kind, keys = _parse_contract(store.nodes[e["src"]].produces) or ("", [])
-        word = e["cond"][1]
+        word = e["cond"][1].split("=", 1)[0].strip()
+        if "=" in e["cond"][1]:
+            continue                    # key=value never searches the text
         if kind == "json" and keys and word.casefold() not in (
                 k.casefold() for k in keys):
             out.append("IF %s on %s: not one of its JSON keys (%s), so it is "
@@ -1107,7 +1337,8 @@ def flow_condition_notes(store, flow):
 
 
 __all__ = [
-    'CONNECTING', 'STEP_KEYS', 'UNSUPPORTED', 'CONTRACT_HELP', 'DESCRIPTION', 'Die', 'EXAMPLE_KEYS', 'EXTRA',
+    'SCHEMA_KEYWORDS', 'SCHEMA_TYPES', '_as_keys', '_same', 'load_schema',
+    'schema_errors', 'schema_file', 'schema_problems', 'CONNECTING', 'STEP_KEYS', 'UNSUPPORTED', 'CONTRACT_HELP', 'DESCRIPTION', 'Die', 'EXAMPLE_KEYS', 'EXTRA',
     'FALSE_WORDS', 'Flow', 'FlowError', 'KEYWORDS', 'LEVELS', 'LEVELS_AR',
     'MARK', 'Mapping', 'Node', 'Path', 'SECTIONS', 'SPLITS', 'Store',
     '__version__', '_json_in', '_kw', '_norm_q', '_parse_contract',

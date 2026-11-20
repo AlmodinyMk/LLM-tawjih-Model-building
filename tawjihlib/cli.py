@@ -16,7 +16,8 @@ from .core import (
     Die, die, DESCRIPTION, EXTRA, SECTIONS, SPLITS, __version__,
 )
 from .providers import (
-    BACKENDS,
+    POLICY_FILE, backend_kind, default_backend, load_policy,
+    load_providers, provider_chain,
 )
 from .engine import (
     CODE_TIMEOUT, SANDBOX_MEMORY_MB,
@@ -48,7 +49,7 @@ from .governance import (
     cmd_mount, cmd_pause, cmd_release, cmd_resume, cmd_review,
     cmd_sandbox, cmd_scaffold, cmd_schedule, cmd_seal, cmd_snapshot,
     cmd_stage, cmd_template, cmd_trace, cmd_trigger, cmd_unalias,
-    cmd_unlock, cmd_unmount, cmd_verify,
+    cmd_unlock, cmd_unmount, cmd_verify, cmd_provider, cmd_policy,
 )
 from .script import (
     translate_script,
@@ -65,6 +66,7 @@ def main():
         except Exception:
             pass
     a = build_parser().parse_args()
+    resolve_backend(a)
     try:
         rc = a.fn(a)
     except BrokenPipeError:          # output piped into head and closed
@@ -77,6 +79,26 @@ def main():
         sys.exit(rc)
 
 
+def resolve_backend(a):
+    """--backend names a provider: a built-in kind or one from
+    providers.json; without it, providers.json's default, else dry."""
+    root = getattr(a, "project", ".")
+    for attr in ("backend", "judge_backend"):
+        if not hasattr(a, attr):
+            continue
+        name = getattr(a, attr)
+        if name is None and attr == "backend":
+            name = default_backend(root)
+        if name is not None:
+            provider_chain(root, name, False)      # dies if unknown
+        setattr(a, attr, name)
+    if getattr(a, "allow_code", False) is True and a.fn is not cmd_policy:
+        if not load_policy(root)["allow_code"]:
+            die("the project's policy (%s) does not allow --allow-code"
+                % POLICY_FILE)
+    return a
+
+
 def cmd_do(a):
     """Management statements (CREATE, EDIT, MOVE, COPY, MERGE, DELETE,
     CHECK, GC, PATH; in Arabic too), translated into commands. Without
@@ -87,7 +109,8 @@ def cmd_do(a):
         text = Path(a.file).read_text(encoding="utf-8") + "\n" + text
     if not text.strip():
         die("give statements, or --file SCRIPT")
-    todo, problems = translate_script(text, a.backend, a.yes)
+    todo, problems = translate_script(
+        text, a.backend, a.yes, tuple(load_providers(a.project)["providers"]))
     for line in problems:
         print("problem: " + line, file=sys.stderr)
     if problems:
@@ -105,7 +128,7 @@ def cmd_do(a):
             print("%d. skipped (MERGE removes a file; add --yes)" % k)
             continue
         print("== %d. %s" % (k, stmt))
-        sub = parser.parse_args(["-p", a.project] + argv)
+        sub = resolve_backend(parser.parse_args(["-p", a.project] + argv))
         try:
             rc = sub.fn(sub)
         except Die:                     # its message is already printed
@@ -124,10 +147,15 @@ def cmd_mcp(a):
     contracts, links, moves, paths and proposals (which a person applies
     with stage --apply); --allow-run to run paths with the provider fixed
     here; --allow-code to let them run code, always in the sandbox."""
-    if a.backend == "manual":
+    if backend_kind(a.project, a.backend) == "manual":
         die("the manual provider reads the terminal, which the protocol uses")
     if a.allow_code and not a.allow_run:
         die("--allow-code needs --allow-run")
+    least = load_policy(a.project)["human_approval"]
+    rank = ["never", "run", "always"]
+    if rank.index(a.human_approval) < rank.index(least):
+        die("the project's policy (%s) asks for --human-approval %s at "
+            "least" % (POLICY_FILE, least))
     server = Server(a.project, build_parser, a.allow_write, a.allow_run,
                     a.allow_code, a.backend, a.model or "", a.human_approval)
     if a.human_approval != "always" and (a.allow_write or a.allow_run):
@@ -427,7 +455,7 @@ def build_parser():
                        "over HTTP on this computer")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--paths", help="only these paths, comma separated")
     s.add_argument("--token", help="access token (default: TAWJIH_TOKEN, "
                    "else a new one is printed)")
@@ -457,7 +485,7 @@ def build_parser():
                    "each case directly, without the path (for compare)")
     s.add_argument("--judge", metavar="MODEL", help="grade cases with "
                    "match judge by asking this model")
-    s.add_argument("--judge-backend", choices=sorted(BACKENDS),
+    s.add_argument("--judge-backend", metavar="PROVIDER",
                    help="provider of the judge (default: --backend)")
     s.add_argument("--fail-fast", action="store_true",
                    help="stop at the first failed case and show it")
@@ -478,7 +506,7 @@ def build_parser():
     s.add_argument("-o", "--out", help="report: output file")
     s.add_argument("--cases", help="JSONL file (default: "
                    "paths/NAME.cases.jsonl)")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--model", help="model for every step")
     s.add_argument("--allow-code", action="store_true")
     s.add_argument("--resume", action="store_true",
@@ -536,6 +564,11 @@ def build_parser():
     s.add_argument("ref")
     s.add_argument("--expects", help="contract on the step's input")
     s.add_argument("--produces", help="contract on the step's output")
+    s.add_argument("--expects-schema", metavar="FILE", help="a JSON Schema "
+                   "for the input: copied to schemas/ and used as "
+                   "schema(NAME)")
+    s.add_argument("--produces-schema", metavar="FILE",
+                   help="a JSON Schema for the output")
     s.add_argument("--model", help="the model this file's step uses")
     s.add_argument("--retries", help="0-9: ask the model again when its "
                    "answer breaks the produces contract")
@@ -594,7 +627,7 @@ def build_parser():
     s.add_argument("name")
     s.add_argument("--input", default="")
     s.add_argument("--input-file")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--retries", type=int, choices=range(10), metavar="N",
                    help="ask a model again up to N times when its answer "
                    "breaks the contract (default: each file's retries line)")
@@ -638,7 +671,7 @@ def build_parser():
                    help="show and validate the plan without running it")
     s.add_argument("--input", default="")
     s.add_argument("--input-file")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--retries", type=int, choices=range(10), metavar="N",
                    help="ask a model again up to N times when its answer "
                    "breaks the contract (default: each file's retries line)")
@@ -682,7 +715,7 @@ def build_parser():
     s.add_argument("--end", help="last file (with --start)")
     s.add_argument("--goal", help="what the path should do: a model proposes it")
     s.add_argument("--scope", help="only files under this branch")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--model", help="model name (default: TAWJIH_MODEL)")
     s.add_argument("--accept", action="store_true",
                    help="turn the reviewed proposal into a path")
@@ -701,7 +734,7 @@ def build_parser():
     s.add_argument("--side", choices=SECTIONS + EXTRA, required=True)
     s.add_argument("--ask", required=True, help="what the model should do")
     s.add_argument("--source", help="text file given to the model as material")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
                    "environment variable)")
     s.add_argument("--yes", action="store_true", help="save without asking")
@@ -865,7 +898,7 @@ def build_parser():
         s.add_argument("--path", help="the path to run")
         s.add_argument("--input", default="")
         s.add_argument("--input-file", help="relative to the project")
-        s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+        s.add_argument("--backend", default=None, metavar="PROVIDER")
         s.add_argument("--model")
         s.add_argument("--allow-code", action="store_true")
     s = sub.add_parser("schedule", help="run a path --every 6h or --at "
@@ -905,7 +938,7 @@ def build_parser():
     s.add_argument("--ask", help="extra filtering criteria")
     s.add_argument("--size", type=int, default=2000,
                    help="passage size when the book has no '#' headings")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--backend", default=None, metavar="PROVIDER")
     s.add_argument("--model", help="model name (default: the TAWJIH_MODEL "
                    "environment variable)")
     s.set_defaults(fn=cmd_filter)
@@ -928,7 +961,7 @@ def build_parser():
                    help="run and evaluate paths")
     s.add_argument("--allow-code", action="store_true",
                    help="let runs execute code steps (always sandboxed)")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry",
+    s.add_argument("--backend", default=None, metavar="PROVIDER",
                    help="the provider for runs (fixed for the session)")
     s.add_argument("--model", help="the model for runs")
     s.add_argument("--human-approval", choices=APPROVAL_MODES,
@@ -951,12 +984,53 @@ def build_parser():
     s.add_argument("--run", action="store_true", help="run them in order")
     s.add_argument("--yes", action="store_true",
                    help="let DELETE, GC and MERGE remove, and EDIT save")
-    s.add_argument("--backend", choices=sorted(BACKENDS), default="dry",
+    s.add_argument("--backend", default=None, metavar="PROVIDER",
                    help="for EDIT, unless it says USING a provider")
     s.set_defaults(fn=cmd_do)
+
+    s = sub.add_parser("provider", help="named providers (providers.json): "
+                       "address, model, key variable, retries, default, "
+                       "fallback chain, and a test call")
+    s.add_argument("action", choices=["list", "add", "set", "policy", "rm",
+                                      "default", "fallback", "test"])
+    s.add_argument("name", nargs="?", help="provider name (test: or all)")
+    s.add_argument("others", nargs="*", metavar="FALLBACK",
+                   help="fallback: the providers to try after NAME, in "
+                   "order (none clears the chain)")
+    s.add_argument("--kind", help="dry, manual, ollama, openai (any "
+                   "OpenAI-compatible server) or anthropic")
+    s.add_argument("--base-url", help="the server's address")
+    s.add_argument("--model", help="model (test: this model)")
+    s.add_argument("--api-key-env", metavar="VARIABLE", help="the NAME of "
+                   "the environment variable holding the key; the key is "
+                   "never written to a file")
+    s.add_argument("--timeout", type=float, help="seconds per call")
+    s.add_argument("--retries", type=int, help="tries after the first, on "
+                   "a lost connection or a retry status")
+    s.add_argument("--retry-status", metavar="CODES",
+                   help="HTTP statuses tried again (429,500,502,503,504)")
+    s.add_argument("--backoff", choices=["exponential", "fixed"])
+    s.add_argument("--backoff-seconds", type=float)
+    s.add_argument("--json", action="store_true", help="test: one JSON line")
+    s.add_argument("--yes", action="store_true",
+                   help="rm: also remove it from fallback chains")
+    s.set_defaults(fn=cmd_provider)
+
+    s = sub.add_parser("policy", help="the project's own limits "
+                       "(tawjih.policy.json); it only restricts")
+    s.add_argument("action", choices=["show", "set", "reset"])
+    s.add_argument("--allow-code", choices=["true", "false"])
+    s.add_argument("--allow-network", choices=["true", "false", "local"])
+    s.add_argument("--sandbox", choices=["true", "false"])
+    s.add_argument("--human-approval", choices=["always", "run", "never"],
+                   help="the least approval an MCP server may use")
+    s.add_argument("--yes", action="store_true",
+                   help="allow loosening a limit, or removing the file")
+    s.set_defaults(fn=cmd_policy)
     return p
 
 
 __all__ = [
     'build_parser', 'cmd_approve', 'cmd_do', 'cmd_mcp', 'main',
+    'resolve_backend',
 ]

@@ -66,7 +66,7 @@
 </head>
 <body>
 <div class="page">
-  <h1>Tawjih — how the program is built <span>machine command directing · version 0.13.1</span></h1>
+  <h1>Tawjih — how the program is built <span>machine command directing · version 0.14.0</span></h1>
   <div class="sub">Knowledge lives in trees of three-sided files; machine language is built from it; paths connect files and run them step by step; evaluation, governance and an optional training bridge keep it honest.</div>
 
   <div class="layer ui">
@@ -102,7 +102,7 @@
       <div class="file">
         <div class="title">File: a topic</div>
         <div class="hdr"><span class="en">id</span> stable · number such as <span class="en">1.1.1.1.2</span> · <span class="en">aliases</span><br>
-          <span class="en">model</span> · <span class="en">expects</span> / <span class="en">produces</span> contracts · <span class="en">retries</span> · <span class="en">fallback</span> · <span class="en">approve</span> · <span class="en">each</span><br>
+          <span class="en">model</span> · <span class="en">expects</span> / <span class="en">produces</span> contracts, also a JSON <span class="en">schema</span> · <span class="en">retries</span> · <span class="en">fallback</span> · <span class="en">approve</span> · <span class="en">each</span><br>
           <span class="en">split</span> · <span class="en">weight</span> · <span class="en">tags</span> · <span class="en">locked</span></div>
         <div class="sides">
           <div class="side s-h"><b>Human concept</b>the subject explained in human language</div>
@@ -122,7 +122,7 @@
         <div class="arrow">↓</div>
         <div class="step"><b>Extract</b> only the machine side; <b style="display:inline">redact</b> private data</div>
         <div class="arrow">↓</div>
-        <div class="step"><b>Execute</b> code first, then the model<div class="chips"><span class="chip p">ollama</span><span class="chip p">openai</span><span class="chip p">anthropic</span><span class="chip p">manual</span><span class="chip p">dry</span></div><div class="m">FOR EACH over a list · <span class="en">--sandbox</span> for code</div></div>
+        <div class="step"><b>Execute</b> code first, then the model<div class="chips"><span class="chip p">ollama</span><span class="chip p">openai</span><span class="chip p">anthropic</span><span class="chip p">manual</span><span class="chip p">dry</span></div><div class="m">named providers in <span class="en">providers.json</span>: retries with backoff, a fallback chain · FOR EACH over a list · <span class="en">--sandbox</span> for code</div></div>
         <div class="arrow">↓</div>
         <div class="step"><b>Check contracts</b> on input and output<div class="m">retries · fallback file · a person approves</div></div>
         <div class="arrow">↓</div>
@@ -136,7 +136,7 @@
   <div class="layer net">
     <div class="tag">The network <small>the path language, drawing it, generating it</small></div>
     <div class="row" style="grid-template-columns: 1.5fr 1fr 1fr;">
-      <div class="box"><b>Path language</b>connecting words between files, and per-step settings, in Arabic too<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">ELSE</span><span class="chip k">AMONG</span><span class="chip k">THROUGH</span><span class="chip k">LINK</span><span class="chip k">CALL</span><span class="chip">EACH</span><span class="chip">APPROVE</span><span class="chip">USING</span><span class="chip">RETRY</span><span class="chip">UNTIL</span><span class="chip">PICK</span></div></div>
+      <div class="box"><b>Path language</b>connecting words between files, and per-step settings, in Arabic too<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">ELSE</span><span class="chip k">AMONG</span><span class="chip k">BY</span><span class="chip k">THROUGH</span><span class="chip k">LINK</span><span class="chip k">CALL</span><span class="chip">EACH</span><span class="chip">APPROVE</span><span class="chip">USING</span><span class="chip">RETRY</span><span class="chip">UNTIL</span><span class="chip">PICK</span></div></div>
       <div class="box"><b>Drawing <span class="en">graph</span></b>the trees or a path, as <span class="en">Markdown</span>, <span class="en">Mermaid</span> or <span class="en">Graphviz</span><div class="m">handoffs between trees are thick · stale files are marked</div></div>
       <div class="box"><b>Generating <span class="en">generate</span></b>by contracts with no model, or from a goal a model proposes<div class="m">a proposal to review, then <span class="en">--accept</span></div></div>
     </div>
@@ -148,7 +148,7 @@
       <div class="box"><b>Evaluation <span class="en">eval</span></b>cases from the examples · a judge model<div class="m"><span class="en">compare</span> with the model asked directly · <span class="en">baseline</span> · <span class="en">blame</span> · <span class="en">promote</span> · <span class="en">report</span></div></div>
       <div class="box"><b>Lineage <span class="en">trace</span></b><span class="en">--impact</span> before a change · <span class="en">--output</span> back to the books<div class="m"><span class="en">dataset</span> with a manifest of SHA-256 digests</div></div>
       <div class="box"><b>Releases <span class="en">release</span></b>create · diff · verify · rollback<div class="m"><span class="en">snapshot</span> · <span class="en">seal</span> / <span class="en">verify</span> (GnuPG optional)</div></div>
-      <div class="box"><b>Guards</b><span class="en">lock</span> · <span class="en">review</span> · <span class="en">stage</span> · <span class="en">audit</span><div class="m"><span class="en">doctor</span> / <span class="en">repair</span> · <span class="en">format</span> · <span class="en">gc</span> · <span class="en">archive</span></div></div>
+      <div class="box"><b>Guards</b><span class="en">lock</span> · <span class="en">review</span> · <span class="en">stage</span> · <span class="en">audit</span> · <span class="en">policy</span> (restricts only)<div class="m"><span class="en">doctor</span> / <span class="en">repair</span> · <span class="en">format</span> · <span class="en">gc</span> · <span class="en">archive</span></div></div>
     </div>
   </div>
 
