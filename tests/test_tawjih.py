@@ -797,8 +797,12 @@ class Generate(Base):
 
 
 def test_license_identifier_is_valid():
-    assert "SPDX-License-Identifier: CC-BY-NC-SA-4.0\n" in open(
-        tawjih.__file__, encoding="utf-8").read()
+    files = [Path(tawjih.__file__)] + sorted(
+        (Path(tawjih.__file__).parent / "tawjihlib").glob("*.py"))
+    for f in files:
+        if f.name != "__init__.py":
+            assert "SPDX-License-Identifier: CC-BY-NC-SA-4.0\n" in \
+                f.read_text(encoding="utf-8"), f.name
 
 
 class Fixes061(Base):

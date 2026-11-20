@@ -4,11 +4,12 @@ A personal, file-based way to direct a language model. Knowledge is kept in
 trees of small files; each file has three sides; a *path* strings files
 together into a workflow that the model and your own code execute step by step.
 
-One Python file, standard library only. Linux and Windows, in the terminal.
+Python, standard library only: `tawjih.py` and the package `tawjihlib/`
+beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.9.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.10.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -234,6 +235,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path; the format follows the `-o` extension (`.mmd`, `.dot`, `.gv`) unless given |
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
+| `lock`, `alias`, `review`, `stage`, `mount`, `sandbox`, `trace`, `release`, `snapshot`, `seal`, `verify`, `inherit`, `template`, `scaffold`, `gc`, `compact`, `format`, `archive`, `glossary`, `doctor`, `repair`, `schedule`, `trigger`, `pause`, `resume`, `cancel` | see [Governance](#governance-locks-reviews-releases-schedules) (0.10) |
 
 ## Managing a project
 
@@ -377,6 +379,38 @@ model asked directly on cases that matter to you, the work of building it
 did not pay. A handful of cases decides nothing, and a judge model has its
 own biases.
 
+## Governance: locks, reviews, releases, schedules
+
+Since 0.10 a project can be guarded and kept over time.
+
+| Command | Does |
+|---|---|
+| `lock REF... [--branch]` (`freeze`) / `unlock` | a locked file's sides, title, contracts and links cannot change, and it cannot be removed or archived, until it is unlocked; moving it stays possible |
+| `alias REF NAME...` / `unalias` / `alias` | other names for a file, usable wherever a REF is asked for (`show quad`, `path p quad TO ...`) |
+| `review [REF...] [--branch]` / `review --ok REF...` | files a person has never reviewed, or that changed after their review; `--ok` records the review (a digest of the content and the date) |
+| `edit ... --stage` / `stage [REF] [--show \| --apply \| --drop]` | a model's proposal is kept in `stage/` instead of being saved; `--apply` saves it as `edit` would, unless the side changed meanwhile |
+| `mount FOLDER [--name N]` / `unmount N` | the files of another project, read-only, usable in this project's paths; their trees are numbered after this project's own. A mount used by a path cannot be removed |
+| `sandbox REF --input TEXT [--memory MB]` | run one file's code side in the sandbox (see [Code steps](#code-steps)) |
+| `contract REF --each yes\|KEY` | FOR EACH: the step runs once per item of a JSON list (the input itself, or the list under KEY), and passes on `{"items": [...]}` |
+| `trace --impact REF` | what a change would reach: files under it, links into it, the paths and the steps after it in each, evaluation cases, baselines, `AMONG` deciders, fallbacks, datasets and releases that hold it |
+| `trace --output FILE` | where a run's record, log or result, or a dataset manifest, came from: the steps, whether their machine sides changed since, and the books in their reading sides |
+| `trace --cost [--path P]` | the same table as `stats` |
+| `release create NAME [--note T]` / `list` / `verify NAME` / `diff A [B]` / `rollback NAME --yes` | a zip of `files/`, `paths/` (with cases and baselines), `redact.txt`, `prices.json` and `mounts.json`, with the SHA-256 of each file and of the whole. `diff` compares two releases, or one with the project; `rollback` first saves the current state as a release, and refuses to change locked files without `--force` |
+| `snapshot [--note T]` | a release named by the time |
+| `seal [--sign]` / `verify` | `seal.json` holds the digest of every file; `verify` lists what changed (exit status 1). `--sign` also signs it with GnuPG when `gpg` is installed, and `verify` then checks the signature |
+| `inherit REF [--fields model,tags,...] [--overwrite]` | give the files under REF its model, tags, split, weight, contracts, retries or approval; only where they have none, unless `--overwrite`; tags are added |
+| `template save NAME REF [--branch]` / `list` / `rm NAME`; `scaffold NAME [--parent REF] [--title T]` | keep a file or branch as a template in `templates/`, and make new files from it |
+| `gc [--keep N] [--days D] [--cache-days D] [--yes]` | remove old versions from `history/` (the newest N per file are kept, and the last version of a removed file always) and old cached answers; without `--yes` it only counts |
+| `compact` | siblings numbered 1, 2, ... and every file rewritten in the standard form |
+| `format [--check] [--branch REF]` (`lint`) | trailing spaces, runs of blank lines, repeated tags; `--check` only reports (exit status 1) |
+| `archive REF --yes` / `archive --list` / `archive --restore ID` | move a branch out of the trees into `archive/`, where nothing reads it, and back. A branch used by a path or linked from outside cannot be archived |
+| `glossary [--conflicts] [-o FILE]` | terms the human sides define, as `**term**` or a line `term: definition`; `--conflicts` lists terms defined differently in several files. It is a heuristic: a short line with a colon is taken for a definition |
+| `doctor` / `repair` | checks the project without trusting it: unreadable files, ids that do not match file names, missing parents, cycles, broken links, paths naming missing files, unreadable `state.json`, index or cache. `repair` moves unreadable files to `quarantine/`, removes broken links and cached answers, and makes orphans the roots of trees |
+| `schedule NAME --path P --every 6h\|--at HH:MM [--input T] [--backend B]` / `schedule` | a path run at set times |
+| `trigger NAME --path P --on-change REF,REF` | a path run when those files change |
+| `pause` / `resume` / `cancel NAME` | stop, restart or remove a schedule or trigger |
+| `schedule --run-due` | runs what is due. Tawjih is not a service: call this from cron or the Windows Task Scheduler every few minutes (`schedule` prints the line). Scheduled runs deny approval steps |
+
 ## Desktop windows, for Linux users
 
 **For Linux users only.** `linux/tawjih_desk.py` opens four independent
@@ -431,8 +465,13 @@ path, by id or number), `meta` (this file's id, title, number and tree) and
 upstream), and sets `output`. Reading `steps` for a file that is not
 upstream is an error: its output might not exist yet.
 
-**Code is executed with `exec`, without any sandbox, with your user's full
-permissions.** It runs only when you pass `--allow-code`. Do not run paths
+**Code is executed with `exec`, with your user's full permissions.** It runs
+only when you pass `--allow-code`. With `--sandbox` (on `run`, `produce`,
+`eval` and `serve`) each code step runs instead in a separate Python process
+with a temporary working folder, an empty environment, and, on Linux and
+macOS, limits on memory (512 MB), processor time and file size. That keeps a
+mistake from filling the memory or the disk, but it does not cut off the
+network or the files outside that folder: it is a fence, not a jail. Do not run paths
 whose code you have not read, including code a model wrote through `edit`.
 A code step that runs longer than 60 seconds is stopped
 (`--code-timeout SECONDS`, `0` for no limit). The limit is checked between
@@ -455,14 +494,33 @@ state.json  digests of the files as Tawjih last
           wrote them, for sync and status      (git-ignored)
 redact.txt  what to hide before model calls  (optional)
 prices.json price per million tokens, for stats (optional)
+releases/ releases and snapshots (zip files)
+archive/  archived branches
+templates/ saved templates
+stage/    proposals waiting for review
+quarantine/ files repair could not read
+mounts.json, schedules.json, seal.json   (optional)
 ```
+
+The program itself is `tawjih.py`, which runs and imports the package
+`tawjihlib/`: `core` (file model, store, path language), `providers`,
+`engine` (code and path execution), `commands`, `library`, `manage`,
+`outputs`, `evaluate`, `governance` and `cli`. Each module imports only from
+the ones before it, and everything is reachable as `tawjih.NAME`. Keep the
+two together when you copy the program.
 
 ## Limitations
 
-- Branches run one after another, not in parallel. There are no loops.
+- Branches run one after another, not in parallel. There are no loops;
+  FOR EACH (`contract --each`) runs one step over the items of a list, one
+  after another.
   Retries ask the model again only when the answer breaks the contract; a
   failed production is run again with `--resume`.
 - Redaction catches only what its patterns and your list describe.
+- `schedule` runs nothing by itself: it needs the system's scheduler to call
+  `schedule --run-due`. A lock, a seal or a review guards against mistakes
+  made through Tawjih, not against someone who edits the files by hand
+  (`verify` and `sync` show such edits afterwards).
 - A kept answer is reused as it is. Models answer differently each time, so
   `--resume` freezes the first answer until the prompt changes.
 - `IF` only tests a key of a JSON output or whether a word appears in the
@@ -509,7 +567,10 @@ scripted stand-in editor, contracts, model choice, staleness, `steps` and
 and the embedding provider replaced by a stand-in; and since 0.8 retries,
 fallbacks, approval, redaction (including on the Linux windows' calls),
 usage and `stats`, with Docling, Marker and Pandoc replaced by stand-in
-scripts. Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
+scripts; and since 0.10 every command in
+[Governance](#governance-locks-reviews-releases-schedules), with the sandbox
+tested on Linux only and GnuPG signing not tested.
+Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 
 The same tests pass on Windows and Linux, on Python 3.11 and 3.13, in the

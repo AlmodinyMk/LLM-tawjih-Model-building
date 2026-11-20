@@ -12,3 +12,5 @@ work/
 tasks.json
 state.json
 index/
+stage/
+quarantine/

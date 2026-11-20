@@ -1,4 +1,4 @@
-# Tawjih specification (0.9.0)
+# Tawjih specification (0.10.0)
 
 This is the contract the program and the tests follow.
 
@@ -26,6 +26,11 @@ approve: after        optional, see Failures
 split: train          optional, see Examples
 weight: 1             optional, see Examples
 examples_sha: ...     optional, written by the program
+locked: yes           optional, see Governance
+aliases: quad, q      optional, other names usable as REF
+each: yes             optional, FOR EACH: yes or the key of a list
+reviewed_sha: ...     optional, written by review --ok
+reviewed_on: date     optional, written by review --ok
 ---
 === human ===         the expressive human concept
 === instructions ===  machine side, part 1: text addressed to the model
@@ -459,3 +464,85 @@ by position or title. The index records the format.
 headings above it, joined by ` > ` (`Chapter 3 > 3.3 Subgroups > Definitions
 and Examples`), since two sections may share a title. A book without
 headings is cut into passages of about `--size` characters.
+
+## Governance
+
+**Lock.** `locked: yes` makes `save` refuse any change to a file's content
+key: title, sides, examples, contracts, model, retries, fallback, approve,
+split, weight, each, tags and links. Parent, level and order may change, so
+a locked file can be moved. `rm`, `archive` and `rollback` (without
+`--force`) refuse locked files. Only `unlock` writes a locked file.
+
+**Aliases.** `resolve` takes an id, then a number, then an alias
+(case-insensitive, one match). An alias is one word, not an id and not a
+number, and unique in the project.
+
+**Review.** `reviewed_sha` is the SHA-256 of the content key when the file
+was reviewed; a file is "changed since reviewed" when the two differ.
+
+**Stage.** `stage/<id>.<side>.json` holds `id`, `side`, `text`, `base` (the
+side when staged), `why` and `staged`. `--apply` writes `text` as `edit`
+would (a version in `history/`, `built_sha` or `examples_sha` updated) only
+when the side still equals `base`.
+
+**Mounts.** `mounts.json` maps a name to a project folder, relative to this
+one. Mounted files are loaded with `mount` set, are never saved, recorded in
+`state.json` or removed, and their roots sort after the project's own. An id
+used in both projects is an error.
+
+**FOR EACH.** A step with `each` takes a JSON list: the input when `each`
+is `yes`, else the list under that key of the input object. Its machine
+side runs once per item (an item that is not a string is passed as JSON);
+`expects` and `produces` apply to each item. Its output is
+`{"items": [...]}`, each answer parsed as JSON when it is JSON.
+
+**Sandbox.** With `--sandbox` a code side runs in `python -I` with a
+temporary working folder and only `PATH` and `PYTHONIOENCODING` in its
+environment; it receives `code`, `input`, `origin`, `vars`, `steps`,
+`meta`, `linked` (as data) and limits as JSON on standard input and returns
+`output` and `vars` on standard output. On POSIX it sets `RLIMIT_AS`
+(memory, default 512 MB), `RLIMIT_CPU` (the timeout) and `RLIMIT_FSIZE`
+(16 MB).
+
+**Releases.** `releases/NAME.zip` holds `release.json` (`name`, `created`,
+`tawjih`, `note`, `files`: path → SHA-256, `digest`: SHA-256 of the sorted
+`path digest` lines) and the files of `files/`, `paths/`, `redact.txt`,
+`prices.json` and `mounts.json`. `verify` recomputes both levels.
+`rollback` saves `before-rollback-<time>` first, deletes files of `files/`
+and `paths/` not in the release, writes the release's files, and records the
+state. `snapshot` is `release create snapshot-<time>`. `seal.json` has the
+same `files` and `digest`; `seal --sign` writes `seal.json.asc` with
+`gpg --detach-sign --armor`.
+
+**Archive.** `archive/` holds the files of archived branches unchanged;
+nothing reads them. `--restore ID` brings back ID and the archived files
+below it, under its old parent when that still exists, else as a new tree.
+
+**Templates.** `templates/NAME.json` holds `from` and `files`: for each, the
+index of its parent in the list, its level relative to the first, and its
+text. `scaffold` gives every file a new id.
+
+**gc.** Versions in `history/` are grouped by id and sorted newest first;
+those beyond `--keep` (or older than `--days`) are removed, except the
+newest version of a file no longer in the project.
+
+**format.** Each side: trailing spaces removed, three or more newlines
+reduced to two, leading and trailing blank lines removed; examples
+separated by one blank line; the title's spaces collapsed; repeated tags
+removed.
+
+**Schedules.** `schedules.json` maps a name to a job: `kind` (`every` with
+`seconds`, `at` with `HH:MM`, or `change` with `files` and `seen`, the digest
+of their content keys), `path`, `input` or `input_file`, `backend`, `model`,
+`allow_code`, `paused`, `last_run`, `last_run_ts`, `last_status`.
+`schedule --run-due` runs each job that is due once, with approval denied,
+and records the outcome. An `at` job is due once a day, after its time.
+
+## Program layout
+
+`tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
+copies every name of its modules into its own namespace and runs `main()`.
+The modules, in order: `core`, `providers`, `engine`, `commands`,
+`library`, `manage`, `outputs`, `evaluate`, `governance`, `cli`. A module
+imports only from those before it, by name, and only the standard library
+from outside; each lists its names in `__all__`.
