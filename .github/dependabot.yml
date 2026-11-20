@@ -1,0 +1,8 @@
+# Proposes updates of the GitHub Actions used by the workflows, as pull
+# requests to review. The program itself has no dependencies.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

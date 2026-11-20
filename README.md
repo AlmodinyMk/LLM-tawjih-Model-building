@@ -1,5 +1,7 @@
 # tawjih — توجيه أوامر الآلة
 
+[![tests](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml/badge.svg)](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml) [![PyPI](https://img.shields.io/pypi/v/tawjih)](https://pypi.org/project/tawjih/) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AlmodinyMk/LLM-tawjih-Model-building/badge)](https://scorecard.dev/viewer/?uri=github.com/AlmodinyMk/LLM-tawjih-Model-building)
+
 A personal, file-based way to direct a language model. Knowledge is kept in
 trees of small files; each file has three sides; a *path* strings files
 together into a workflow that the model and your own code execute step by step.
