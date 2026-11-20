@@ -8,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.8.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.9.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -330,6 +330,52 @@ a cost. Tawjih has no built-in prices: they change.
 for PDF Docling, then Marker, then pdftotext; for a Word file with formulas
 Pandoc (formulas become LaTeX), otherwise the built-in reader; for EPUB
 Pandoc, then the built-in reader. `--with` chooses one.
+
+## Examples, training data and evaluation
+
+A file may carry a fifth, optional side, `=== examples ===`: worked
+questions with their answers. Like the human and reading sides, it is never
+sent when a path runs. It feeds evaluation cases and training data.
+
+```
+=== examples ===
+Q: Solve 2x + 4 = 10
+A: Subtract 4 from both sides: 2x = 6, so x = 3.
+E: x = 3
+BAD: x = 7
+```
+
+`Q:` (or `س:`) starts an example, `A:` (`ج:`) is a correct answer, `E:` a
+short text any correct answer must contain (several separated by `;`), and
+`BAD:` (`خطأ:`) a typical wrong answer. A section `=== anti_examples ===`
+is read into the same side. `edit --side examples` lets a model write them
+from the human and reading sides; they are then marked old when those
+sides change (`status`, `confirm --examples`). `check` reports unreadable
+blocks, the same question in a training and an evaluation file, and the
+same question with different answers.
+
+Two header lines, set with `contract`: `split: train | eval | ignore`
+(default train) decides where a file's examples go, so evaluation questions
+never reach training data; `weight: 2` makes them count more.
+
+| Command | Does |
+|---|---|
+| `dataset --source examples -o train.jsonl [--split S] [--with-rules] [--repeat-by-weight] [--dpo pairs.jsonl]` | compiles the examples of the `train` files (or another split) into chat or prompt/completion JSONL; `--with-rules` puts the file's instructions before the question; `--dpo` writes `{prompt, chosen, rejected}` pairs from `BAD:` lines. Every dataset gets `FILE.manifest.json` with the SHA-256 of each file it came from |
+| `eval init NAME` | a cases file with a template |
+| `eval extract NAME [--split eval]` | cases from the examples of `eval` files: `E:` becomes the expected text; without it the case is graded by a judge |
+| `eval synthesize NAME --backend B [--count N]` | a model proposes hard cases from the human sides and examples (never from `eval` files) into a file to review; `--accept` adds them |
+| `eval NAME [--judge MODEL] [--fail-fast]` | runs the cases; `match: judge` cases are graded by a model; `--fail-fast` stops at the first failure and shows it |
+| `eval NAME --direct` | the same cases sent straight to the model, without the path |
+| `eval compare NAME [A B]` | two evaluations case by case, by default the path against the model asked directly |
+| `eval baseline NAME --save` / `eval diff NAME [--baseline]` | a reference result; every later `eval` reports cases that passed then and fail now (exit status 1); `diff` lists cases that changed |
+| `eval blame NAME [--case C]` | for each failed case, the steps of its run: which failed, or where the expected text appeared and was lost |
+| `eval promote NAME --to REF` | failed cases become examples of a training file, with the wrong output as `BAD:`; they leave the cases file, since a case trained on no longer tests |
+| `eval report NAME [-o eval.md]` | accuracy, time, tokens, failed cases, and the direct model and the baseline when they exist |
+
+`eval compare` is the test of the method: if the path does not beat the
+model asked directly on cases that matter to you, the work of building it
+did not pay. A handful of cases decides nothing, and a judge model has its
+own biases.
 
 ## Desktop windows, for Linux users
 

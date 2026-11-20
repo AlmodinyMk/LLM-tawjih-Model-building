@@ -1,4 +1,4 @@
-# Tawjih specification (0.8.0)
+# Tawjih specification (0.9.0)
 
 This is the contract the program and the tests follow.
 
@@ -23,11 +23,15 @@ tags: a, b            optional, cross-tree labels
 retries: 2            optional, see Failures
 fallback: 3c2a91      optional, see Failures
 approve: after        optional, see Failures
+split: train          optional, see Examples
+weight: 1             optional, see Examples
+examples_sha: ...     optional, written by the program
 ---
 === human ===         the expressive human concept
 === instructions ===  machine side, part 1: text addressed to the model
 === code ===          machine side, part 2: Python
 === reading ===       passages filtered from deposited books
+=== examples ===      optional: worked questions (see Examples)
 ```
 
 `model`, `expects` and `produces` are set with `contract REF [--expects S]
@@ -247,6 +251,69 @@ record holds them per step (`steps[].usage`) and in total (`usage`: in, out,
 seconds, calls, retries, fallbacks, redacted). `stats` sums records per path
 and multiplies tokens by `prices.json` (per million, per model) when it has
 the model.
+
+## Examples
+
+An optional fifth section, `=== examples ===` (a section marked
+`=== anti_examples ===` is read into it), is written only when it has
+content. It holds blocks: a line `Q:` (also `س:`, `question:`) starts one;
+`A:` (`ج:`, `answer:`) the answer, `E:` (`expect:`, `متوقع:`) a text a
+correct answer must contain (`;` separates several), `BAD:` (`خطأ:`) a wrong
+answer, repeatable; a line without a key continues the previous field.
+Every example needs `A:` or `E:`. It is build material: never sent at run
+time.
+
+Header lines: `split: train | eval | ignore` (absent means train);
+`weight: W` (a number of 0 or more, absent means 1); `examples_sha`, the
+digest of the human and reading sides when the examples were written through
+`edit --side examples`, `eval promote` or `confirm --examples`; when the
+digest differs the examples are old.
+
+`check` reports unreadable blocks and a question (compared by its words,
+case-insensitively) found in a `train` and an `eval` file as errors; the
+same question with different answers, and duplicates, as warnings. Files
+with `split: ignore` are left out of these checks and of data.
+
+`dataset --source examples` writes one line per example of the files of a
+split (default train): prompt the question (after the file's instructions
+with `--with-rules`), answer `A:`; `--repeat-by-weight` repeats a line
+round(W) times; `--dpo F` writes `{prompt, chosen: A, rejected: BAD}` per
+`BAD:`. Every dataset is written with `F.manifest.json`: version, time,
+source, split, counts, the SHA-256 of the data, and of each file or
+evaluation record it came from.
+
+## Evaluation
+
+`eval NAME` runs the cases (see Managing a project) and records, per case,
+the output, pass, the reason, the run's log and record, seconds and tokens.
+`match: judge` asks the `--judge MODEL` (through `--judge-backend`, default
+the run's backend) with a fixed grading prompt; the first word PASS or FAIL
+decides; without `--judge` such a case is skipped and not counted.
+`--direct` sends each input to the model without the path and records
+`mode: direct`. When `paths/NAME.baseline.json` exists, a case that passed
+there and fails now is a regression, and the exit status is 1. Actions:
+
+- `init NAME`: writes a commented template cases file; refuses to replace.
+- `extract NAME [--branch REF] [--split eval]`: appends a case per example
+  of the files of that split whose question is not already a case: expect
+  the `E:` texts, or `A:` with `match: judge`.
+- `synthesize NAME --backend B [--count N] [--branch REF]`: sends the human
+  sides and examples of the path's files (never of `eval` files) and asks
+  for N cases as JSON lines; readable lines go to
+  `paths/NAME.cases.proposed.jsonl`; `--accept` appends them.
+- `compare NAME [A B]`: A and B are record files or `path`, `direct`,
+  `baseline` (default `path` and `direct`), case by case by name.
+- `baseline NAME [--save]`: shows or saves the latest path evaluation.
+- `diff NAME [--baseline]`: the latest against the one before (or the
+  baseline): cases now failing and now passing; exit 1 if any fails.
+- `blame NAME [--case C]`: per failed case, its run's steps with status,
+  cache and whether each output holds all expected texts; then the failed
+  step, or the first step that held them, or none.
+- `promote NAME --to REF [--case C]`: appends `Q:` input, `A:`/`E:`
+  expected, `BAD:` output to REF's examples (refused for an `eval` file),
+  and moves those cases to `paths/NAME.promoted.jsonl`.
+- `report NAME [-o F]`: Markdown summary of the latest evaluation, with the
+  direct and baseline results when present.
 
 ## Managing a project
 
