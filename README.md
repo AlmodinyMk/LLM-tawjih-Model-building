@@ -411,6 +411,59 @@ Since 0.10 a project can be guarded and kept over time.
 | `pause` / `resume` / `cancel NAME` | stop, restart or remove a schedule or trigger |
 | `schedule --run-due` | runs what is due. Tawjih is not a service: call this from cron or the Windows Task Scheduler every few minutes (`schedule` prints the line). Scheduled runs deny approval steps |
 
+## Training adapters: the neural bridge
+
+Tawjih trains nothing itself. `plugins/neural_bridge.py`, a separate
+program with the same standard-library rule, carries a project to the
+training tools and back. The heavy work is done by the Python you name with
+`--python` (PyTorch, transformers, PEFT, TRL; or Unsloth; or axolotl) and by
+llama.cpp. Every command that would start such a program only shows its
+plan, unless `--run` is given.
+
+```
+B="python plugins/neural_bridge.py -p myproject"
+$B env                                   # engines, GPU, llama.cpp tools
+$B compile -o datasets --with-rules      # sft_train, sft_eval, dpo_train
+$B train algebra --base-model Qwen/Qwen2.5-1.5B-Instruct \
+   --dataset datasets/sft_train.jsonl --eval datasets/sft_eval.jsonl \
+   --qlora --run                         # --engine torch|unsloth|axolotl
+$B train algebra-dpo --method dpo --dataset datasets/dpo_train.jsonl ...
+$B merge algebra --run                   # adapter merged into the base
+$B --llama-cpp ~/llama.cpp convert algebra --run      # merged model to GGUF
+$B --llama-cpp ~/llama.cpp quantize models/gguf/algebra-f16.gguf --type Q4_K_M --run
+$B --llama-cpp ~/llama.cpp convert algebra --lora --run   # a GGUF adapter
+```
+
+| Command | Does |
+|---|---|
+| `compile` | through Tawjih's own `dataset`: `sft_train.jsonl` (files of split `train`), `sft_eval.jsonl` (split `eval`), `dpo_train.jsonl` (a pair for each `BAD:` line), each with its manifest; exit status 1 when a question is in both training and evaluation data |
+| `env` | the versions of torch, transformers, peft, trl, datasets, bitsandbytes, unsloth and axolotl in the training Python, its GPU, and where llama.cpp's tools are |
+| `train NAME` | writes `models/adapters/NAME/` with `train_config.json`, the dataset's manifest, and `train.py` (engine `torch`: transformers + PEFT + TRL, QLoRA through bitsandbytes; engine `unsloth`) or `axolotl.yml` (SFT on chat data only). SFT takes chat or prompt/completion rows, DPO takes prompt/chosen/rejected rows; the data is checked first |
+| `merge NAME` | the adapter merged into its base in 16-bit (PEFT `merge_and_unload`), for conversion |
+| `convert SOURCE [--lora]` | a merged model to GGUF, or an adapter to a GGUF adapter (`convert_lora_to_gguf.py`) |
+| `quantize FILE.gguf [--type Q4_K_M]` | with `llama-quantize`, looked for in `--llama-cpp`, its `build/bin`, then PATH |
+| `lora add NAME FOLDER [--served-as M]` / `rm` / `list` | the project's adapters, in `models/registry.json` |
+| `lora bind REF NAME` / `unbind REF` / `route REF` | an adapter for a file and the files under it, kept by stable id: moving files keeps their adapter; `route` shows which adapter a file gets and from where |
+| `lora apply [--yes] [--overwrite]` | writes each step's `model:` line from the bindings: this is what routes a path's steps to adapters. A file's own model is kept unless `--overwrite`; locked files are not changed |
+| `lora serve [--server vllm\|ollama\|llama]` | how to offer the adapters under their names: the `vllm serve ... --enable-lora --lora-modules` command, or one Ollama model per adapter (Modelfiles with `ADAPTER`) |
+| `lora fuse NEW A:0.7 B:0.3 [--how linear\|cat\|svd\|ties\|...]` | a weighted combination with PEFT's `add_weighted_adapter`; refuses adapters of different bases, and `linear` with different ranks |
+| `lora lineage NAME` | what an adapter was trained on: the dataset, and each source file, marked when it has changed since |
+
+How a path then uses the adapters: run vLLM with `lora serve`'s command,
+set `TAWJIH_BASE_URL=http://localhost:8000/v1`, and run the path with
+`--backend openai`; each step asks for the model its `model:` line names,
+and vLLM answers with that adapter. With Ollama, `--backend ollama` does
+the same. `llama-server` applies its adapters to every request, so it
+cannot route by file.
+
+What is verified: the test suite checks the data, the configurations, the
+commands and the registry without any training library; the generated
+`torch` scripts were run on a CPU with a tiny random model made on the spot
+(SFT, DPO, merge and fuse). Not verified: a real model, a GPU, QLoRA,
+Unsloth, axolotl, vLLM, Ollama adapters and llama.cpp. The training
+libraries change their arguments often; the scripts pass only the ones the
+installed TRL knows, and say what they left out.
+
 ## Desktop windows, for Linux users
 
 **For Linux users only.** `linux/tawjih_desk.py` opens four independent
@@ -500,6 +553,9 @@ templates/ saved templates
 stage/    proposals waiting for review
 quarantine/ files repair could not read
 mounts.json, schedules.json, seal.json   (optional)
+models/   adapters, merged models, GGUF files, registry.json
+          (neural bridge; git-ignored)
+datasets/ compiled training data (neural bridge; git-ignored)
 ```
 
 The program itself is `tawjih.py`, which runs and imports the package

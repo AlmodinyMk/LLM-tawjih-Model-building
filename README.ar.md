@@ -380,6 +380,53 @@ train) يحدد أين تذهب أمثلة الملف، فلا تصل أسئلة
 | `pause` / `resume` / `cancel NAME` | إيقاف جدولة أو مشغّل أو إعادته أو حذفه |
 | `schedule --run-due` | يشغّل ما حان وقته. Tawjih ليس خدمة تعمل دائماً: استدعه من cron أو من «جدولة المهام» في ويندوز كل بضع دقائق (يطبع `schedule` السطر المطلوب). والتشغيل المجدول يرفض خطوات الموافقة |
 
+## تدريب المحوّلات: الجسر العصبي
+
+لا يدرّب Tawjih شيئاً بنفسه. البرنامج `plugins/neural_bridge.py` منفصل، وبالقاعدة
+نفسها (المكتبة القياسية فقط)، ينقل المشروع إلى أدوات التدريب ويعود منها. العمل
+الثقيل تقوم به نسخة بايثون التي تسميها بـ `--python` (PyTorch وtransformers
+وPEFT وTRL، أو Unsloth، أو axolotl) وllama.cpp. وكل أمر يشغّل برنامجاً من
+هذه يعرض خطته فقط، إلا مع `--run`.
+
+```
+B="python plugins/neural_bridge.py -p myproject"
+$B env                                   # المحركات وبطاقة الرسومات وأدوات llama.cpp
+$B compile -o datasets --with-rules      # sft_train وsft_eval وdpo_train
+$B train algebra --base-model Qwen/Qwen2.5-1.5B-Instruct \
+   --dataset datasets/sft_train.jsonl --eval datasets/sft_eval.jsonl \
+   --qlora --run                         # --engine torch|unsloth|axolotl
+$B merge algebra --run
+$B --llama-cpp ~/llama.cpp convert algebra --run
+$B --llama-cpp ~/llama.cpp quantize models/gguf/algebra-f16.gguf --type Q4_K_M --run
+```
+
+| الأمر | عمله |
+|---|---|
+| `compile` | عبر أمر `dataset` في Tawjih نفسه: `sft_train.jsonl` (ملفات split `train`)، و`sft_eval.jsonl` (split `eval`)، و`dpo_train.jsonl` (زوج لكل سطر `BAD:`)، ولكل منها بيان المصدر؛ وحالة خروج 1 إذا وُجد سؤال في بيانات التدريب والتقييم معاً |
+| `env` | إصدارات torch وtransformers وpeft وtrl وdatasets وbitsandbytes وunsloth وaxolotl في بايثون التدريب، وبطاقة الرسومات، ومكان أدوات llama.cpp |
+| `train NAME` | يكتب `models/adapters/NAME/` وفيه `train_config.json` وبيان البيانات و`train.py` (المحرك `torch`: transformers + PEFT + TRL، وQLoRA عبر bitsandbytes؛ أو `unsloth`) أو `axolotl.yml` (SFT على بيانات المحادثة فقط). يأخذ SFT صفوف محادثة أو prompt/completion، ويأخذ DPO صفوف prompt/chosen/rejected، وتُفحص البيانات أولاً |
+| `merge NAME` | دمج المحوّل في نموذجه الأساسي بدقة 16 بت (`merge_and_unload` في PEFT) تمهيداً للتحويل |
+| `convert SOURCE [--lora]` | نموذج مدمج إلى GGUF، أو محوّل إلى محوّل GGUF (`convert_lora_to_gguf.py`) |
+| `quantize FILE.gguf [--type Q4_K_M]` | بـ `llama-quantize`، ويُبحث عنه في `--llama-cpp` ثم `build/bin` ثم PATH |
+| `lora add NAME FOLDER [--served-as M]` / `rm` / `list` | محوّلات المشروع في `models/registry.json` |
+| `lora bind REF NAME` / `unbind REF` / `route REF` | محوّل لملف وما تحته، محفوظ بالتعريف الثابت: نقل الملفات لا يغيّر محوّلها؛ و`route` يبيّن أي محوّل يأخذه الملف ومن أين |
+| `lora apply [--yes] [--overwrite]` | يكتب سطر `model:` لكل خطوة من الربط، وبهذا تُوجَّه خطوات المسار إلى المحوّلات. يبقى نموذج الملف الخاص إلا مع `--overwrite`، والملفات المقفلة لا تتغير |
+| `lora serve [--server vllm\|ollama\|llama]` | كيف تُعرض المحوّلات بأسمائها: أمر `vllm serve ... --enable-lora --lora-modules`، أو نموذج Ollama لكل محوّل (ملفات Modelfile فيها `ADAPTER`) |
+| `lora fuse NEW A:0.7 B:0.3 [--how linear\|cat\|svd\|ties\|...]` | مزج موزون بـ `add_weighted_adapter` في PEFT؛ يرفض محوّلات من نماذج أساسية مختلفة، و`linear` مع رتب مختلفة |
+| `lora lineage NAME` | على ماذا دُرّب المحوّل: البيانات وكل ملف مصدر، مع علامة على ما تغيّر بعده |
+
+ثم يستعمل المسار المحوّلات هكذا: شغّل vLLM بأمر `lora serve`، واضبط
+`TAWJIH_BASE_URL=http://localhost:8000/v1`، وشغّل المسار بـ `--backend openai`؛
+فتطلب كل خطوة النموذج الذي يسميه سطر `model:`، ويجيب vLLM بذلك المحوّل. ومع
+Ollama يفعل `--backend ollama` الشيء نفسه. أما `llama-server` فيطبّق محوّلاته على
+كل طلب، فلا يوجّه حسب الملف.
+
+ما تم التحقق منه: الاختبارات تفحص البيانات والإعدادات والأوامر والسجل بلا أي
+مكتبة تدريب، وسكربتات المحرك `torch` شُغّلت على المعالج بنموذج عشوائي صغير صُنع
+للتجربة (SFT وDPO والدمج والمزج). لم يتم: نموذج حقيقي، بطاقة رسومات، QLoRA،
+Unsloth، axolotl، vLLM، محوّلات Ollama، وllama.cpp. ومكتبات التدريب تغيّر
+وسائطها كثيراً، فالسكربتات تمرر فقط ما يعرفه إصدار TRL المثبت، وتذكر ما تركته.
+
 ## نوافذ سطح المكتب، لمستخدمي لينكس
 
 **لمستخدمي لينكس فقط.** `linux/tawjih_desk.py` يفتح أربع نوافذ مستقلة على
