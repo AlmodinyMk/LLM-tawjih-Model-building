@@ -429,7 +429,8 @@ class Desk:
             if model:
                 os.environ["TAWJIH_MODEL"] = model
             self._need_backend(backend)
-            ans, _ = _guard(tawjih.BACKENDS[backend], "\n\n".join(parts))
+            (ans, _usage), _ = _guard(tawjih.call_model, self.root, backend,
+                                      "\n\n".join(parts))
         ans = (ans or "").strip()
         if not ans:
             raise DeskError("the model returned nothing")
@@ -445,7 +446,8 @@ class Desk:
             raise DeskError("enter the target language")
         head = PROMPTS[action] % {"lang": lang.strip(), "extra": extra.strip(),
                                   "code_note": tawjih.SIDE_NOTES["code"]}
-        ans, _ = _guard(tawjih.BACKENDS[backend], head + "\n\n# Text\n" + text)
+        (ans, _usage), _ = _guard(tawjih.call_model, self.root, backend,
+                                  head + "\n\n# Text\n" + text)
         ans = (ans or "").strip()
         if action in ("write_code", "fix_code"):
             ans = tawjih.strip_fence(ans)

@@ -461,7 +461,8 @@ class Outputs(Base):
 
     def test_ingest_docx_and_deposit(self):
         f = self.docx()
-        code, out, err = self.cli("ingest", str(f), "--deposit")
+        code, out, err = self.cli("ingest", str(f), "--deposit", "--with",
+                                  "builtin")
         self.assertEqual(code, 0, err)
         md = (self.root / "d.md").read_text(encoding="utf-8")
         self.assertIn("# Sets", md)
@@ -469,7 +470,7 @@ class Outputs(Base):
         self.assertIn("A set is a collection$x∈A$", md)
         self.assertIn("- first\n- second", md)
         self.assertIn("| a | b |", md)
-        self.assertIn("1 formula(s)", out)
+        self.assertIn("1 formula(s) were flattened", out)
         self.assertIn("deposited", out)
 
     def test_ingest_epub_and_pdf_without_the_tool(self):
@@ -483,7 +484,7 @@ class Outputs(Base):
                        '</spine></package>')
             z.writestr("OEBPS/a.xhtml", "<html><body><h1>Chapter</h1><p>Text"
                        "</p></body></html>")
-        code, out, err = self.cli("ingest", str(f))
+        code, out, err = self.cli("ingest", str(f), "--with", "builtin")
         self.assertEqual(code, 0, err)
         self.assertIn("# Chapter", (self.root / "b.md").read_text())
         pdf = self.root / "x.pdf"
@@ -491,7 +492,8 @@ class Outputs(Base):
         real = tawjih.shutil.which
         tawjih.shutil.which = lambda name: None
         try:
-            self.assertIn("needs pdftotext", self.cli("ingest", str(pdf))[2])
+            self.assertIn("no converter for .pdf is installed",
+                          self.cli("ingest", str(pdf))[2])
         finally:
             tawjih.shutil.which = real
         self.assertIn("ingest x.pdf --deposit", self.cli("deposit", str(pdf))[2])
@@ -513,7 +515,8 @@ class Serve(Base):
         a = argparse.Namespace(project=self.dir, token="secret", paths=None,
                                host="127.0.0.1", port=0, backend="fake",
                                allow_code=False, resume=False,
-                               code_timeout=5.0, _ready=on_ready)
+                               code_timeout=5.0, retries=None, approve=None,
+                               _ready=on_ready)
         t = threading.Thread(target=lambda: tawjih.cmd_serve(a), daemon=True)
         old_out = sys.stdout
         sys.stdout = open(self.root / "serve.out", "w")

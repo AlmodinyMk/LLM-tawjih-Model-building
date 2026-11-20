@@ -8,7 +8,7 @@ One Python file, standard library only. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.7.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.8.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -217,7 +217,8 @@ arXiv) publish their source; look for it before using a PDF.
 | `search QUERY [--branch REF] [--side S] [--tag T] [--rank \| --semantic]` | search titles and sides; see [Managing a project](#managing-a-project) for the other commands added in 0.7 |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
-| `contract REF [--expects S] [--produces S] [--model M]` | show or set a file's contracts and model |
+| `contract REF [--expects S] [--produces S] [--model M] [--retries N] [--fallback REF] [--approve WHEN]` | show or set a file's contracts, model, retries, fallback and approval |
+| `redact [TEXT] [--init]` / `stats` | private data hidden before model calls / what runs cost; see [Failures, approval, privacy and cost](#failures-approval-privacy-and-cost) |
 | `check [--branch REF]` | validate parents, levels, cycles, links, paths, code syntax, contracts, staleness |
 | `trees` | list the available trees |
 | `cache [--clear]` | show or empty the kept model answers |
@@ -287,6 +288,48 @@ in `history/`.
 `eval` is how the central claim of the method can be tested: write the
 questions and the answers you expect, then run the same cases with a path
 and with a model asked directly.
+
+## Failures, approval, privacy and cost
+
+**Retries.** `contract REF --retries 2` (or `--retries N` on the command
+line) asks the model again, up to N times, when its answer is empty or
+breaks the file's `produces` contract. The new request repeats the prompt
+and says why the answer was rejected. Only an answer that passes is kept in
+the cache, under the original prompt.
+
+**Fallback.** `contract REF --fallback OTHER` names a file whose machine
+side runs, on the same input, when this step fails for any reason (code,
+model call, contract). Its output takes the step's place, so the rest of the
+path does not change. `check` reports a fallback that is missing, has no
+machine side, or produces something the step does not promise.
+
+**Approval.** `contract REF --approve after` (or `before`, `both`) makes a
+person approve the step: before it runs, after it, or both. After a step the
+person may also type a replacement output (`e`). `--approve ask` asks on the
+terminal (the default there), `auto` approves everything, `deny` stops at
+the first step that needs approval (the default elsewhere, and always for
+`eval` and `serve` unless given).
+
+**Redaction.** `redact --init` creates `redact.txt`. From then on every
+text sent to a model (by `produce`, `run`, `edit`, `filter`, `generate`,
+`eval`, `serve`) has e-mail addresses, phone numbers, card numbers that
+pass the Luhn check, IBANs, ten-digit national ids, IP addresses, and your
+own words and names (one per line, or `re:` a regular expression) replaced
+by placeholders such as `[EMAIL_1]`; the placeholders in the answer are put
+back. `redact "some text"` shows what would be hidden. Patterns only catch
+what they describe: a name you did not list is sent as it is.
+
+**Cost.** Each run records, per step and in total, the tokens the provider
+reports, the time spent waiting for the model, model calls, retries,
+fallbacks and redacted items. `stats [--path NAME] [--days N]` adds them up
+per path with the latest evaluation; with `prices.json`
+(`{"MODEL": {"input": 3.0, "output": 15.0}}`, per million tokens) it gives
+a cost. Tawjih has no built-in prices: they change.
+
+**Converters.** `ingest FILE --with auto` uses the best converter installed:
+for PDF Docling, then Marker, then pdftotext; for a Word file with formulas
+Pandoc (formulas become LaTeX), otherwise the built-in reader; for EPUB
+Pandoc, then the built-in reader. `--with` chooses one.
 
 ## Desktop windows, for Linux users
 
@@ -364,12 +407,16 @@ history/  production records, and previous
 index/    the semantic search index            (git-ignored)
 state.json  digests of the files as Tawjih last
           wrote them, for sync and status      (git-ignored)
+redact.txt  what to hide before model calls  (optional)
+prices.json price per million tokens, for stats (optional)
 ```
 
 ## Limitations
 
-- Branches run one after another, not in parallel. There are no loops or
-  automatic retries. A failed production is run again with `--resume`.
+- Branches run one after another, not in parallel. There are no loops.
+  Retries ask the model again only when the answer breaks the contract; a
+  failed production is run again with `--resume`.
+- Redaction catches only what its patterns and your list describe.
 - A kept answer is reused as it is. Models answer differently each time, so
   `--resume` freezes the first answer until the prompt changes.
 - `IF` only tests a key of a JSON output or whether a word appears in the
@@ -413,7 +460,10 @@ model), `edit`, the deposit → filter → accept pipeline, `open` with a
 scripted stand-in editor, contracts, model choice, staleness, `steps` and
 `linked`, `tangle`, `graph` and `generate`; and since 0.7 every command in
 [Managing a project](#managing-a-project), with `serve` called over HTTP
-and the embedding provider replaced by a stand-in. The diagrams from `graph` were
+and the embedding provider replaced by a stand-in; and since 0.8 retries,
+fallbacks, approval, redaction (including on the Linux windows' calls),
+usage and `stats`, with Docling, Marker and Pandoc replaced by stand-in
+scripts. Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 
 The same tests pass on Windows and Linux, on Python 3.11 and 3.13, in the

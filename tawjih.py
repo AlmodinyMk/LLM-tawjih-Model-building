@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -37,7 +38,7 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
@@ -159,7 +160,8 @@ def _validate_contract(text, spec, label):
 class Node:
     def __init__(self, id="", title="", level=1, parent="", order=0,
                  links=None, model="", expects="", produces="", built_sha="",
-                 human="", instructions="", code="", reading="", tags=None):
+                 human="", instructions="", code="", reading="", tags=None,
+                 retries="", fallback="", approve=""):
         self.id, self.title, self.level = id, title, int(level)
         self.parent, self.order = parent, int(order)
         self.links = links or []          # [(target_id, type)]
@@ -170,6 +172,9 @@ class Node:
         self.human, self.instructions, self.code = human, instructions, code
         self.reading = reading
         self.tags = list(tags or [])          # cross-tree labels
+        self.retries = str(retries).strip()   # model answers asked again
+        self.fallback = fallback.strip()      # file run instead on failure
+        self.approve = approve.strip()        # before | after | both
 
     def source_digest(self):
         """SHA-256 prefix of build-time material (human + reading)."""
@@ -200,6 +205,9 @@ class Node:
             out.append("built_sha: " + self.built_sha)
         if self.tags:
             out.append("tags: " + ", ".join(self.tags))
+        for k in ("retries", "fallback", "approve"):
+            if getattr(self, k):
+                out.append("%s: %s" % (k, getattr(self, k)))
         out.append("---")
         for s in SECTIONS:
             out += [MARK.format(s), getattr(self, s).strip("\n")]
@@ -243,6 +251,9 @@ class Node:
                     built_sha=meta.get("built_sha", ""),
                     tags=[t.strip() for t in meta.get("tags", "").split(",")
                           if t.strip()],
+                    retries=meta.get("retries", ""),
+                    fallback=meta.get("fallback", ""),
+                    approve=meta.get("approve", ""),
                     **{s: "\n".join(sec[s]).strip("\n") for s in SECTIONS})
 
 
@@ -437,6 +448,24 @@ class Store:
             if n.is_stale():
                 warns.append(tag + ": machine side is stale (human/reading "
                              "changed since last build)")
+            if n.retries and not re.fullmatch(r"\d", n.retries):
+                errors.append(tag + ": retries must be a number from 0 to 9")
+            if n.approve and n.approve not in ("before", "after", "both"):
+                errors.append(tag + ": approve must be before, after or both")
+            if n.fallback:
+                fb = self.nodes.get(n.fallback)
+                if fb is None:
+                    errors.append(tag + ": fallback %s does not exist"
+                                  % n.fallback)
+                elif not (fb.instructions.strip() or fb.code.strip()):
+                    errors.append(tag + ": fallback %s has no machine side"
+                                  % n.fallback)
+                elif n.produces and fb.produces and contract_fits(
+                        fb.produces, n.produces):
+                    errors.append(tag + ": fallback %s produces %s, but this "
+                                  "file promises %s" % (n.fallback,
+                                                        fb.produces,
+                                                        n.produces))
             for field in ("expects", "produces"):
                 pc = _parse_contract(getattr(n, field))
                 if pc and pc[0] == "unknown":
@@ -498,6 +527,13 @@ def use_model(a):
         os.environ["TAWJIH_MODEL"] = a.model
 
 
+_usage = threading.local()     # token counts of the last answer, per thread
+
+
+def _note_usage(tokens_in, tokens_out):
+    _usage.last = {"in": int(tokens_in or 0), "out": int(tokens_out or 0)}
+
+
 def backend_dry(prompt, model=""):
     m_tag = (" [model: %s]" % model) if model else ""
     return "[dry run%s: no model was called; prompt was %d characters]" % (
@@ -509,6 +545,7 @@ def backend_ollama(prompt, model=""):
     data = _post(host + "/api/chat",
                  {"model": _model(model), "stream": False,
                   "messages": [{"role": "user", "content": prompt}]}, {})
+    _note_usage(data.get("prompt_eval_count"), data.get("eval_count"))
     return data["message"]["content"]
 
 
@@ -520,6 +557,8 @@ def backend_anthropic(prompt, model=""):
                   "max_tokens": int(os.environ.get("TAWJIH_MAX_TOKENS", "4096")),
                   "messages": [{"role": "user", "content": prompt}]},
                  {"x-api-key": key, "anthropic-version": "2023-06-01"})
+    u = data.get("usage") or {}
+    _note_usage(u.get("input_tokens"), u.get("output_tokens"))
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
@@ -531,6 +570,8 @@ def backend_openai(prompt, model=""):
     data = _post(base.rstrip("/") + "/chat/completions",
                  {"model": _model(model),
                   "messages": [{"role": "user", "content": prompt}]}, headers)
+    u = data.get("usage") or {}
+    _note_usage(u.get("prompt_tokens"), u.get("completion_tokens"))
     return data["choices"][0]["message"]["content"]
 
 
@@ -553,6 +594,130 @@ def backend_manual(prompt, model=""):
 BACKENDS = {"dry": backend_dry, "manual": backend_manual,
             "openai": backend_openai, "ollama": backend_ollama,
             "anthropic": backend_anthropic}
+
+
+# ---------------------------------------------------------------- redaction
+REDACT_PATTERNS = {
+    "email": r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+",
+    "phone": r"(?<![\w+])(?:(?:\+|00)\d{1,3}[\s.-]?\d(?:[\s.-]?\d){6,12}"
+             r"|05\d(?:[\s-]?\d){7})(?!\w)",
+    "card": r"(?<!\d)\d(?:[ -]?\d){12,18}(?!\d)",
+    "iban": r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){3,7}(?:[ ]?[A-Z0-9]{1,3})?\b",
+    "national_id": r"(?<!\d)[12]\d{9}(?!\d)",
+    "ip": r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}"
+          r"(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])",
+}
+REDACT_TEMPLATE = r"""# Tawjih redaction: what is replaced by a placeholder such as [EMAIL_1]
+# before any text is sent to a model, and put back in the answer.
+# Delete this file to turn redaction off.
+#
+# Built-in patterns (delete a line to leave that kind alone):
+@email
+@phone
+@card
+@iban
+@national_id
+@ip
+#
+# Your own words and names, one per line (matched without regard to case),
+# or a regular expression after 're:'.
+# Mohammed Khalid
+# re: Project\s+Falcon\w*
+"""
+
+
+def _luhn(digits):
+    total, alt = 0, False
+    for ch in reversed(digits):
+        d = int(ch)
+        if alt:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+        alt = not alt
+    return total % 10 == 0
+
+
+class Redactor:
+    """Replaces private text with placeholders before a model sees it, and
+    puts it back in the answer. Patterns cannot know what is private: what
+    they miss is sent as it is."""
+    def __init__(self, rules):
+        self.rules = rules            # [(label, compiled pattern)]
+
+    @staticmethod
+    def load(root):
+        f = Path(root) / "redact.txt"
+        if not f.is_file():
+            return None
+        rules, words = [], []
+        for k, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("@"):
+                name = line[1:].strip()
+                if name not in REDACT_PATTERNS:
+                    die("redact.txt line %d: unknown pattern @%s (%s)" % (
+                        k, name, ", ".join(sorted(REDACT_PATTERNS))))
+                rules.append((name.upper(), re.compile(REDACT_PATTERNS[name])))
+            elif line.startswith("re:"):
+                try:
+                    rules.append(("PRIVATE", re.compile(line[3:].strip())))
+                except re.error as e:
+                    die("redact.txt line %d: %s" % (k, e))
+            else:
+                words.append(line)
+        # long, specific patterns first, so a phone number cannot take a
+        # piece of an IBAN or a card
+        order = ["IBAN", "CARD", "EMAIL", "IP", "NATIONAL_ID", "PHONE"]
+        rules.sort(key=lambda r: order.index(r[0]) if r[0] in order else -1)
+        if words:   # longest first, so a full name wins over a part of it
+            rules.insert(0, ("PRIVATE", re.compile("|".join(
+                re.escape(w) for w in sorted(words, key=len, reverse=True)),
+                re.I)))
+        return Redactor(rules)
+
+    def mask(self, text):
+        found = {}                    # original -> placeholder
+        counts = {}
+
+        def sub(label):
+            def f(m):
+                val = m.group(0)
+                if label == "CARD" and not _luhn(re.sub(r"\D", "", val)):
+                    return val
+                if val not in found:
+                    counts[label] = counts.get(label, 0) + 1
+                    found[val] = "[%s_%d]" % (label, counts[label])
+                return found[val]
+            return f
+        for label, pat in self.rules:
+            text = pat.sub(sub(label), text)
+        return text, {v: k for k, v in found.items()}
+
+    @staticmethod
+    def unmask(text, mapping):
+        for ph in sorted(mapping, key=len, reverse=True):
+            text = text.replace(ph, mapping[ph])
+        return text
+
+
+def call_model(store_root, backend, prompt, model=""):
+    """Every model call goes through here: redaction (when the project has
+    redact.txt), the call, the placeholders put back, and what it cost.
+    Returns (answer, usage)."""
+    red = Redactor.load(store_root) if store_root else None
+    sent, mapping = red.mask(prompt) if red else (prompt, {})
+    _usage.last = None
+    t0 = time.monotonic()
+    answer = BACKENDS[backend](sent, model=model) or ""
+    usage = dict(getattr(_usage, "last", None) or {},
+                 seconds=round(time.monotonic() - t0, 3),
+                 chars_in=len(sent), chars_out=len(answer),
+                 redacted=len(mapping))
+    if mapping:
+        answer = Redactor.unmask(answer, mapping)
+    return answer, usage
 
 
 # ----------------------------------------------------------------- execution
@@ -1088,14 +1253,55 @@ def cache_file(store, backend, model, prompt):
     return store.root / "cache" / (key[:32] + ".json")
 
 
+class StepFailure(Exception):
+    def __init__(self, what, err):
+        super().__init__("%s: %s" % (what, err))
+        self.what, self.err = what, err
+
+
+def _ask_approval(n, when, text, mode):
+    """'auto' approves, 'deny' stops, 'ask' asks on the terminal. After a
+    step the person may also type a replacement output ('e')."""
+    if mode == "auto":
+        return True, None
+    if mode == "deny":
+        return False, None
+    bar = "-" * 60
+    if when == "before":
+        print("\n%s\napproval: run step %s [%s]? input:\n%s\n%s\n[y]es / "
+              "[n]o: " % (bar, n.title, n.id, text[:2000], bar), end="",
+              file=sys.stderr, flush=True)
+    else:
+        print("\n%s\napproval: pass on the output of %s [%s]?\n%s\n%s\n"
+              "[y]es / [n]o / [e]dit: " % (bar, n.title, n.id, text, bar),
+              end="", file=sys.stderr, flush=True)
+    ans = sys.stdin.readline().strip().lower()
+    if ans in ("y", "yes", "نعم", "ن"):
+        return True, None
+    if ans in ("e", "edit") and when == "after":
+        print("new output (finish with a line containing only '.'):",
+              file=sys.stderr)
+        lines = []
+        while True:
+            line = sys.stdin.readline()
+            if not line or line.strip() == ".":
+                break
+            lines.append(line.rstrip("\n"))
+        return True, "\n".join(lines).strip()
+    return False, None
+
+
 def run_flow(store, name, text, backend, allow_code, flow, resume=False,
              use_cache=True, redo=(), model_override="",
-             code_timeout=CODE_TIMEOUT):
+             code_timeout=CODE_TIMEOUT, retries=None, approve=None):
     """Execute the machine sides of the files of a flow. A file runs after
     the files that feed it and receives their outputs; a file none of whose
     connections is active is skipped. Writes the log, state snapshot and
     result to runs/ and a record of the operation to history/."""
     use_cache = use_cache and backend != "dry"
+    if approve is None:
+        approve = "ask" if sys.stdin is not None and sys.stdin.isatty() \
+            else "deny"
     plan = plan_steps(store, flow)
     trees = []
     for p in plan:
@@ -1120,7 +1326,9 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
               "steps": plan, "status": "running", "log": str(logfile),
               "state": str(statefile),
               "result": "", "model": default_model,
-              "resume": bool(resume), "from_cache": 0, "redo": list(redo)}
+              "resume": bool(resume), "from_cache": 0, "redo": list(redo),
+              "usage": {"in": 0, "out": 0, "seconds": 0.0, "calls": 0,
+                        "retries": 0, "fallbacks": 0, "redacted": 0}}
 
     def save_state(outputs_map):
         statefile.write_text(json.dumps({
@@ -1131,6 +1339,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
 
     def document():
         record["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        record["usage"]["seconds"] = round(record["usage"]["seconds"], 3)
         rec = _stamped(store.root / "history", "production-" + name, ".json")
         rec.write_text(json.dumps(record, ensure_ascii=False, indent=2),
                        encoding="utf-8")
@@ -1170,11 +1379,119 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             return condition_holds(outputs[e["src"]], word) != neg
         return True
 
-    for p in plan:
-        n = store.nodes[p["id"]]
+    def execute(p, n, prev):
+        """Run the machine side of n on prev and return its checked output,
+        or raise StepFailure. Model answers that break the contract are
+        asked again, up to the retries allowed."""
         ins, code, _ = machine_side(n)
         # --model on the command line > the file's model: header > TAWJIH_MODEL
         step_model = model_override or n.model or default_model
+        p["model"] = step_model
+        if n.expects:
+            prev, cerr = conform(prev, n.expects, "input")
+            if cerr:
+                raise StepFailure("input contract", ValueError(cerr))
+        code_out, out, emptied = "", prev, False
+        if code.strip():
+            if allow_code:
+                try:
+                    produced = run_code(n, prev, shared, text, steps=outputs,
+                                        store=store, run_dir=store.rdir,
+                                        upstream=flow.upstream(p["id"]),
+                                        timeout=code_timeout)
+                except (Exception, CodeTimeout) as e:
+                    raise StepFailure("code", e)
+                emptied = produced is not None and not produced.strip()
+                code_out = produced or ""
+            else:
+                print("  code skipped (pass --allow-code to execute it)",
+                      file=sys.stderr)
+        if ins.strip():
+            prompt = build_prompt(store, n, prev, code_out, text)
+            print("  prompt: %d characters" % len(prompt), file=sys.stderr)
+            log.append("### Prompt\n" + prompt)
+            cfile = (cache_file(store, backend, step_model, prompt)
+                     if use_cache else None)
+            kept = None
+            if resume and cfile is not None and cfile.is_file() \
+                    and p["id"] not in redo:
+                try:
+                    kept = json.loads(cfile.read_text(encoding="utf-8"))["answer"]
+                except (ValueError, KeyError, TypeError):
+                    kept = None
+            if isinstance(kept, str) and kept.strip():
+                out = kept
+                p["cached"] = True
+                record["from_cache"] += 1
+                print("  answer taken from the cache", file=sys.stderr)
+                log.append("(answer taken from the cache: %s)" % cfile.name)
+            else:
+                allowed = retries if retries is not None else \
+                    int(n.retries or 0)
+                ask, problem = prompt, None
+                for attempt in range(allowed + 1):
+                    if attempt:
+                        record["usage"]["retries"] += 1
+                        print("  asking again (%d of %d): %s" % (
+                            attempt, allowed, problem), file=sys.stderr)
+                        log.append("(answer rejected: %s; asked again)"
+                                   % problem)
+                        ask = (prompt + "\n\n## Your previous answer was "
+                               "rejected\n" + problem + "\nAnswer again, "
+                               "following the instructions exactly.")
+                    try:
+                        out, usage = call_model(store.root, backend, ask,
+                                                step_model)
+                    except Die:
+                        raise
+                    except Exception as e:
+                        raise StepFailure("model call", e)
+                    u = record["usage"]
+                    u["calls"] += 1
+                    for k in ("in", "out", "seconds", "redacted"):
+                        u[k] += usage.get(k, 0)
+                    pu = p.setdefault("usage", {"in": 0, "out": 0,
+                                                "seconds": 0.0, "calls": 0})
+                    pu["calls"] += 1
+                    for k in ("in", "out", "seconds"):
+                        pu[k] = round(pu[k] + usage.get(k, 0), 3)
+                    if usage.get("redacted"):
+                        log.append("(%d private item(s) were replaced by "
+                                   "placeholders before sending)"
+                                   % usage["redacted"])
+                    problem = None
+                    if not out.strip():
+                        problem = "the model returned an empty answer"
+                    elif n.produces:   # never keep an answer the contract rejects
+                        problem = conform(out, n.produces, "output")[1]
+                    if not problem:
+                        break
+                if problem:
+                    raise StepFailure("contract" if out.strip() else
+                                      "model call", ValueError(problem))
+                if cfile is not None:
+                    cfile.parent.mkdir(exist_ok=True)
+                    cfile.write_text(json.dumps({
+                        "answer": out, "prompt": prompt, "backend": backend,
+                        "model": step_model,
+                        "step": n.id, "machine_sha": p["machine_sha"],
+                        "saved": time.strftime("%Y-%m-%d %H:%M:%S")},
+                        ensure_ascii=False, indent=2), encoding="utf-8")
+        elif code_out:
+            out = code_out
+        elif emptied:
+            out = ""
+        if not out.strip():
+            raise StepFailure("output", ValueError(
+                "the step produced no output, so nothing can be passed on"))
+        if n.produces:
+            out, cerr = conform(out, n.produces, "output")
+            if cerr:
+                raise StepFailure("contract", ValueError(cerr))
+        return out
+
+    for p in plan:
+        n = store.nodes[p["id"]]
         head = "step %d/%d  %s [%s] %s" % (p["step"], len(plan), p["number"],
                                            n.id, n.title)
         if n.is_stale():
@@ -1200,84 +1517,52 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                     store.nodes[f].title, f, outputs[f]) for f in feeders)
         print(head, file=sys.stderr)
         p["received_from"] = feeders
-        if n.expects:
-            prev, cerr = conform(prev, n.expects, "input")
-            if cerr:
-                fail(p, n, "input contract", ValueError(cerr), outputs)
         for f in feeders:
             log.append("input from: %s [%s]" % (store.nodes[f].title, f))
             if tree_of[f] != p["tree"]:
                 record["handoffs"] += 1
                 print("  handoff from tree: %s" % store.ancestors(f)[0].title,
                       file=sys.stderr)
-        p["received_from"] = feeders
-        code_out, out, emptied = "", prev, False
-        if code.strip():
-            if allow_code:
-                try:
-                    produced = run_code(n, prev, shared, text, steps=outputs,
-                                        store=store, run_dir=store.rdir,
-                                        upstream=flow.upstream(n.id),
-                                        timeout=code_timeout)
-                except (Exception, CodeTimeout) as e:
-                    fail(p, n, "code", e, outputs)
-                emptied = produced is not None and not produced.strip()
-                code_out = produced or ""
-            else:
-                print("  code skipped (pass --allow-code to execute it)",
-                      file=sys.stderr)
-        if ins.strip():
-            prompt = build_prompt(store, n, prev, code_out, text)
-            print("  prompt: %d characters" % len(prompt), file=sys.stderr)
-            log.append("### Prompt\n" + prompt)
-            cfile = (cache_file(store, backend, step_model, prompt)
-                     if use_cache else None)
-            kept = None
-            if resume and cfile is not None and cfile.is_file() \
-                    and n.id not in redo:
-                try:
-                    kept = json.loads(cfile.read_text(encoding="utf-8"))["answer"]
-                except (ValueError, KeyError, TypeError):
-                    kept = None
-            if isinstance(kept, str) and kept.strip():
-                out = kept
-                p["cached"] = True
-                record["from_cache"] += 1
-                print("  answer taken from the cache", file=sys.stderr)
-                log.append("(answer taken from the cache: %s)" % cfile.name)
-            else:
-                try:
-                    out = BACKENDS[backend](prompt, model=step_model) or ""
-                except Exception as e:
-                    fail(p, n, "model call", e, outputs)
-                if not out.strip():
-                    fail(p, n, "model call",
-                         ValueError("the model returned an empty answer"),
-                         outputs)
-                if n.produces:      # never keep an answer the contract rejects
-                    _, cerr = conform(out, n.produces, "output")
+        if n.approve in ("before", "both"):
+            ok, _ = _ask_approval(n, "before", prev, approve)
+            if not ok:
+                fail(p, n, "approval", ValueError(
+                    "not approved before the step ran" + (
+                        " (run with --approve ask on a terminal, or "
+                        "--approve auto)" if approve == "deny" else "")),
+                    outputs)
+        try:
+            out = execute(p, n, prev)
+        except StepFailure as sf:
+            fb = store.nodes.get(n.fallback) if n.fallback else None
+            if fb is None or not (fb.instructions.strip() or fb.code.strip()):
+                fail(p, n, sf.what, sf.err, outputs)
+            print("  failed (%s: %s); falling back to %s [%s]" % (
+                sf.what, sf.err, fb.title, fb.id), file=sys.stderr)
+            log.append("### FAILED (%s), falling back to %s [%s]\n%s" % (
+                sf.what, fb.title, fb.id, sf.err))
+            record["usage"]["fallbacks"] += 1
+            p["fallback"] = fb.id
+            try:
+                out = execute(p, fb, prev)
+            except StepFailure as sf2:
+                fail(p, n, sf2.what + " (in the fallback %s)" % fb.title,
+                     sf2.err, outputs)
+        if n.approve in ("after", "both"):
+            ok, edited = _ask_approval(n, "after", out, approve)
+            if not ok:
+                fail(p, n, "approval", ValueError(
+                    "the output was not approved" + (
+                        " (run with --approve ask on a terminal, or "
+                        "--approve auto)" if approve == "deny" else "")),
+                    outputs)
+            if edited is not None:
+                log.append("(output replaced by hand at approval)")
+                if n.produces:
+                    edited, cerr = conform(edited, n.produces, "output")
                     if cerr:
                         fail(p, n, "contract", ValueError(cerr), outputs)
-                if cfile is not None:
-                    cfile.parent.mkdir(exist_ok=True)
-                    cfile.write_text(json.dumps({
-                        "answer": out, "prompt": prompt, "backend": backend,
-                        "model": step_model,
-                        "step": n.id, "machine_sha": p["machine_sha"],
-                        "saved": time.strftime("%Y-%m-%d %H:%M:%S")},
-                        ensure_ascii=False, indent=2), encoding="utf-8")
-        elif code_out:
-            out = code_out
-        elif emptied:
-            out = ""
-        if not out.strip():
-            fail(p, n, "output", ValueError(
-                "the step produced no output, so nothing can be passed on"),
-                outputs)
-        if n.produces:
-            out, cerr = conform(out, n.produces, "output")
-            if cerr:
-                fail(p, n, "contract", ValueError(cerr), outputs)
+                out = edited
         outputs[n.id] = out
         log.append("### Output\n" + out)
         groups = {}
@@ -1392,7 +1677,25 @@ def cmd_contract(a):
     n = st.nodes[st.resolve(a.ref)]
     changes = {k: v for k, v in (("expects", a.expects),
                                  ("produces", a.produces),
-                                 ("model", a.model)) if v is not None}
+                                 ("model", a.model),
+                                 ("retries", a.retries),
+                                 ("fallback", a.fallback),
+                                 ("approve", a.approve)) if v is not None}
+    if changes.get("retries", "none").strip().lower() not in ("", "none") \
+            and not re.fullmatch(r"\d", changes["retries"].strip()):
+        die("retries is a number from 0 to 9")
+    if changes.get("approve", "none").strip().lower() not in (
+            "", "none", "before", "after", "both"):
+        die("approve is before, after or both")
+    fb = changes.get("fallback", "none").strip()
+    if fb.lower() not in ("", "none"):
+        fid = st.resolve(fb)
+        if fid == n.id:
+            die("a file cannot be its own fallback")
+        f = st.nodes[fid]
+        if not (f.instructions.strip() or f.code.strip()):
+            die("the fallback %s has no machine side" % f.title)
+        changes["fallback"] = fid
     for k in ("expects", "produces"):
         v = changes.get(k)
         if v is None or v.strip().lower() in ("", "none"):
@@ -1408,8 +1711,13 @@ def cmd_contract(a):
             setattr(n, k, "" if v.strip().lower() in ("", "none") else v)
         st.save(n)
     print("%s [%s] %s" % (st.number(n.id), n.id, n.title))
-    for k in ("expects", "produces", "model"):
-        print("  %-9s %s" % (k + ":", getattr(n, k) or "-"))
+    for k in ("expects", "produces", "model", "retries", "fallback",
+              "approve"):
+        v = getattr(n, k)
+        if k == "fallback" and v:
+            v = "%s [%s] %s" % (st.number(v), v, st.nodes[v].title) \
+                if v in st.nodes else "[%s] (missing)" % v
+        print("  %-9s %s" % (k + ":", v or "-"))
     if changes:                 # what the change does to the saved paths
         for pf in sorted((st.root / "paths").glob("*.path")):
             try:
@@ -1591,7 +1899,8 @@ def _run_from_args(st, a, flow):
     return run_flow(st, a.name, text, a.backend, a.allow_code, flow,
                     resume=a.resume, use_cache=not a.no_cache, redo=redo,
                     model_override=getattr(a, "model", None) or "",
-                    code_timeout=a.code_timeout)
+                    code_timeout=a.code_timeout,
+                    retries=a.retries, approve=a.approve)
 
 
 def cmd_trees(a):
@@ -1941,7 +2250,7 @@ def cmd_generate(a):
                   file=sys.stderr)
             return
         try:
-            answer = BACKENDS[a.backend](prompt, model=a.model or "") or ""
+            answer = call_model(st.root, a.backend, prompt, a.model or "")[0]
         except Exception as e:
             die("model call failed: %s: %s" % (type(e).__name__, e))
         statements, bad = [], []
@@ -2096,7 +2405,8 @@ def cmd_edit(a):
               % len(prompt), file=sys.stderr)
         return
     try:
-        new = strip_fence(BACKENDS[a.backend](prompt, model=step_model)).strip("\n")
+        new = strip_fence(call_model(st.root, a.backend, prompt,
+                                     step_model)[0]).strip("\n")
     except Exception as e:
         die("model call failed: %s: %s" % (type(e).__name__, e))
     old = getattr(n, a.side).strip("\n")
@@ -3270,7 +3580,7 @@ def cmd_filter(a):
     items = []
     for i, (title, body) in enumerate(chunks, 1):
         try:
-            ans = BACKENDS[a.backend](prompt_for(title, body))
+            ans = call_model(st.root, a.backend, prompt_for(title, body))[0]
         except Exception as e:
             die("model call failed at passage %d: %s: %s (nothing was written)"
                 % (i, type(e).__name__, e))
@@ -3903,6 +4213,8 @@ def cmd_status(a):
         ("machine side without contracts",
          [i for i in scope if has_machine(i)
           and not (st.nodes[i].expects or st.nodes[i].produces)]),
+        ("machine side that no saved path uses",
+         [i for i in scope if has_machine(i) and i not in in_paths]),
         ("empty human side", [i for i in scope if not st.nodes[i].human.strip()]),
         ("changed outside Tawjih since the last sync",
          [i for i in scope if st.outside_changes(i)]),
@@ -4836,52 +5148,239 @@ def _epub_to_md(path):
     return _tidy("\n\n".join(parts))
 
 
+INGEST_TOOLS = {        # what each converter reads, best first per type
+    ".pdf": ["docling", "marker", "pdftotext"],
+    ".docx": ["builtin", "pandoc", "docling"],    # pandoc first if formulas
+    ".epub": ["pandoc", "builtin"],
+    ".odt": ["pandoc"], ".rtf": ["pandoc"], ".pptx": ["docling"],
+}
+INGEST_EXE = {"docling": "docling", "marker": "marker_single",
+              "pandoc": "pandoc", "pdftotext": "pdftotext"}
+
+
+def _docx_has_math(path):
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            return b"oMath" in z.read("word/document.xml")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return False
+
+
+def _run_tool(cmd, what):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    except OSError as e:
+        die("%s could not start: %s" % (what, e))
+    if r.returncode:
+        die("%s failed: %s" % (what, (r.stderr or r.stdout).strip()[-800:]))
+
+
+def _external(tool, src):
+    """Markdown from an installed converter."""
+    import tempfile
+    exe = shutil.which(INGEST_EXE[tool])
+    if not exe:
+        die("%s is not installed" % tool)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        if tool == "pandoc":
+            out = tmp / "out.md"
+            # plain Markdown: no direction spans or attributes around the
+            # text, formulas as $...$ LaTeX
+            _run_tool([exe, str(src), "-t",
+                       "markdown-smart-bracketed_spans-native_spans-raw_html"
+                       "-fenced_divs-native_divs-link_attributes"
+                       "-raw_attribute", "--wrap=none", "-o", str(out)],
+                      "pandoc")
+        elif tool == "docling":
+            _run_tool([exe, str(src), "--to", "md", "--output", str(tmp)],
+                      "docling")
+            out = next(tmp.rglob("*.md"), None)
+        elif tool == "marker":
+            _run_tool([exe, str(src), "--output_dir", str(tmp)], "marker")
+            out = next(tmp.rglob("*.md"), None)
+        else:
+            out = tmp / "out.txt"
+            _run_tool([exe, "-enc", "UTF-8", str(src), str(out)], "pdftotext")
+        if out is None or not out.is_file():
+            die("%s wrote no Markdown" % tool)
+        text = out.read_text(encoding="utf-8", errors="replace")
+    return _tidy(text.replace("\f", "\n\n"))
+
+
 def cmd_ingest(a):
-    """Turn an office document into Markdown for deposit: Word (.docx),
-    EPUB, or PDF through pdftotext when it is installed. PDF loses the
-    structure and damages mathematics; prefer the book's source."""
+    """Turn an office document into Markdown for deposit. With --with auto
+    the best converter installed is used: for PDF Docling, then Marker,
+    then pdftotext; for Word and EPUB Pandoc, then the built-in reader."""
     src = Path(a.file)
     if not src.is_file():
         die("no such file: %s" % src)
     ext = src.suffix.lower()
     note = ""
-    if ext == ".docx":
-        md, formulas = _docx_to_md(src)
-        if formulas:
-            note = ("%d formula(s) kept as plain text between $ signs; check "
-                    "them" % formulas)
-    elif ext == ".epub":
-        md = _epub_to_md(src)
-    elif ext == ".pdf":
-        tool = shutil.which("pdftotext")
-        if not tool:
-            die("reading PDF needs pdftotext (poppler-utils), which is not "
-                "installed. Better: look for the book's source (LaTeX, "
-                "PreTeXt, HTML) and deposit that")
-        r = subprocess.run([tool, "-enc", "UTF-8", str(src), "-"],
-                           capture_output=True, text=True, encoding="utf-8")
-        if r.returncode:
-            die("pdftotext failed: " + r.stderr.strip())
-        md = _tidy(r.stdout.replace("\f", "\n\n"))
-        note = ("PDF text has no headings and damages formulas (exponents, "
-                "fractions, arrows); add '#' headings and check the "
-                "mathematics before filtering")
-    elif ext in SOURCE_FORMATS:
-        md = source_to_text(src)[0]
+    if ext in SOURCE_FORMATS and ext not in INGEST_TOOLS:
+        md, used = source_to_text(src)[0], "builtin"
     else:
-        die("ingest reads .docx, .epub and .pdf (and the deposit formats)")
+        if ext not in INGEST_TOOLS:
+            die("ingest reads %s (and the deposit formats)" % ", ".join(
+                sorted(INGEST_TOOLS)))
+        tools = INGEST_TOOLS[ext]
+        if ext == ".docx" and a.tool == "auto" and _docx_has_math(src):
+            tools = ["pandoc", "builtin"]   # pandoc turns formulas into LaTeX
+        if a.tool != "auto":
+            if a.tool not in tools:
+                die("%s does not read %s files; for them: %s" % (
+                    a.tool, ext, ", ".join(tools)))
+            tools = [a.tool]
+        used = next((t for t in tools if t == "builtin"
+                     or shutil.which(INGEST_EXE[t])), None)
+        if used is None:
+            die("no converter for %s is installed. Install one of: %s "
+                "(Docling: pip install docling; Marker: pip install "
+                "marker-pdf; pdftotext: poppler-utils; Pandoc: pandoc.org). "
+                "Better still, look for the book's source (LaTeX, PreTeXt, "
+                "HTML) and deposit that"
+                % (ext, ", ".join(t for t in tools if t != "builtin")))
+        if used == "builtin" and ext == ".docx":
+            md, formulas = _docx_to_md(src)
+            if formulas:
+                note = ("%d formula(s) were flattened to plain text between $ "
+                        "signs and are not usable as they are; install Pandoc "
+                        "to get them as LaTeX" % formulas)
+        elif used == "builtin":
+            md = _epub_to_md(src)
+        else:
+            md = _external(used, src)
+            if used == "pdftotext":
+                note = ("pdftotext gives no headings and damages formulas "
+                        "(exponents, fractions, arrows); add '#' headings and "
+                        "check the mathematics before filtering, or install "
+                        "Docling or Marker")
+            elif ext == ".pdf":
+                note = ("formulas read from a PDF by a model-based converter "
+                        "can be wrong while looking right; check them")
     out = Path(a.out) if a.out else src.with_suffix(".md")
     if out.resolve() == src.resolve():
         die("the output would overwrite the input; give -o")
     out.write_text(md, encoding="utf-8")
     heads = sum(1 for l in md.split("\n") if re.match(r"#{1,6} \S", l))
-    print("written %s (%d characters, %d headings)" % (out, len(md), heads))
+    print("written %s with %s (%d characters, %d headings)" % (
+        out, used, len(md), heads))
     if note:
         print("note: " + note)
     if a.deposit:
         a.file = str(out)
         a.part = None
         cmd_deposit(a)
+
+
+# -------------------------------------------------------------- redact, stats
+def cmd_redact(a):
+    """Create redact.txt, or show what it hides in a text."""
+    st = Store(a.project)
+    f = st.root / "redact.txt"
+    if a.init:
+        if f.exists():
+            die("redact.txt already exists")
+        f.write_text(REDACT_TEMPLATE, encoding="utf-8")
+        print("created %s: from now on every model call is redacted; edit "
+              "it to add your own names and words" % f)
+        return
+    red = Redactor.load(st.root)
+    if red is None:
+        die("no redact.txt in this project (create it with: redact --init)")
+    text = Path(a.file).read_text(encoding="utf-8") if a.file else a.text
+    if text is None:
+        die("give a text, or --file")
+    masked, mapping = red.mask(text)
+    print(masked)
+    for ph in sorted(mapping, key=lambda k: (k.rsplit("_", 1)[0],
+                                             int(k.rsplit("_", 1)[1][:-1]))):
+        print("  %s = %s" % (ph, mapping[ph]), file=sys.stderr)
+    print("%d item(s) would be hidden" % len(mapping), file=sys.stderr)
+
+
+def _prices(st):
+    f = st.root / "prices.json"
+    if not f.is_file():
+        return {}
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except ValueError as e:
+        die("prices.json: %s" % e)
+
+
+def cmd_stats(a):
+    """What runs cost: per path the runs, how many finished, model calls,
+    retries, fallbacks, answers from the cache, tokens and time; a cost when
+    prices.json gives a price per million tokens for the model; and the
+    latest evaluation."""
+    st = Store(a.project)
+    hdir = st.root / "history"
+    since = time.time() - a.days * 86400 if a.days else 0
+    rows, prices = {}, _prices(st)
+    for f in sorted(hdir.glob("production-*.json")) if hdir.is_dir() else []:
+        if f.stat().st_mtime < since:
+            continue
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        name = rec.get("name", "?")
+        if a.path and name != a.path:
+            continue
+        r = rows.setdefault(name, {"runs": 0, "done": 0, "calls": 0,
+                                   "retries": 0, "fallbacks": 0, "cached": 0,
+                                   "in": 0, "out": 0, "seconds": 0.0,
+                                   "cost": 0.0, "priced": True, "known": True})
+        r["runs"] += 1
+        r["done"] += rec.get("status") == "done"
+        r["cached"] += rec.get("from_cache", 0)
+        u = rec.get("usage")
+        if not u:
+            r["known"] = False         # a run made before 0.8
+            continue
+        for k in ("calls", "retries", "fallbacks", "in", "out", "seconds"):
+            r[k] += u.get(k, 0)
+        for p in rec.get("steps", []):
+            pu = p.get("usage")
+            if not pu:
+                continue
+            price = prices.get(p.get("model") or rec.get("model") or "")
+            if price:
+                r["cost"] += (pu.get("in", 0) * price.get("input", 0)
+                              + pu.get("out", 0) * price.get("output", 0)) / 1e6
+            elif pu.get("in") or pu.get("out"):
+                r["priced"] = False
+    evals = {}
+    for f in sorted(st.rdir.glob("eval-*.json")) if st.rdir.is_dir() else []:
+        try:
+            e = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        evals[e.get("path")] = (e.get("passed", 0), e.get("total", 0),
+                                f.stem[-15:])
+    if not rows:
+        print("no runs recorded%s" % (" for path " + a.path if a.path else ""))
+    for name in sorted(rows):
+        r = rows[name]
+        cost = ("%.4f" % r["cost"]) if r["priced"] and prices else "-"
+        print("%s: %d run(s), %d finished; %d model call(s), %d retried, %d "
+              "fallback(s), %d answer(s) from the cache" % (
+                  name, r["runs"], r["done"], r["calls"], r["retries"],
+                  r["fallbacks"], r["cached"]))
+        print("  tokens in %d, out %d; model time %.1f s; cost %s%s" % (
+            r["in"], r["out"], r["seconds"], cost,
+            "" if r["known"] else "  (runs before 0.8 kept no usage)"))
+        if name in evals:
+            p_, t_, when = evals[name]
+            print("  latest evaluation: %d of %d passed (%s)" % (p_, t_, when))
+    if not prices:
+        print("costs: write prices.json with the price per million tokens, "
+              'e.g. {"MODEL": {"input": 3.0, "output": 15.0}}; local models '
+              "cost nothing to call")
+    print("tokens are those the provider reports; manual and dry report none")
 
 
 # -------------------------------------------------------------------- serve
@@ -4973,7 +5472,9 @@ def cmd_serve(a):
                         result = run_flow(fresh, name, text, a.backend,
                                           a.allow_code, flow,
                                           resume=a.resume,
-                                          code_timeout=a.code_timeout)
+                                          code_timeout=a.code_timeout,
+                                          retries=a.retries,
+                                          approve=a.approve or "deny")
                 except Die as e:
                     return self.send(500, {"error": str(e.code),
                                            "messages": err.getvalue()})
@@ -5068,7 +5569,8 @@ def cmd_eval(a):
                 out = run_flow(st, a.name, c["input"], a.backend, a.allow_code,
                                flow, resume=a.resume,
                                model_override=getattr(a, "model", None) or "",
-                               code_timeout=a.code_timeout)
+                               code_timeout=a.code_timeout,
+                               retries=a.retries, approve=a.approve or "deny")
             ok, why = _case_passes(c, out)
         except Die as e:
             out, ok, why = "", False, "the run failed: %s" % e.code
@@ -5384,6 +5886,10 @@ def main():
     s.add_argument("-o", "--out", help="output file (default: FILE.md)")
     s.add_argument("--deposit", action="store_true",
                    help="deposit the result too")
+    s.add_argument("--with", dest="tool", default="auto",
+                   choices=["auto", "docling", "marker", "pandoc",
+                            "pdftotext", "builtin"],
+                   help="converter (default auto: the best one installed)")
     s.set_defaults(fn=cmd_ingest)
 
     s = sub.add_parser("serve", help="offer saved paths to other programs "
@@ -5398,6 +5904,13 @@ def main():
                    help="allow paths with code steps")
     s.add_argument("--resume", action="store_true",
                    help="take kept answers from the cache")
+    s.add_argument("--retries", type=int, choices=range(10), metavar="N",
+                   help="ask a model again up to N times when its answer "
+                   "breaks the contract (default: each file's retries line)")
+    s.add_argument("--approve", choices=["ask", "auto", "deny"],
+                   help="steps marked approve: ask on the terminal "
+                   "(default on a terminal), auto, or deny (default "
+                   "otherwise)")
     s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
                    metavar="SECONDS")
     s.set_defaults(fn=cmd_serve)
@@ -5412,6 +5925,13 @@ def main():
     s.add_argument("--allow-code", action="store_true")
     s.add_argument("--resume", action="store_true",
                    help="take kept answers from the cache")
+    s.add_argument("--retries", type=int, choices=range(10), metavar="N",
+                   help="ask a model again up to N times when its answer "
+                   "breaks the contract (default: each file's retries line)")
+    s.add_argument("--approve", choices=["ask", "auto", "deny"],
+                   help="steps marked approve: ask on the terminal "
+                   "(default on a terminal), auto, or deny (default "
+                   "otherwise)")
     s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
                    metavar="SECONDS")
     s.set_defaults(fn=cmd_eval)
@@ -5448,7 +5968,27 @@ def main():
     s.add_argument("--expects", help="contract on the step's input")
     s.add_argument("--produces", help="contract on the step's output")
     s.add_argument("--model", help="the model this file's step uses")
+    s.add_argument("--retries", help="0-9: ask the model again when its "
+                   "answer breaks the produces contract")
+    s.add_argument("--fallback", metavar="REF", help="a file run instead "
+                   "when this step fails (same input)")
+    s.add_argument("--approve", help="before, after or both: a person "
+                   "approves the step")
     s.set_defaults(fn=cmd_contract)
+
+    s = sub.add_parser("redact", help="show what redact.txt hides before "
+                       "text is sent to a model; --init creates it")
+    s.add_argument("text", nargs="?", help="text to try (or --file)")
+    s.add_argument("--file", help="a file to try")
+    s.add_argument("--init", action="store_true",
+                   help="create redact.txt with the built-in patterns")
+    s.set_defaults(fn=cmd_redact)
+
+    s = sub.add_parser("stats", help="runs, tokens, time, cost and "
+                       "evaluation results")
+    s.add_argument("--path", help="only this path")
+    s.add_argument("--days", type=int, help="only the last DAYS days")
+    s.set_defaults(fn=cmd_stats)
 
     s = sub.add_parser("confirm", help="record that a machine side still fits "
                        "its human and reading sides (clears the stale mark)")
@@ -5476,6 +6016,13 @@ def main():
     s.add_argument("--input", default="")
     s.add_argument("--input-file")
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--retries", type=int, choices=range(10), metavar="N",
+                   help="ask a model again up to N times when its answer "
+                   "breaks the contract (default: each file's retries line)")
+    s.add_argument("--approve", choices=["ask", "auto", "deny"],
+                   help="steps marked approve: ask on the terminal "
+                   "(default on a terminal), auto, or deny (default "
+                   "otherwise)")
     s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
                    metavar="SECONDS", help="stop a code step that runs longer "
                    "(default %g; 0 for no limit)" % CODE_TIMEOUT)
@@ -5510,6 +6057,13 @@ def main():
     s.add_argument("--input", default="")
     s.add_argument("--input-file")
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry")
+    s.add_argument("--retries", type=int, choices=range(10), metavar="N",
+                   help="ask a model again up to N times when its answer "
+                   "breaks the contract (default: each file's retries line)")
+    s.add_argument("--approve", choices=["ask", "auto", "deny"],
+                   help="steps marked approve: ask on the terminal "
+                   "(default on a terminal), auto, or deny (default "
+                   "otherwise)")
     s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
                    metavar="SECONDS", help="stop a code step that runs longer "
                    "(default %g; 0 for no limit)" % CODE_TIMEOUT)
