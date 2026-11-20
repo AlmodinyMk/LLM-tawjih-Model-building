@@ -457,15 +457,33 @@ def _release_has(zpath, entry):
 
 def _release_read(st, name):
     import zipfile
+    if not re.fullmatch(r"[\w.\-]+", name) or name.startswith("."):
+        die("a release name is one word")
     f = st.root / "releases" / (name + ".zip")
     if not f.is_file():
         die("no release %s (see: release list)" % name)
-    z = zipfile.ZipFile(f)
+    try:
+        z = zipfile.ZipFile(f)
+    except (OSError, zipfile.BadZipFile) as e:
+        die("release %s is not a readable zip file (%s)" % (name, e))
     try:
         man = json.loads(z.read("release.json"))
-    except (KeyError, ValueError):
+        files = man["files"]
+        if not isinstance(files, dict):
+            raise ValueError
+    except (KeyError, ValueError, TypeError):
         z.close()
         die("release %s has no readable release.json" % name)
+    # a release may come from elsewhere: only the project's own kinds of
+    # file, and nothing that would be written outside the project
+    names = set(z.namelist())
+    bad = [e for e in files if not (
+        re.fullmatch(r"(files|paths)/[\w.\-]+", e) and ".." not in e
+        or e in RELEASE_EXTRA) or e not in names]
+    if bad:
+        z.close()
+        die("release %s is not safe to use: %s" % (name, ", ".join(
+            sorted(bad)[:5])))
     return z, man
 
 
@@ -790,7 +808,8 @@ def cmd_gc(a):
         for i, vs in by_id.items():
             vs.sort(reverse=True)
             for k, (_, f) in enumerate(vs):
-                if k >= a.keep or (limit and f.stat().st_mtime < limit):
+                # the newest version is never dropped for its age alone
+                if k >= a.keep or (k and limit and f.stat().st_mtime < limit):
                     if k == 0 and i not in st.nodes:
                         continue        # the only way back for a removed file
                     drop.append(f)
@@ -999,6 +1018,8 @@ def cmd_doctor(a):
     paths naming missing files, unreadable state, cache and index, leftovers.
     With --fix (or the command repair) mend what can be mended safely."""
     root = Path(a.project)
+    if not root.is_dir():
+        die("no such folder: %s" % root)
     fix = a.fix or a.cmd == "repair"
     problems, fixed = [], []
     for d in ("files",):
@@ -1195,14 +1216,13 @@ def cmd_schedule(a):
                 except OSError as e:
                     job.update(last_status="failed: %s" % e)
                     continue
-            if job.get("model"):
-                os.environ["TAWJIH_MODEL"] = job["model"]
             err = io.StringIO()
             try:
                 with contextlib.redirect_stderr(err):
                     flow = st.load_flow(job["path"])
                     run_flow(st, job["path"], text, job["backend"],
                              job.get("allow_code", False), flow,
+                             model_override=job.get("model", ""),
                              approve="deny")
                 status = "done"
             except (Die, FlowError) as e:

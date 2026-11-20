@@ -371,3 +371,50 @@ class PackageLayout(unittest.TestCase):
             mod = importlib.import_module("tawjihlib." + m)
             for name in mod.__all__:
                 self.assertIs(getattr(tawjih, name), getattr(mod, name))
+
+
+class ReviewFixes(Base):
+    """What the review of 0.10 found."""
+    def setUp(self):
+        super().setUp()
+        self.tree()
+
+    def test_a_release_cannot_write_outside_the_project(self):
+        import zipfile
+        rdir = self.root / "releases"
+        rdir.mkdir()
+        man = {"name": "evil", "files": {"../escaped.txt": "0"},
+               "digest": "0"}
+        with zipfile.ZipFile(rdir / "evil.zip", "w") as z:
+            z.writestr("release.json", json.dumps(man))
+            z.writestr("../escaped.txt", "x")
+        code, _, err = self.cli("release", "rollback", "evil", "--yes")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not safe", err)
+        self.assertFalse((self.root.parent / "escaped.txt").exists())
+        self.assertEqual(len(self.store().nodes), 4)
+        self.assertIn("one word", self.cli("release", "verify",
+                                           "../x")[2])
+
+    def test_weight_zero_keeps_examples_out_of_training_data(self):
+        self.fill("1.1.1", examples="Q: a\nA: b\nBAD: c")
+        self.fill("2", examples="Q: d\nA: e")
+        self.cli("contract", "2", "--weight", "0")
+        out = self.root / "t.jsonl"
+        self.cli("dataset", "--source", "examples", "-o", str(out),
+                 "--dpo", str(self.root / "d.jsonl"))
+        self.assertEqual(len(out.read_text().splitlines()), 1)
+        man = json.loads(Path(str(out) + ".manifest.json").read_text())
+        self.assertNotIn(self.store().resolve("2"), man["from"])
+
+    def test_gc_by_age_keeps_the_newest_version(self):
+        nid = self.store().resolve("1.1.1")
+        for k in range(3):
+            self.fill("1.1.1", human="v%d" % k)
+            tawjih._backup(self.store(), self.store().nodes[nid])
+        old = time.time() - 100 * 86400
+        for f in (self.root / "history").glob(nid + "-*.md"):
+            os.utime(f, (old, old))
+        self.cli("gc", "--days", "30", "--yes")
+        self.assertEqual(len(list((self.root / "history").glob(
+            nid + "-*.md"))), 1)

@@ -383,8 +383,11 @@ def cmd_train(a):
     if not ds.is_file():
         fail("no dataset %s (make one with: compile)" % ds)
     fmt = data_format(ds, a.method)
-    if a.eval and not Path(a.eval).is_file():
-        fail("no evaluation data %s" % a.eval)
+    if a.eval:
+        if not Path(a.eval).is_file():
+            fail("no evaluation data %s" % a.eval)
+        if data_format(Path(a.eval), a.method) != fmt:
+            fail("the evaluation data is not in the training data's form")
     if a.engine == "unsloth" and not a.qlora:
         print("note: Unsloth is usually used with --qlora")
     adir = models_dir(a) / "adapters" / a.name
@@ -611,7 +614,7 @@ def cmd_lora(a):
         if not (path / "adapter_config.json").is_file() and not a.force:
             fail("%s has no adapter_config.json (not a PEFT adapter; "
                  "--force to add it anyway)" % path)
-        reg["adapters"][name] = {"path": str(path), "base": a.base_model or
+        reg["adapters"][name] = {"path": rel(a, path), "base": a.base_model or
                                  "", "served_as": a.served_as or "",
                                  "added": time.strftime("%Y-%m-%d")}
         save_registry(a, reg)

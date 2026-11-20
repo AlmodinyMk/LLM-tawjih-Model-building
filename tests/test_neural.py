@@ -180,6 +180,18 @@ class Bridge(Base):
                                               "quantize", "model.bin")[2])
 
     # --------------------------------------------------------------- lora
+    def test_add_takes_paths_from_the_current_folder(self):
+        d = self.root / "elsewhere" / "ad"
+        d.mkdir(parents=True)
+        (d / "adapter_config.json").write_text("{}")
+        old = os.getcwd()
+        os.chdir(self.root / "elsewhere")
+        try:
+            self.assertEqual(self.nb("lora", "add", "x", "ad")[0], 0)
+        finally:
+            os.chdir(old)
+        self.assertIn("x=%s" % d.resolve(), self.nb("lora", "serve")[1])
+
     def test_bind_route_by_id_survives_moves(self):
         self.fake_adapter("alg")
         self.assertIn("not a PEFT adapter", self.nb(

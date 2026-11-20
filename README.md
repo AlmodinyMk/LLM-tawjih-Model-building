@@ -358,7 +358,8 @@ same question with different answers.
 
 Two header lines, set with `contract`: `split: train | eval | ignore`
 (default train) decides where a file's examples go, so evaluation questions
-never reach training data; `weight: 2` makes them count more.
+never reach training data; `weight: 2` makes them count more, and
+`weight: 0` keeps them out of training data.
 
 | Command | Does |
 |---|---|
