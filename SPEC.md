@@ -1,4 +1,4 @@
-# Tawjih specification (0.13.0)
+# Tawjih specification (0.13.1)
 
 This is the contract the program and the tests follow.
 
@@ -597,6 +597,31 @@ command's arguments after parsing, never parsed itself. Commands run with
 standard input empty, standard output and error captured, and approval
 `deny`. Before serving, the process duplicates its standard output for the
 protocol and points file descriptor 1 at standard error.
+
+**Approval.** With `--human-approval always` (the default) every tool of
+the write level except `tawjih_propose`, and every tool of the run level,
+needs a person; with `run` only the run level; with `never` none. First the
+arguments are checked and the action is tested for a sure refusal (an
+unknown file in `ref`, `parent`, `to`, `src`, `dst` or `fallback`; an
+existing path without `replace`; a missing path; a path with code steps
+when the server has no `--allow-code`), which is returned at once. Then,
+when the client declared the `elicitation` capability at `initialize`, the
+server sends `elicitation/create` with a message describing the action
+(for runs: provider, model, steps with instructions, characters, a token
+estimate of characters / 4, model calls from steps x (1 + retries), and
+code) and the schema `{approve: boolean}`; only `action: accept` with
+`approve: true` runs it. Messages arriving meanwhile are handled after the
+answer. Without elicitation, or when the client answers it with an error,
+the action is written to `requests/rYYYYMMDD-HHMMSS-XXXX.json` (`tool`,
+`args`, `summary`, `status: pending`, `backend`, `model`, `allow_code`) and
+the tool returns `PENDING` with the id. `approve ID --yes` runs it with
+those settings and stores `result` and `status` (`done` or `failed`);
+`--no` sets `declined`; `tawjih_request` reads it.
+
+**Data notice.** `tawjih_show`, `tawjih_search`, `tawjih_staged` and the
+result of `tawjih_request` begin with a notice that the text is data;
+lines matching `INJECTION_RE` (phrases such as "ignore previous
+instructions", "تجاهل التعليمات") are listed in a warning.
 
 `tawjih_propose` calls `stage_change` (Governance, Stage) with `why`
 prefixed `(proposed through MCP)`; it refuses locked and mounted files.

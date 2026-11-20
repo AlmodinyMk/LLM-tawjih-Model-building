@@ -9,7 +9,7 @@ beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.13.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.13.1, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -253,7 +253,8 @@ arXiv) publish their source; look for it before using a PDF.
 | `graph [--path NAME] [--branch REF] [--format md\|mermaid\|dot] [-o FILE]` | draw the trees or a path; the format follows the `-o` extension (`.mmd`, `.dot`, `.gv`) unless given |
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
-| `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
+| `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code] [--human-approval always\|run\|never]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
+| `approve [ID ...] [--yes \| --no]` | requests from the assistant waiting for a person: list, read, run or decline |
 | `do STATEMENTS [--file F] [--run] [--yes]` | management statements in English or Arabic, translated into commands (see [Management statements](#management-statements-do)) |
 | `lock`, `alias`, `review`, `stage`, `mount`, `sandbox`, `trace`, `release`, `snapshot`, `seal`, `verify`, `inherit`, `template`, `scaffold`, `gc`, `compact`, `format`, `archive`, `glossary`, `doctor`, `repair`, `schedule`, `trigger`, `pause`, `resume`, `cancel` | see [Governance](#governance-locks-reviews-releases-schedules) (0.10) |
 
@@ -451,6 +452,27 @@ or, in a client's configuration file:
 | `--allow-write` | `tawjih_new`, `tawjih_contract`, `tawjih_link`, `tawjih_move`, `tawjih_define_path` (replaces a path only with `replace=true`), and `tawjih_propose`: the new text of a side, kept in `stage/` until a person runs `stage --show` and `stage --apply` |
 | `--allow-run` | `tawjih_run` and `tawjih_eval`, with the provider and model given at start (`--backend`, `--model`); code steps only with `--allow-code`, and then always in the sandbox |
 
+**A person approves.** By default (`--human-approval always`) every write
+and every run waits for a person. When the client supports MCP elicitation,
+the person sees the request in the client's own dialog and answers yes or
+no. Otherwise the tool answers `PENDING` with a request id, and the person
+reads and decides in a terminal:
+
+```
+python tawjih.py approve                 # what is waiting
+python tawjih.py approve r20261120-141744-4998          # read it
+python tawjih.py approve r20261120-141744-4998 --yes    # run it (or --no)
+```
+
+The request shows what will change; for a run, also the provider and
+model, how many steps and characters will be sent (roughly how many
+tokens), how many model calls, and whether code runs. The assistant reads
+the outcome with `tawjih_request`. A request that would fail anyway (an
+unknown file, a path with code when code is not allowed) is refused at once,
+without asking. Proposals for sides need no approval here, since a person
+applies them. `--human-approval run` asks only for runs, `never` for
+nothing (the server then warns at start).
+
 What it does for safety:
 
 - **Files and trees.** One project, fixed at start; no tool takes a folder
@@ -473,11 +495,24 @@ What it does for safety:
 - **Record.** Every call goes to `history/mcp-YYYYMMDD.jsonl`: the tool,
   its arguments with free text replaced by its length, and the outcome.
 
-What it cannot do: text in your files reaches the assistant, and a file may
-contain instructions written to mislead it (prompt injection); the server
-tells the assistant to treat file content as data, which lowers the risk
-but does not remove it. Give `--allow-run` only with a provider whose cost
-and data handling you accept.
+What it cannot do alone:
+
+- **Prompt injection.** Text in your files reaches the assistant, and a file
+  may hold instructions written to mislead it. Three things answer it: file
+  text comes with a notice that it is data; lines that look like
+  instructions to an AI (in English or Arabic) are pointed out with a
+  warning; and, above all, nothing the assistant is led to do changes the
+  project or reaches a provider until a person approves it. The pattern
+  check is a heuristic: it misses some wordings and flags harmless ones.
+- **Cost and data.** A run sends project text to the provider and may cost
+  money. The person approving a run sees the provider, the model and the
+  size before anything is sent; still, start the server with
+  `--allow-run` only for a provider whose cost and data handling you
+  accept, and keep `prices.json` filled for `stats`.
+- **The client's dialog.** With elicitation the question is shown by the
+  client; a client that answered on its own would bypass the person. Use
+  `approve` in a terminal when in doubt (a client without elicitation
+  always falls back to it).
 
 ## Governance: locks, reviews, releases, schedules
 
@@ -652,6 +687,7 @@ releases/ releases and snapshots (zip files)
 archive/  archived branches
 templates/ saved templates
 stage/    proposals waiting for review           (git-ignored)
+requests/ an assistant's requests waiting for approval (git-ignored)
 quarantine/ files repair could not read        (git-ignored)
 mounts.json, schedules.json, seal.json   (optional)
 models/   adapters, merged models, GGUF files, registry.json

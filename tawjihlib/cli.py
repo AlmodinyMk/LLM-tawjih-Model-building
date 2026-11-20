@@ -5,9 +5,11 @@ SPDX-License-Identifier: CC-BY-NC-SA-4.0
 """
 
 import argparse
+import json
 import os
 import shlex
 import sys
+import time
 from pathlib import Path
 
 from .core import (
@@ -52,7 +54,7 @@ from .script import (
     translate_script,
 )
 from .mcpserver import (
-    Server, serve_stdio,
+    APPROVAL_MODES, Server, ToolError, serve_stdio,
 )
 
 
@@ -127,7 +129,12 @@ def cmd_mcp(a):
     if a.allow_code and not a.allow_run:
         die("--allow-code needs --allow-run")
     server = Server(a.project, build_parser, a.allow_write, a.allow_run,
-                    a.allow_code, a.backend, a.model or "")
+                    a.allow_code, a.backend, a.model or "", a.human_approval)
+    if a.human_approval != "always" and (a.allow_write or a.allow_run):
+        print("warning: %s without a person's approval: text in the "
+              "project's files could lead the assistant to act on it" % (
+                  "writes" if a.human_approval == "run" else
+                  "writes and runs"), file=sys.stderr)
     # the protocol gets its own copy of standard output; anything else that
     # writes to standard output (a library, a child program) goes to stderr
     proto = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8",
@@ -138,6 +145,56 @@ def cmd_mcp(a):
         Path(a.project).resolve(), ", ".join(sorted(server.allow))),
         file=sys.stderr)
     serve_stdio(server, sys.stdin, proto)
+    return 0
+
+
+def cmd_approve(a):
+    """Requests an AI assistant made through the MCP server: without IDs,
+    list those waiting; with IDs, show them, and run them with --yes or
+    decline them with --no. A request runs with the provider, model and
+    code setting the server had when it was made."""
+    rdir = Path(a.project) / "requests"
+    reqs = {f.stem: f for f in sorted(rdir.glob("r*.json"))} \
+        if rdir.is_dir() else {}
+    if not a.ids:
+        waiting = [(k, json.loads(f.read_text(encoding="utf-8")))
+                   for k, f in reqs.items()]
+        waiting = [(k, r) for k, r in waiting if r["status"] == "pending"]
+        for k, r in waiting:
+            print("%s  %s  %s" % (k, r["created"], r["tool"]))
+        print("%d request(s) waiting%s" % (len(waiting), "; read one with: "
+                                           "approve ID" if waiting else ""))
+        return 0
+    if a.yes and a.no:
+        die("--yes or --no, not both")
+    for rid in a.ids:
+        if rid not in reqs:
+            die("no request %s" % rid)
+        f = reqs[rid]
+        r = json.loads(f.read_text(encoding="utf-8"))
+        print("== %s (%s)\n%s" % (rid, r["status"], r["summary"]))
+        if r["status"] != "pending":
+            continue
+        if a.no:
+            r["status"] = "declined"
+        elif a.yes:
+            server = Server(a.project, build_parser, True, True,
+                            r["allow_code"], r["backend"], r["model"],
+                            "never")
+            try:
+                text, code = server.call(r["tool"], r["args"])
+            except ToolError as e:
+                text, code = str(e), 1
+            print(text.rstrip())
+            r.update(status="done" if not code else "failed", result=text,
+                     decided=time.strftime("%Y-%m-%d %H:%M:%S"))
+        else:
+            print("run it with: approve %s --yes   (or decline: --no)" % rid)
+            continue
+        r.setdefault("decided", time.strftime("%Y-%m-%d %H:%M:%S"))
+        f.write_text(json.dumps(r, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+        print("-> %s" % r["status"])
     return 0
 
 
@@ -874,7 +931,17 @@ def build_parser():
     s.add_argument("--backend", choices=sorted(BACKENDS), default="dry",
                    help="the provider for runs (fixed for the session)")
     s.add_argument("--model", help="the model for runs")
+    s.add_argument("--human-approval", choices=APPROVAL_MODES,
+                   default="always", help="what a person approves: always "
+                   "(writes and runs, the default), run (runs only), never")
     s.set_defaults(fn=cmd_mcp)
+
+    s = sub.add_parser("approve", help="requests from an AI assistant "
+                       "(MCP) waiting for a person: list, read, run, decline")
+    s.add_argument("ids", nargs="*", metavar="ID")
+    s.add_argument("--yes", action="store_true", help="run them")
+    s.add_argument("--no", action="store_true", help="decline them")
+    s.set_defaults(fn=cmd_approve)
 
     s = sub.add_parser("do", help="management statements: CREATE, EDIT, "
                        "MOVE, COPY, MERGE, DELETE, CHECK, GC, PATH (Arabic "
@@ -891,5 +958,5 @@ def build_parser():
 
 
 __all__ = [
-    'build_parser', 'cmd_do', 'cmd_mcp', 'main',
+    'build_parser', 'cmd_approve', 'cmd_do', 'cmd_mcp', 'main',
 ]
