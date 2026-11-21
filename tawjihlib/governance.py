@@ -1392,6 +1392,7 @@ def cmd_provider(a):
             bad += cmd_provider(a)
         return 1 if bad else 0
     if a.action in ("add", "set", "policy"):
+        existed = name in provs
         if a.action == "policy" and name not in provs:
             die("%s is not in providers.json; add it first" % name)
         if name in BACKENDS and a.kind and a.kind != name:
@@ -1428,8 +1429,7 @@ def cmd_provider(a):
         if not data["default"] and a.action == "add":
             data["default"] = name
         _save_providers(st.root, data)
-        print(("added " if a.action == "add" and name not in
-               load_providers(st.root)["providers"] else "saved ") +
+        print(("saved " if existed else "added ") +
               _provider_line(name, cfg, data))
         return 0
     if a.action == "rm":
@@ -1487,9 +1487,13 @@ def cmd_provider(a):
                 ok = got.lower().rstrip(".") == "ok"
             err = "" if ok else "unexpected answer: " + answer[:200]
         except ProviderError as e:
-            ok, usage, err = False, {}, str(e)
+            ok, usage, err = False, {"attempts": getattr(e, "attempts", 0)
+                                     }, str(e)
+        except Die as e:              # a setting is missing: no call made
+            ok, usage, err = False, {}, e.msg
         rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "provider": name,
-               "model": a.model or "", "ok": ok, "error": err,
+               "model": a.model or (provs.get(name) or {}).get("model", ""),
+               "ok": ok, "error": err,
                "seconds": round(time.time() - t0, 3),
                "attempts": usage.get("attempts", 0)}
         (st.root / "runs").mkdir(exist_ok=True)

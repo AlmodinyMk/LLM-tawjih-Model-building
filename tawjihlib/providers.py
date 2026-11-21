@@ -376,7 +376,9 @@ def call_model(store_root, backend, prompt, model="", fallback=True):
             print("  %s failed; trying %s" % (name, chain[k + 1][0]),
                   file=sys.stderr)
     if used is None:
-        raise ProviderError("every provider failed: " + " | ".join(failures))
+        err = ProviderError("every provider failed: " + " | ".join(failures))
+        err.attempts = attempts
+        raise err
     usage = dict(getattr(_usage, "last", None) or {},
                  seconds=round(time.monotonic() - t0, 3),
                  chars_in=len(sent), chars_out=len(answer),

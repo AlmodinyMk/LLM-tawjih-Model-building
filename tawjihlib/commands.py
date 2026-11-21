@@ -79,7 +79,14 @@ def _pad(text, width, right=False):
     return gap + text if right else text + gap
 
 
-def tree_lines(rows):
+def _fancy():
+    """Box and triangle characters, except in the old Windows console,
+    whose fonts lack some of them."""
+    return not (os.name == "nt" and sys.stdout.isatty() and not (
+        os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM")))
+
+
+def tree_lines(rows, fancy=True):
     """rows: [(id, parent id)] in tree order. Returns {id: the number's
     prefix}: ├─ └─ │ joining each file to its parent, ▾ before a file with
     files under it and • before one without."""
@@ -97,7 +104,7 @@ def tree_lines(rows):
         pre = "".join("   " if last[x] else "│  " for x in chain[1:])
         if chain:
             pre += "└─ " if last[i] else "├─ "
-        out[i] = pre + ("▾ " if i in kids else "• ")
+        out[i] = pre + (("▾ " if fancy else "▼ ") if i in kids else "• ")
     return out
 
 
@@ -136,8 +143,9 @@ def cmd_tree(a):
         print("no files yet (create one with: new TITLE)")
         return
     ids = {n.id for n in nodes}
+    fancy = _fancy()
     pre = tree_lines([(n.id, n.parent if n.parent in ids else "")
-                      for n in nodes])
+                      for n in nodes], fancy)
     nos = {n.id: pre[n.id] + st.number(n.id) for n in nodes}
     wn = max(display_width(x) for x in list(nos.values()) + ["No."])
     wt = min(40, max(display_width(n.title) for n in nodes))
@@ -148,13 +156,14 @@ def cmd_tree(a):
     for n in nodes:
         sides = [c if getattr(n, s).strip() else "·"
                  for c, s in zip("HICR", SECTIONS)]
-        code = "%s ┄┄ " % n.id
+        code = "%s %s " % (n.id, "┄┄" if fancy else "··")
         if col:
             code = col["dim"] + code + col["end"]
             sides = [col[c] + c + col["end"] if c in col else c
                      for c in sides]
-        title = n.title if display_width(n.title) <= wt else \
-            n.title[:wt - 1] + "…"
+        title = n.title
+        while display_width(title) > wt:
+            title = title[:-2] + "…"
         extra = ("  !" if n.is_stale() else "") + \
             (("  (%s)" % n.model) if n.model else "")
         print("%s%s  %s  %s%s" % (code, _pad(nos[n.id], wn),
@@ -421,7 +430,8 @@ def _flow_from_args(st, name, refs):
     """Build and save a flow from command-line words, or load the saved one."""
     if not re.fullmatch(r"[\w\-]+", name):
         die("path names may contain only letters, digits, '_' and '-'")
-    titles = {n.title.casefold() for n in st.nodes.values()}
+    titles = {x.casefold() for n in st.nodes.values()
+              for x in [n.title] + list(n.aliases)}
     words = []
     for r in refs or []:
         # a whole path given in one quoted word: "1 TO 1.1"

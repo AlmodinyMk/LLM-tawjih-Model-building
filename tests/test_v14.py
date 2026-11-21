@@ -186,6 +186,18 @@ class Providers(Base):
         self.assertEqual([json.loads(x)["ok"] for x in lines], [True, False])
         self.assertEqual(self.cli("provider", "test", "all")[0], 1)
 
+    def test_test_without_a_model_is_recorded(self):
+        out = self.cli("provider", "add", "nomodel", "--kind", "openai",
+                       "--base-url", "http://127.0.0.1:9/v1")[1]
+        self.assertTrue(out.startswith("added "))
+        out = self.cli("provider", "policy", "nomodel", "--retries", "0")[1]
+        self.assertTrue(out.startswith("saved "))
+        self.assertEqual(self.cli("provider", "test", "nomodel")[0], 1)
+        rec = json.loads((self.root / "runs" / "provider-tests.jsonl"
+                          ).read_text().splitlines()[-1])
+        self.assertFalse(rec["ok"])
+        self.assertIn("model", rec["error"])
+
     def test_rm_and_default(self):
         s = self.server([(200, "ok")])
         self.add("a", s.url)
@@ -414,6 +426,19 @@ class TreeColumns(Base):
         self.assertEqual(self.cli("tree", "1.1")[1],
                          self.cli("tree", "--branch", "1.1")[1])
         self.assertEqual(len(self.cli("tree", "1.1")[1].splitlines()), 3)
+
+    def test_plain_glyphs_and_long_titles(self):
+        from tawjihlib.commands import tree_lines
+        rows = [("a", ""), ("b", "a"), ("c", "a"), ("d", "b")]
+        self.assertEqual(tree_lines(rows, fancy=False),
+                         {"a": "▼ ", "b": "├─ ▼ ", "c": "└─ • ",
+                          "d": "│  └─ • "})
+        self.cli("new", "漢" * 30)
+        line = self.cli("tree")[1].splitlines()[1]
+        self.assertIn("…", line)
+        from tawjihlib.commands import display_width
+        title = line.split("  ")[-2].strip()
+        self.assertLessEqual(display_width(title), 40)
 
     def test_widths(self):
         from tawjihlib.commands import display_width
