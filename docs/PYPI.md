@@ -1,11 +1,11 @@
 # tawjih — توجيه أوامر الآلة
 
-A personal, file-based way to direct a language model. Knowledge is kept in
-trees of small files; each file has a human side (the concept, for people),
-a machine side (instructions for a model and optional Python code), a
-reading side (passages from books, with their source) and optional worked
-examples. A *path* strings files from any trees into a workflow; when it
-runs, only the machine side is sent.
+**Direct a language model through small text files that you write and
+review yourself, join them into paths, and know where every answer came
+from.** Knowledge is kept in trees of small files; each file has a human
+side, a machine side (instructions for a model and optional Python code), a
+reading side with its sources, and optional worked examples. When a path
+runs, only the machine side is sent; every run is saved and can be traced.
 
 Python 3.11 or later, standard library only, Linux and Windows.
 **Experimental:** the test suite passes, but no real AI provider has been
@@ -13,6 +13,8 @@ used with it yet.
 
 ```
 pip install tawjih
+tawjih                 # the home screen
+tawjih home start      # your first project, step by step
 tawjih init
 tawjih new "Mathematics"
 tawjih new "Algebra" --parent 1

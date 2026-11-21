@@ -4,13 +4,12 @@
 
 [![tests](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml/badge.svg)](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml) [![PyPI](https://img.shields.io/pypi/v/tawjih)](https://pypi.org/project/tawjih/) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AlmodinyMk/LLM-tawjih-Model-building/badge)](https://scorecard.dev/viewer/?uri=github.com/AlmodinyMk/LLM-tawjih-Model-building)
 
-A personal, file-based way to direct a language model. Knowledge is kept in
-trees of small files; each file has three sides; a *path* strings files
-together into a workflow that the model and your own code execute step by step.
+**Direct a language model through small text files that you write and
+review yourself, join them into paths, and know where every answer came
+from.**
 
-Python, standard library only: `tawjih.py` and the package `tawjihlib/`
-beside it. Linux and Windows, in the terminal.
-
+Runs on your computer with Ollama, or with any OpenAI-compatible or
+Anthropic provider. Python, standard library only; Linux and Windows.
 [العربية](README.ar.md)
 
 > **Status: 0.14.0, experimental.** The test suite passes on Linux and Windows.
@@ -18,7 +17,89 @@ beside it. Linux and Windows, in the terminal.
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
 
-![How Tawjih is built: interfaces, build time, the three-sided file, run time, the network, evaluation and governance, the training bridge, and the project on disk](docs/images/architecture-en.png)
+![The home screen: the sprout logo, the project at a glance and the commands as cards](docs/images/home-screen.png)
+
+## What it gives you
+
+- **Directing in plain text, reviewed before it runs.** What the model is
+  told lives in text files you read, compare and keep in git: no prompts
+  hidden in code, nothing rewritten behind your back. Writing them by hand
+  is the point; it is how engineers keep control of what a model is asked.
+  Code steps run only when you allow them, and can run in a sandbox.
+- **Answers you can trace.** Every run is saved with each step's prompt
+  and answer, and its cost in the run's record. `trace` shows which files an output came from, and
+  `--resume` replays a run from the cache without asking the model again.
+- **Checked handoffs.** A contract (JSON keys, or a JSON Schema) checks
+  each step's output before the next step sees it; with `--retries`, the
+  model is asked again when it does not fit.
+- **Knowledge that grows in trees.** Small files in up to six levels, each
+  with a human side, a machine side and a reading side that keeps its
+  sources. A path can take steps from several trees.
+- **Your models, your limits.** Local or remote providers with retries and
+  fallbacks; a project policy that can only restrict (no code, this
+  computer only, always sandboxed); redaction before anything is sent.
+- **Arabic and English.** The path language, the management statements and
+  the files themselves work in both.
+
+**Who it is for:** engineers and researchers who direct a model through
+reviewed text, keep their knowledge organised, and need to check where a
+result came from. **Who it is not for:** a quick chatbot, or building an
+application in code, where a code-first framework fits better.
+
+## Quick start
+
+```
+pip install tawjih
+tawjih                 # the home screen
+tawjih home start      # your first project, step by step
+```
+
+The example project, a quadratic equation solved across two trees, is in
+this repository. Clone it and run the example without any account:
+
+```
+git clone https://github.com/AlmodinyMk/LLM-tawjih-Model-building
+cd LLM-tawjih-Model-building
+python tawjih.py -p examples/quadratic tree
+python tawjih.py -p examples/quadratic produce branch --plan
+python tawjih.py -p examples/quadratic produce branch --input "2x² − 4x = 6" --allow-code --backend manual
+```
+
+`--backend manual` prints each prompt and waits for you to paste an answer
+(finish with a line containing only `.`). For step 1 answer
+`{"a": 2, "b": -4, "c": -6}`. With Ollama installed, use
+`--backend ollama --model llama3.2` instead.
+
+Your own project:
+
+```
+tawjih init
+tawjih new "Mathematics"
+tawjih new "Algebra" --parent 1 --open
+tawjih tree
+tawjih produce myprod 1.1 TO 1.2 --input "..." --backend ollama --model llama3.2
+```
+
+Use `-p FOLDER` before the command to work on a project elsewhere.
+
+## Contents
+
+[Screenshots](#screenshots) ·
+[The idea](#the-idea) ·
+[Cross-tree production](#cross-tree-production) ·
+[Contracts](#contracts-models-and-staleness) ·
+[Commands](#commands) ·
+[AI providers](#ai-providers) ·
+[The project's policy](#the-projects-policy) ·
+[Failures, approval, privacy and cost](#failures-approval-privacy-and-cost) ·
+[Evaluation](#examples-training-data-and-evaluation) ·
+[MCP server](#ai-assistants-the-mcp-server) ·
+[Governance](#governance-locks-reviews-releases-schedules) ·
+[Training](#training-adapters-the-neural-bridge) ·
+[Linux windows](#desktop-windows-for-linux-users) ·
+[Limitations](#limitations) ·
+[What is verified](#what-is-and-is-not-verified) ·
+[License](#license)
 
 ## Screenshots
 
@@ -34,6 +115,8 @@ In these screenshots the model's answers came over HTTP from a stand-in that
 imitates Ollama; everything else is the program's real output.
 
 ## The idea
+
+![How Tawjih is built: interfaces, build time, the three-sided file, run time, the network, evaluation and governance, the training bridge, and the project on disk](docs/images/architecture-en.png)
 
 Every file has three sides:
 
@@ -59,41 +142,6 @@ Two phases are kept apart on purpose:
 - **Run time** (`run`): only the machine side is sent. The model sees the
   step's instructions, the original request and the previous step's output,
   and nothing else. Instructions therefore have to be self-contained.
-
-## Quick start
-
-Install from PyPI (from version 0.13.1), which gives the command `tawjih`:
-
-```
-pip install tawjih
-tawjih --version
-```
-
-or clone this repository and use `python tawjih.py`, as below; the example
-project is only in the repository.
-
-
-```
-python tawjih.py -p examples/quadratic trees
-python tawjih.py -p examples/quadratic produce branch --plan
-python tawjih.py -p examples/quadratic produce branch --input "2x² − 4x = 6" --allow-code --backend manual
-```
-
-`--backend manual` prints each prompt and waits for you to paste an answer
-(finish with a line containing only `.`), so the example needs no account.
-For step 1 answer `{"a": 2, "b": -4, "c": -6}`.
-
-Your own project:
-
-```
-python tawjih.py init
-python tawjih.py new "Mathematics"
-python tawjih.py new "Algebra" --parent 1 --open
-python tawjih.py tree
-python tawjih.py produce myprod 1.1 TO 2.3 AND 1.2 TO 1.4 --input "..." --backend ollama
-```
-
-Use `-p FOLDER` before the command to work on a project elsewhere.
 
 ## Cross-tree production
 
