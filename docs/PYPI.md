@@ -27,6 +27,8 @@ tawjih tree
 - Named providers (`providers.json`): Ollama, any OpenAI-compatible server,
   Anthropic, with retries, backoff and fallback chains; keys stay in
   environment variables.
+- A home screen in the terminal (`tawjih` alone): the project at a glance,
+  the commands as cards, and `tawjih home TOPIC` explanations.
 - A project policy that can only restrict: no code, local providers only,
   always sandboxed, a least level of human approval.
 - Evaluation: cases from the examples, a path compared with the model asked

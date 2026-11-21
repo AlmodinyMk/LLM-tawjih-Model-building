@@ -355,6 +355,16 @@ class KeyValue(Base):
             self.assertIn("kind=a", (self.root / "paths" / "q.path"
                                      ).read_text().replace(" = ", "="))
 
+    def test_a_value_spelled_like_a_keyword(self):
+        for w in (("status", "=", "pass"), ("status=", "pass"),
+                  ("status=pass",)):
+            code, _, err = self.cli("path", "q", "1", "TO", "2", "IF", *w,
+                                    "ELSE", "3")
+            self.assertEqual(code, 0, (w, err))
+        code, out, err = self.go('{"status": "pass"}', "1", "TO", "2", "IF",
+                                 "status", "=", "pass", "ELSE", "3")
+        self.assertIn("group", out)
+
     def test_until_key_equals_value(self):
         code, out, err = self.go(['{"status": "fail"}', '{"status": "pass"}'],
                                  "1", "RETRY", "2", "UNTIL", "status=pass")
@@ -444,6 +454,84 @@ class TreeColumns(Base):
         from tawjihlib.commands import display_width
         self.assertEqual(display_width("مُعَادَلَة"), 6)   # marks take none
         self.assertEqual(display_width("漢字"), 4)
+
+
+class Home(Base):
+    def test_no_command_shows_the_home_screen(self):
+        self.cli("new", "A")
+        code, out, err = self.cli()
+        self.assertEqual(code, 0, err)
+        self.assertIn("Tawjih", out)
+        self.assertIn("1 tree(s) · 1 file(s)", out)
+        self.assertIn("Recommended", out)
+        self.assertEqual(out, self.cli("home")[1])
+
+    def test_outside_a_project(self):
+        from tawjihlib.home import Paint, render_home
+        out = render_home(str(self.root / "nowhere"), 100, Paint(None))
+        self.assertIn("none here", out)
+
+    def test_widths_and_colours(self):
+        from tawjihlib.commands import display_width
+        from tawjihlib.home import Paint, render_home
+        import re
+        for w in (60, 90, 130):
+            out = render_home(self.dir, w, Paint(None))
+            self.assertLessEqual(max(display_width(x)
+                                     for x in out.splitlines()), max(w, 48),
+                                 w)
+        col = render_home(self.dir, 120, Paint("true"))
+        self.assertIn("\033[38;2;", col)
+        self.assertEqual(re.sub(r"\033\[[0-9;]*m", "", col).count("Tawjih"),
+                         render_home(self.dir, 120, Paint(None)).count(
+                             "Tawjih"))
+
+    def test_topics(self):
+        from tawjihlib.home import TOPICS
+        for t in TOPICS:
+            code, out, err = self.cli("home", t)
+            self.assertEqual(code, 0, err)
+            self.assertIn(TOPICS[t][0], out)
+        self.assertNotEqual(self.cli("home", "nope")[0], 0)
+
+    def test_every_command_shown_is_accepted(self):
+        import contextlib
+        import io
+        import shlex
+        from tawjihlib.cli import build_parser
+        from tawjihlib.home import CARDS, TOPICS
+        lines = [p for _, _, cards in CARDS for c in cards
+                 for p in c[2].split(" · ")]
+        for _, parts in TOPICS.values():
+            for _, body in parts:
+                lines += [x.split("   ")[0].replace("tawjih.py ", "")
+                          for x in body.split("\n") if x.startswith(
+                              ("tawjih.py ", "provider ", "contract ",
+                               "policy "))]
+        fill = {"REF": "1", "TITLE": "x", "NAME": "n", "TEXT": "t",
+                "FILE": "f", "FILE.md": "f.md", "REFS": "1",
+                "F.json": "f.json"}
+        alone = {"init", "new", "open", "path", "produce", "run"}
+        for line in lines:
+            if line in alone:
+                continue
+            words = [fill.get(w, w) for w in shlex.split(
+                line.replace("[", "").replace("]", "").replace("...", "x"))]
+            with contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    build_parser().parse_args(words)
+                except SystemExit:
+                    self.fail("not accepted: " + line)
+
+    def test_path_examples_are_valid(self):
+        for t in "abcd":
+            self.cli("new", t)
+        for p in ("1 TO 2", "1 AND 2 TO 3", "1 TO 2 IF ok ELSE 3",
+                  "1 TO 2 IF status = pass ELSE 3", "1 AMONG 2 3 4 BY route",
+                  "EACH 2", "APPROVE 2", "2 USING m", "2 RETRY 3 UNTIL ok",
+                  "2 PICK 3"):
+            code, _, err = self.cli("path", "x", *p.split())
+            self.assertEqual(code, 0, (p, err))
 
 
 if __name__ == "__main__":

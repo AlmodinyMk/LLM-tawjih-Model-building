@@ -54,6 +54,7 @@ from .governance import (
 from .script import (
     translate_script,
 )
+from .home import TOPICS, cmd_home
 from .mcpserver import (
     APPROVAL_MODES, Server, ToolError, serve_stdio,
 )
@@ -232,7 +233,13 @@ def build_parser():
     p.add_argument("--version", action="version",
                    version="tawjih " + __version__)
     sub = p.add_subparsers(dest="cmd")
-    sub.required = True
+    p.set_defaults(fn=cmd_home)
+
+    s = sub.add_parser("home", help="the home screen: the project at a "
+                       "glance and the commands; home TOPIC explains one")
+    s.add_argument("topic", nargs="?", metavar="TOPIC",
+                   help="one of: " + ", ".join(TOPICS))
+    s.set_defaults(fn=cmd_home)
 
     s = sub.add_parser("init", help="create a project")
     s.set_defaults(fn=cmd_init)

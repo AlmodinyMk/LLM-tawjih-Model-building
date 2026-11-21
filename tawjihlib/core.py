@@ -1025,11 +1025,11 @@ class Flow:
                 raise FlowError("%s needs a word in: %s" % (what, text))
             w = tokens[pos]
             pos += 1
-            if pos + 1 < len(tokens) and tokens[pos] == "=" and \
-                    not _kw(tokens[pos + 1]):
+            # after '=' comes a value, even one spelled like a keyword
+            # (status = pass)
+            if pos + 1 < len(tokens) and tokens[pos] == "=":
                 w, pos = w + "=" + tokens[pos + 1], pos + 2
-            elif w.endswith("=") and pos < len(tokens) and \
-                    not _kw(tokens[pos]):
+            elif w.endswith("=") and pos < len(tokens):
                 w, pos = w + tokens[pos], pos + 1
             elif "=" not in w and pos < len(tokens) and \
                     tokens[pos].startswith("=") and len(tokens[pos]) > 1:

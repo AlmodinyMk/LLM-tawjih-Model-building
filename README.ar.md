@@ -1,5 +1,7 @@
 <div dir="rtl">
 
+<img src="docs/images/logo.png" alt="شعار توجيه: نبتة مرسومة بالنقاط" width="120" align="left">
+
 # tawjih — توجيه أوامر الآلة
 
 [![tests](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml/badge.svg)](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml) [![PyPI](https://img.shields.io/pypi/v/tawjih)](https://pypi.org/project/tawjih/) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AlmodinyMk/LLM-tawjih-Model-building/badge)](https://scorecard.dev/viewer/?uri=github.com/AlmodinyMk/LLM-tawjih-Model-building)
@@ -225,6 +227,17 @@ python tawjih.py generate review --accept
 `deposit BOOK --part 3 --part 4` يُبقي هذين الفصلين فقط (برقمهما أو عنوانهما).
 أودع الكتاب كاملاً بهذه الطريقة لا ملف فصل وحده، حتى يبقى الترقيم ترقيم الكتاب.
 كثير من الكتب المفتوحة (PreTeXt، وLaTeX على arXiv) تنشر مصدرها، فابحث عنه قبل PDF.
+
+## الشاشة الرئيسية
+
+`tawjih.py` وحده، أو `tawjih.py home`، يعرض شعار النبتة، وحال المشروع في هذا
+المجلد (الملفات والمسارات والمزوّد الافتراضي والسياسة)، والأوامر الرئيسية في
+بطاقات. و`tawjih.py home TOPIC` يشرح موضوعاً واحداً: start وfiles وpaths
+وcontracts وproviders وsafety وmcp وtraining. تظهر الألوان في الطرفيات التي
+تعرضها (Windows Terminal وأغلب طرفيات لينكس وماك)، ويوقفها `NO_COLOR`. والشاشة
+بالإنجليزية لأن الطرفيات لا تعرض النص من اليمين إلى اليسار عرضاً موثوقاً.
+
+![الشاشة الرئيسية](docs/images/home-screen.png)
 
 ## الأوامر
 

@@ -1,3 +1,5 @@
+<img src="docs/images/logo.png" alt="Tawjih logo: a sprout drawn in pixels" width="120" align="right">
+
 # tawjih — توجيه أوامر الآلة
 
 [![tests](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml/badge.svg)](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/actions/workflows/tests.yml) [![PyPI](https://img.shields.io/pypi/v/tawjih)](https://pypi.org/project/tawjih/) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AlmodinyMk/LLM-tawjih-Model-building/badge)](https://scorecard.dev/viewer/?uri=github.com/AlmodinyMk/LLM-tawjih-Model-building)
@@ -248,6 +250,18 @@ exponents, arrows and fractions come out broken (`271³²¹` becomes `271321`).
 title). Deposit the whole book this way rather than a single chapter file,
 so the numbering is the book's own. Many open textbooks (PreTeXt, LaTeX on
 arXiv) publish their source; look for it before using a PDF.
+
+## The home screen
+
+`tawjih.py` alone, or `tawjih.py home`, shows the sprout logo, the project
+in this folder at a glance (files, paths, the default provider, the
+policy) and the main commands as cards. `tawjih.py home TOPIC` explains one
+topic: start, files, paths, contracts, providers, safety, mcp, training.
+Colours appear on terminals that show them (Windows Terminal, most Linux
+and macOS terminals); `NO_COLOR` turns them off. The screen is in English,
+because terminals do not lay out right-to-left text reliably.
+
+![The home screen](docs/images/home-screen.png)
 
 ## Commands
 
