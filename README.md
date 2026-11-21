@@ -13,7 +13,7 @@ beside it. Linux and Windows, in the terminal.
 
 [العربية](README.ar.md)
 
-> **Status: 0.13.1, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.14.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -267,6 +267,7 @@ because terminals do not lay out right-to-left text reliably.
 
 | Command | Purpose |
 |---|---|
+| `home [TOPIC]` | the home screen (also `tawjih.py` alone), or an explanation of one topic |
 | `init` | create a project in the current folder |
 | `new TITLE [--parent REF] [--level L] [--open]` | create a file |
 | `open REF [--editor CMD] [--reading]` | open one editor per side; save on close |

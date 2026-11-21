@@ -272,8 +272,11 @@ def _pad(text, width):
 # ------------------------------------------------------------- the project
 def project_facts(root):
     """(label, text, colour) lines about the project in this folder."""
+    import contextlib
+    import io
     try:
-        st = Store(root)
+        with contextlib.redirect_stderr(io.StringIO()):  # no "error:" line
+            st = Store(root)
     except SystemExit:
         return [("Project  ", "none here; start with: tawjih.py init",
                  "peach")]
@@ -306,7 +309,8 @@ def project_facts(root):
         out.append(("Provider ", "dry run; add one with: provider add",
                     "sub"))
     try:
-        pol = load_policy(st.root)
+        with contextlib.redirect_stderr(io.StringIO()):
+            pol = load_policy(st.root)
     except SystemExit:
         out.append(("Policy   ", "tawjih.policy.json is broken", "peach"))
         return out

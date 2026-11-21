@@ -468,8 +468,18 @@ class Home(Base):
 
     def test_outside_a_project(self):
         from tawjihlib.home import Paint, render_home
-        out = render_home(str(self.root / "nowhere"), 100, Paint(None))
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = render_home(str(self.root / "nowhere"), 100, Paint(None))
         self.assertIn("none here", out)
+        self.assertEqual(err.getvalue(), "")
+        (self.root / "tawjih.policy.json").write_text("{bad")
+        with contextlib.redirect_stderr(err):
+            out = render_home(self.dir, 100, Paint(None))
+        self.assertIn("broken", out)
+        self.assertEqual(err.getvalue(), "")
 
     def test_widths_and_colours(self):
         from tawjihlib.commands import display_width

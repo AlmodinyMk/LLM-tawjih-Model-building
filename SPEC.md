@@ -1,4 +1,4 @@
-# Tawjih specification (0.13.1)
+# Tawjih specification (0.14.0)
 
 This is the contract the program and the tests follow.
 
@@ -160,7 +160,7 @@ in brackets.
 | `A TO B` [إلى] | A's output is B's input |
 | `A TO B AND C` [و] | A's output goes to both B and C |
 | `B AND C TO D` | D receives the outputs of B and C together |
-| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false |
+| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`, `key= value` or `key =value`; the word after `=` is always the value, even one spelled like a keyword, such as `pass`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false |
 | `A AMONG B C D` [بين] | A decides: the candidate named first in A's output (by number, id or title) is the only one that runs; if none is named and exactly one candidate's `expects` accepts the output, that one runs |
 | `A AMONG B C D BY key` [حسب] | A's output must be a JSON object; the value of its top-level `key` (case-insensitive) must equal, ignoring case, a candidate's id, number, title or alias, and that one runs. Otherwise the step fails with the reason; nothing is guessed from the rest of the text |
 | `A TO D THROUGH B C` [عبر] | A → B → C → D |
