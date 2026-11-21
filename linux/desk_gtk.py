@@ -21,6 +21,7 @@ from desk_core import (AI_BACKENDS, CHAT_CONTEXT_LIMIT, SIDES,  # noqa: E402
 
 WAITING = "Waiting for another AI request of this program to finish …"
 SCHEME = None          # the code editor's colours, set by apply_theme
+PAL = None             # the theme's colours, set by apply_theme
 
 CSS = """
 window, dialog, .background { background-color: @base; color: @text; }
@@ -76,15 +77,18 @@ menu, .menu, popover, .popover { background-color: @mantle; color: @text;
 menuitem:hover { background-color: @accent; color: @on_accent; }
 tooltip, tooltip * { background-color: @crust; color: @text; }
 progressbar progress { background-color: @accent; }
+treeview.view.files { -GtkTreeView-tree-line-width: 1;
+  -GtkTreeView-tree-line-pattern: ""; border-color: @surface2; }
 """
 
 
 def apply_theme(theme):
     """Dark or light colours for every window, or the desktop's own."""
-    global SCHEME
+    global SCHEME, PAL
     pal = palette(theme)
     if pal is None:
         return
+    PAL = pal
     Gtk.Settings.get_default().set_property(
         "gtk-application-prefer-dark-theme", theme == "dark")
     css = "".join("@define-color %s %s;\n" % kv for kv in pal.items()) + CSS
@@ -512,16 +516,47 @@ class Proposal(Gtk.Box):
 
 
 class FileList(Gtk.TreeView):
-    """The trees of the project; reports the selected file id."""
+    """The trees of the project: each file's code (its stable id), its
+    number on lines joining it to its parent, its title and its sides;
+    reports the selected file id."""
+
+    SIDE_COLORS = {"H": "blue", "I": "green", "C": "peach", "R": "yellow"}
 
     def __init__(self, on_select):
-        self.store = Gtk.TreeStore(str, str, str, str)
+        self.store = Gtk.TreeStore(str, str, str, str, str)
         super().__init__(model=self.store)
-        for i, title in enumerate(("No.", "Title", "Sides")):
-            self.append_column(Gtk.TreeViewColumn(
-                title, Gtk.CellRendererText(), text=i))
+        self.get_style_context().add_class("files")
+        self.set_enable_tree_lines(True)
+        self.set_level_indentation(4)
+        dim = PAL["overlay1"] if PAL else "gray"
+        code = Gtk.CellRendererText(family="Monospace", foreground=dim,
+                                    scale=0.9)
+        num = Gtk.CellRendererText(family="Monospace", weight=600)
+        title = Gtk.CellRendererText(xalign=1.0)
+        sides = Gtk.CellRendererText(family="Monospace")
+        cols = [Gtk.TreeViewColumn("Code", code, text=0),
+                Gtk.TreeViewColumn("No.", num, text=1),
+                Gtk.TreeViewColumn("Title", title, text=2),
+                Gtk.TreeViewColumn("Sides", sides, markup=3)]
+        cols[2].set_expand(True)
+        for c in cols:
+            c.set_resizable(True)
+            self.append_column(c)
+        self.set_expander_column(cols[1])
         self._filling, self._on_select = False, on_select
         self.get_selection().connect("changed", self._changed)
+
+    def _sides(self, flags):
+        out = []
+        for c in flags:
+            if c == "-":
+                out.append('<span alpha="35%">·</span>')
+            elif PAL:
+                out.append('<span foreground="%s">%s</span>'
+                           % (PAL[self.SIDE_COLORS[c]], c))
+            else:
+                out.append(c)
+        return " ".join(out)
 
     def fill(self, rows, keep=None):
         self._filling = True
@@ -530,7 +565,8 @@ class FileList(Gtk.TreeView):
         for r in rows:
             iters[r["id"]] = self.store.append(
                 iters.get(r["parent"]),
-                [r["number"], r["title"], r["flags"], r["id"]])
+                [r["id"], r["number"], r["title"], self._sides(r["flags"]),
+                 r["id"]])
         self.expand_all()
         if keep in iters:
             self.get_selection().select_iter(iters[keep])
@@ -538,7 +574,7 @@ class FileList(Gtk.TreeView):
 
     def select(self, nid):
         def visit(model, path, it):
-            if model[it][3] == nid:
+            if model[it][4] == nid:
                 self.get_selection().select_iter(it)
                 return True
             return False
@@ -551,7 +587,7 @@ class FileList(Gtk.TreeView):
             return
         model, it = selection.get_selected()
         if it is not None:
-            self._on_select(model[it][3])
+            self._on_select(model[it][4])
 
 
 # ------------------------------------------------------- window 1: library
@@ -719,7 +755,7 @@ class EditorWindow(DeskWindow):
         paned = Gtk.Paned()
         paned.pack1(scrolled(self.files), False, False)
         paned.pack2(self.right, True, False)
-        paned.set_position(360)
+        paned.set_position(540)
         self.box.pack_start(paned, True, True, 0)
         self.refresh()
 
@@ -800,7 +836,7 @@ class EditorWindow(DeskWindow):
 
 
 class HumanWindow(EditorWindow):
-    TITLE, SIZE, EDIT_SIDES = "Human concept", (1040, 660), ("human",)
+    TITLE, SIZE, EDIT_SIDES = "Human concept", (1220, 680), ("human",)
 
     def build_editors(self):
         self.editors["human"] = text_view()
@@ -829,7 +865,7 @@ class HumanWindow(EditorWindow):
 
 
 class CodeWindow(EditorWindow):
-    TITLE, SIZE = "Machine language", (1120, 780)
+    TITLE, SIZE = "Machine language", (1300, 780)
     EDIT_SIDES = ("instructions", "code")
 
     def build_editors(self):

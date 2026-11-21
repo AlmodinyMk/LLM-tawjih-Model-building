@@ -30,6 +30,13 @@ Latte, MIT licence). Nothing is installed for them: GTK gets a style sheet
 and a GtkSourceView colour scheme, Tkinter a ttk style. `--theme system`
 keeps the desktop's own look, as before.
 
+The list of files in the human and machine-language windows has four
+columns: **Code** (the file's stable id), **No.** (its number, on lines
+joining it to its parent: ▾ marks a file with files under it), **Title**
+(right-aligned for Arabic), and **Sides** (H human, I instructions, C code,
+R reading; a dot for an empty side, each letter in its own colour in GTK).
+In Tkinter the lines are drawn with ├─ └─ │, and the tree cannot be folded.
+
 ## Toolkits
 
 Two front ends give the same four windows. GTK is used when it is available,

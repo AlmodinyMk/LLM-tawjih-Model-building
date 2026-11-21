@@ -542,16 +542,22 @@ class Proposal(ttk.Frame):
 
 
 class FileList(ttk.Frame):
+    """The trees of the project: each file's code (its stable id), its
+    number on lines joining it to its parent, its title and its sides."""
+
     def __init__(self, parent, on_select):
         super().__init__(parent)
-        self.tree = ttk.Treeview(self, columns=("title", "sides"),
-                                 selectmode="browse", height=12)
-        self.tree.heading("#0", text="No.")
-        self.tree.heading("title", text="Title")
-        self.tree.heading("sides", text="Sides")
-        self.tree.column("#0", width=120)
-        self.tree.column("title", width=170)
-        self.tree.column("sides", width=50)
+        cols = ("code", "no", "title", "sides")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings",
+                                 selectmode="browse", height=12,
+                                 style="Files.Treeview")
+        for c, head, width, anchor in (("code", "Code", 70, "w"),
+                                       ("no", "No.", 180, "w"),
+                                       ("title", "Title", 200, "e"),
+                                       ("sides", "Sides", 80, "center")):
+            self.tree.heading(c, text=head, anchor="w")
+            self.tree.column(c, width=width, anchor=anchor,
+                             stretch=c == "title")
         sb = ttk.Scrollbar(self, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -559,12 +565,52 @@ class FileList(ttk.Frame):
         self._filling, self._on_select = False, on_select
         self.tree.bind("<<TreeviewSelect>>", self._changed)
 
+    def _pads(self):
+        """'│' and blank pieces as wide as '├─ ' in the tree's font."""
+        import tkinter.font as tkfont
+        try:
+            f = tkfont.nametofont(ttk.Style(self).lookup("Treeview", "font")
+                                  or "TkDefaultFont")
+        except tk.TclError:
+            f = tkfont.nametofont("TkDefaultFont")
+        unit = f.measure("├─ ")
+
+        def fill(start):
+            while f.measure(start + " ") <= unit:
+                start += " "
+            return start
+        return fill("│"), fill("")
+
+    def branches(self, rows):
+        """Each row's number drawn on lines: ├─ └─ │ and ▾ for a parent."""
+        bar, blank = self._pads()
+        kids = {}
+        for r in rows:
+            kids.setdefault(r["parent"] or "", []).append(r["id"])
+        last = {i: k[-1] == i for k in kids.values() for i in k}
+        parent = {r["id"]: r["parent"] or "" for r in rows}
+        out = {}
+        for r in rows:
+            chain, p = [], parent[r["id"]]
+            while p:
+                chain.insert(0, p)
+                p = parent.get(p, "")
+            pre = "".join(blank if last[a] else bar for a in chain[1:])
+            if chain:
+                pre += "└─ " if last[r["id"]] else "├─ "
+            mark = "▾ " if r["id"] in kids else "• "
+            out[r["id"]] = pre + mark + r["number"]
+        return out
+
     def fill(self, rows, keep=None):
         self._filling = True
         self.tree.delete(*self.tree.get_children(""))
+        drawn = self.branches(rows)
         for r in rows:
-            self.tree.insert(r["parent"], "end", iid=r["id"], open=True,
-                             text=r["number"], values=(r["title"], r["flags"]))
+            sides = " ".join(c if c != "-" else "·" for c in r["flags"])
+            self.tree.insert("", "end", iid=r["id"],
+                             values=(r["id"], drawn[r["id"]], r["title"],
+                                     sides))
         if keep and self.tree.exists(keep):
             self.tree.selection_set(keep)
         self.update_idletasks()
@@ -574,6 +620,7 @@ class FileList(ttk.Frame):
         self._filling = True
         if nid and self.tree.exists(nid):
             self.tree.selection_set(nid)
+            self.tree.see(nid)
         self.update_idletasks()
         self._filling = False
 
@@ -735,8 +782,14 @@ class EditorWindow(DeskWindow):
         self.heading.pack(anchor="w")
         self.build_editors()
         self.proposal = Proposal(self.right)
-        panes.add(self.files, weight=1)
+        panes.add(self.files, weight=2)
         panes.add(self.right, weight=3)
+
+        def place_sash(event):      # once the window has its size
+            if event.width > 700:
+                panes.sashpos(0, min(560, event.width // 2))
+                panes.unbind("<Configure>")
+        panes.bind("<Configure>", place_sash)
         self.refresh()
 
     def build_editors(self):
@@ -813,7 +866,7 @@ class EditorWindow(DeskWindow):
 
 
 class HumanWindow(EditorWindow):
-    TITLE, SIZE, EDIT_SIDES = "Human concept", "980x640", ("human",)
+    TITLE, SIZE, EDIT_SIDES = "Human concept", "1220x680", ("human",)
 
     def build_editors(self):
         f, self.editors["human"] = text_box(self.right, height=6)
@@ -843,7 +896,7 @@ class HumanWindow(EditorWindow):
 
 
 class CodeWindow(EditorWindow):
-    TITLE, SIZE = "Machine language", "1120x780"
+    TITLE, SIZE = "Machine language", "1300x780"
     EDIT_SIDES = ("instructions", "code")
 
     def build_editors(self):
