@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from desk_core import (AI_BACKENDS, CHAT_CONTEXT_LIMIT, SIDES, STATUSES, Desk,
-                       DeskError, ai_busy)
+                       DeskError, ai_busy, palette)
 
 WAITING = "Waiting for another AI request of this program to finish …"
 
@@ -25,6 +25,76 @@ TOKEN = re.compile(
     r"|(?P<kw>\b(?:%s)\b)" % "|".join(keyword.kwlist))
 COLORS = {"com": "#6a737d", "str": "#0a7d33", "num": "#b5450b",
           "kw": "#7c2fb8"}
+GUTTER = {"bg": "#eeeeee", "fg": "#777777", "err": "#ffd6d6"}
+
+
+def apply_theme(root, theme):
+    """Dark or light colours for every window, or Tk's own look."""
+    pal = palette(theme)
+    if pal is None:
+        return
+    COLORS.update(com=pal["overlay1"], str=pal["green"], num=pal["peach"],
+                  kw=pal["accent"])
+    GUTTER.update(bg=pal["crust"], fg=pal["overlay0"], err=pal["surface1"])
+    for opt, val in (("background", pal["mantle"]),
+                     ("foreground", pal["text"]),
+                     ("insertBackground", pal["accent"]),
+                     ("selectBackground", pal["accent"]),
+                     ("selectForeground", pal["on_accent"]),
+                     ("highlightThickness", 1),
+                     ("highlightBackground", pal["surface0"]),
+                     ("highlightColor", pal["accent"]),
+                     ("borderWidth", 0), ("relief", "flat")):
+        root.option_add("*Text.%s" % opt, val)
+    for opt, val in (("background", pal["mantle"]),
+                     ("foreground", pal["text"]),
+                     ("selectBackground", pal["accent"]),
+                     ("selectForeground", pal["on_accent"])):
+        root.option_add("*TCombobox*Listbox.%s" % opt, val)
+    root.configure(background=pal["base"])
+    root.option_add("*Toplevel.background", pal["base"])
+    st = ttk.Style(root)
+    st.theme_use("clam")
+    st.configure(".", background=pal["base"], foreground=pal["text"],
+                 fieldbackground=pal["mantle"], bordercolor=pal["surface1"],
+                 darkcolor=pal["base"], lightcolor=pal["base"],
+                 troughcolor=pal["base"], focuscolor=pal["accent"],
+                 selectbackground=pal["accent"],
+                 selectforeground=pal["on_accent"],
+                 insertcolor=pal["accent"], arrowcolor=pal["subtext"])
+    st.map(".", foreground=[("disabled", pal["overlay0"])])
+    st.configure("TButton", background=pal["surface0"], padding=(12, 5),
+                 relief="flat", bordercolor=pal["surface1"])
+    st.map("TButton", background=[("disabled", pal["mantle"]),
+                                  ("pressed", pal["surface2"]),
+                                  ("active", pal["surface1"])])
+    for w in ("TEntry", "TCombobox"):
+        st.configure(w, padding=(8, 5), fieldbackground=pal["mantle"],
+                     foreground=pal["text"], bordercolor=pal["surface1"])
+        st.map(w, bordercolor=[("focus", pal["accent"])],
+               fieldbackground=[("readonly", pal["mantle"])],
+               foreground=[("disabled", pal["overlay0"])])
+    st.configure("TCheckbutton", indicatorbackground=pal["mantle"],
+                 indicatorforeground=pal["on_accent"])
+    st.map("TCheckbutton",
+           indicatorbackground=[("selected", pal["accent"])],
+           background=[("active", pal["base"])])
+    st.configure("Treeview", background=pal["mantle"],
+                 fieldbackground=pal["mantle"], foreground=pal["text"],
+                 bordercolor=pal["surface0"], rowheight=24)
+    st.map("Treeview", background=[("selected", pal["accent"])],
+           foreground=[("selected", pal["on_accent"])])
+    st.configure("Treeview.Heading", background=pal["base"],
+                 foreground=pal["subtext"], relief="flat",
+                 bordercolor=pal["surface0"], padding=(6, 4))
+    st.map("Treeview.Heading", background=[("active", pal["surface0"])])
+    st.configure("TScrollbar", background=pal["surface1"],
+                 troughcolor=pal["base"], bordercolor=pal["base"],
+                 arrowcolor=pal["subtext"], relief="flat")
+    st.map("TScrollbar", background=[("active", pal["overlay0"])])
+    st.configure("TPanedwindow", background=pal["surface0"])
+    st.configure("Sash", sashthickness=4, gripcount=0,
+                 background=pal["surface0"])
 
 
 # ------------------------------------------------------------------ helpers
@@ -129,7 +199,7 @@ class CodeText(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.gutter = tk.Text(self, width=4, font=MONO, state="disabled",
-                              bg="#eeeeee", fg="#777777", bd=0, pady=6,
+                              bg=GUTTER["bg"], fg=GUTTER["fg"], bd=0, pady=6,
                               takefocus=0, height=6)
         self.text = tk.Text(self, wrap="none", undo=True, font=MONO, padx=6,
                             pady=6, height=6)
@@ -141,7 +211,7 @@ class CodeText(ttk.Frame):
         self.text.pack(side="left", fill="both", expand=True)
         for tag, color in COLORS.items():
             self.text.tag_configure(tag, foreground=color)
-        self.text.tag_configure("err", background="#ffd6d6")
+        self.text.tag_configure("err", background=GUTTER["err"])
         self.text.bind("<Return>", self._newline)
         self.text.bind("<Tab>", self._tab)
         self.text.bind("<BackSpace>", self._backspace)
@@ -947,10 +1017,11 @@ WINDOWS = {"library": LibraryWindow, "human": HumanWindow,
 
 
 class App:
-    def __init__(self, desk):
+    def __init__(self, desk, theme="dark"):
         self.project, self.windows = desk.project, []
         self.root = tk.Tk()
         self.root.withdraw()
+        apply_theme(self.root, theme)
         self.results = queue.Queue()
         self._poll()
 
@@ -975,7 +1046,7 @@ class App:
             self.root.quit()
 
 
-def main(desk, names):
-    app = App(desk)
+def main(desk, names, theme="dark"):
+    app = App(desk, theme)
     app.open(names)
     app.root.mainloop()

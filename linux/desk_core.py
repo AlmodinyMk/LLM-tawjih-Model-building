@@ -18,6 +18,32 @@ import tawjih  # noqa: E402
 
 SIDES = tawjih.SECTIONS
 AI_BACKENDS = ["ollama", "openai", "anthropic"]
+
+# Colours of the windows: Catppuccin Mocha (dark) and Latte (light), from
+# https://github.com/catppuccin/palette (MIT licence). "system" keeps the
+# desktop's own look.
+THEMES = ("dark", "light", "system")
+PALETTES = {
+    "dark": {"base": "#1e1e2e", "mantle": "#181825", "crust": "#11111b",
+             "surface0": "#313244", "surface1": "#45475a",
+             "surface2": "#585b70", "overlay0": "#6c7086",
+             "overlay1": "#7f849c", "text": "#cdd6f4", "subtext": "#a6adc8",
+             "accent": "#cba6f7", "blue": "#89b4fa", "green": "#a6e3a1",
+             "peach": "#fab387", "red": "#f38ba8", "yellow": "#f9e2af",
+             "on_accent": "#11111b"},
+    "light": {"base": "#eff1f5", "mantle": "#e6e9ef", "crust": "#dce0e8",
+              "surface0": "#ccd0da", "surface1": "#bcc0cc",
+              "surface2": "#acb0be", "overlay0": "#9ca0b0",
+              "overlay1": "#8c8fa1", "text": "#4c4f69", "subtext": "#6c6f85",
+              "accent": "#8839ef", "blue": "#1e66f5", "green": "#40a02b",
+              "peach": "#fe640b", "red": "#d20f39", "yellow": "#df8e1d",
+              "on_accent": "#eff1f5"},
+}
+
+
+def palette(theme):
+    """The colours of a theme, or None for the desktop's own."""
+    return PALETTES.get(theme)
 STATUSES = ["todo", "doing", "done"]
 
 PROMPTS = {

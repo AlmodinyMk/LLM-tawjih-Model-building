@@ -18,7 +18,17 @@ its own, and closing one leaves the others running.
 python3 linux/tawjih_desk.py -p PROJECT              # all four windows
 python3 linux/tawjih_desk.py -p PROJECT code plan    # only these two
 python3 linux/tawjih_desk.py -p PROJECT --toolkit tk # force Tkinter
+python3 linux/tawjih_desk.py -p PROJECT --theme light   # light colours
 ```
+
+## Themes
+
+`--theme dark` (the default) and `--theme light` colour every window, both
+toolkits and the code editor alike, with the free
+[Catppuccin](https://github.com/catppuccin/palette) palettes (Mocha and
+Latte, MIT licence). Nothing is installed for them: GTK gets a style sheet
+and a GtkSourceView colour scheme, Tkinter a ttk style. `--theme system`
+keeps the desktop's own look, as before.
 
 ## Toolkits
 

@@ -631,7 +631,8 @@ installed TRL knows, and say what they left out.
 windows over a project: books and research, the human concept, machine
 language, and search with a task schedule. Each window has a side
 conversation with the AI that cannot change the project. It runs on GTK 3 or
-Tkinter, in English, with optional AI help. Everything else in this
+Tkinter, in English, with optional AI help, in dark colours by default
+(`--theme light` or `--theme system` for others). Everything else in this
 repository works on Linux and Windows. See
 [linux/README.md](linux/README.md).
 

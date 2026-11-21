@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from desk_core import Desk, DeskError  # noqa: E402
+from desk_core import THEMES, Desk, DeskError  # noqa: E402
 
 NAMES = ["library", "human", "code", "plan"]
 HELP = """No window toolkit was found. Install one of:
@@ -52,6 +52,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("-p", "--project", default=".", help="project folder")
     p.add_argument("--toolkit", choices=["auto", "gtk", "tk"], default="auto")
+    p.add_argument("--theme", choices=list(THEMES), default="dark",
+                   help="dark or light colours, or the desktop's own "
+                   "(default: dark)")
     p.add_argument("windows", nargs="*", metavar="WINDOW",
                    help="any of: %s (default: all)" % ", ".join(NAMES))
     a = p.parse_args()
@@ -69,7 +72,7 @@ def main():
         sys.exit("error: no graphical display found. Run this inside a "
                  "desktop session (over SSH, use: ssh -X).")
     ui, _ = load_toolkit(a.toolkit)
-    ui.main(desk, a.windows or NAMES)
+    ui.main(desk, a.windows or NAMES, a.theme)
 
 
 if __name__ == "__main__":

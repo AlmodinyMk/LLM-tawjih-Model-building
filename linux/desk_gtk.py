@@ -17,9 +17,126 @@ for _ver in ("4", "3.0"):
         continue
 
 from desk_core import (AI_BACKENDS, CHAT_CONTEXT_LIMIT, SIDES,  # noqa: E402
-                       STATUSES, DeskError, ai_busy)
+                       STATUSES, DeskError, ai_busy, palette)
 
 WAITING = "Waiting for another AI request of this program to finish …"
+SCHEME = None          # the code editor's colours, set by apply_theme
+
+CSS = """
+window, dialog, .background { background-color: @base; color: @text; }
+label { color: @text; }
+label.dim-label, .dim-label { color: @subtext; }
+textview, textview text, treeview.view, entry, spinbutton, iconview {
+  background-color: @mantle; color: @text; }
+textview text selection, treeview.view:selected, entry selection,
+  label selection {
+  background-color: @accent; color: @on_accent; }
+treeview.view:hover:not(:selected) { background-color: @surface0; }
+treeview.view header button {
+  background-image: none; background-color: @base; color: @subtext;
+  border: none; border-bottom: 1px solid @surface0; box-shadow: none;
+  font-weight: bold; padding: 4px 8px; }
+scrolledwindow { border-radius: 8px; }
+scrolledwindow, frame > border { border-color: @surface0; }
+entry, spinbutton, combobox button.combo {
+  background-image: none; border: 1px solid @surface1; border-radius: 8px;
+  box-shadow: none; min-height: 30px; padding: 0 10px; }
+entry:focus { border-color: @accent; box-shadow: 0 0 0 1px @accent; }
+button {
+  background-image: none; background-color: @surface0; color: @text;
+  border: 1px solid @surface1; border-radius: 8px; box-shadow: none;
+  text-shadow: none; padding: 5px 12px; min-height: 22px; }
+button:hover { background-color: @surface1; border-color: @overlay0; }
+button:active, button:checked { background-color: @surface2; }
+button:disabled { background-color: @base; color: @overlay0;
+  border-color: @surface0; }
+button:disabled label { color: @overlay0; }
+button.suggested-action { background-color: @accent; color: @on_accent;
+  border-color: @accent; }
+button.suggested-action label { color: @on_accent; }
+check, radio { background-image: none; background-color: @mantle;
+  border: 1px solid @overlay0; color: @on_accent; }
+check:checked, radio:checked { background-color: @accent;
+  border-color: @accent; }
+scrollbar, scrollbar trough { background-color: transparent;
+  border: none; }
+scrollbar slider { background-color: @surface1; border-radius: 6px;
+  min-width: 8px; min-height: 8px; border: none; }
+scrollbar slider:hover { background-color: @overlay0; }
+paned > separator, paned.wide > separator {
+  background-image: none; background-color: @surface0; min-width: 4px;
+  min-height: 4px; margin: 0 2px; }
+paned > separator:hover { background-color: @accent; }
+scrolledwindow undershoot, scrolledwindow overshoot {
+  background-image: none; background-color: transparent; }
+scrolledwindow > border, scrolledwindow.frame { border: 1px solid @surface0;
+  border-radius: 8px; }
+menu, .menu, popover, .popover { background-color: @mantle; color: @text;
+  border: 1px solid @surface1; }
+menuitem:hover { background-color: @accent; color: @on_accent; }
+tooltip, tooltip * { background-color: @crust; color: @text; }
+progressbar progress { background-color: @accent; }
+"""
+
+
+def apply_theme(theme):
+    """Dark or light colours for every window, or the desktop's own."""
+    global SCHEME
+    pal = palette(theme)
+    if pal is None:
+        return
+    Gtk.Settings.get_default().set_property(
+        "gtk-application-prefer-dark-theme", theme == "dark")
+    css = "".join("@define-color %s %s;\n" % kv for kv in pal.items()) + CSS
+    provider = Gtk.CssProvider()
+    provider.load_from_data(css.encode("utf-8"))
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    if GtkSource is not None:
+        SCHEME = _source_scheme(theme, pal)
+
+
+def _source_scheme(theme, pal):
+    """A GtkSourceView colour scheme from the same palette."""
+    import tempfile
+    sid = "tawjih-" + theme
+    folder = os.path.join(tempfile.gettempdir(), "tawjih-styles-%d"
+                          % os.getuid())
+    os.makedirs(folder, exist_ok=True)
+    styles = [("text", "text", "base"), ("selection", "on_accent", "accent"),
+              ("current-line", None, "mantle"),
+              ("line-numbers", "overlay0", "crust"),
+              ("bracket-match", "text", "surface1"),
+              ("def:comment", "overlay1", None), ("def:string", "green", None),
+              ("def:number", "peach", None), ("def:keyword", "accent", None),
+              ("def:statement", "accent", None), ("def:type", "yellow", None),
+              ("def:function", "blue", None), ("def:builtin", "red", None),
+              ("def:constant", "peach", None),
+              ("def:special-char", "peach", None),
+              ("def:preprocessor", "blue", None),
+              ("def:error", "red", None)]
+    rows = []
+    for name, fg, bg in styles:
+        attrs = ['name="%s"' % name]
+        if fg:
+            attrs.append('foreground="%s"' % pal[fg])
+        if bg:
+            attrs.append('background="%s"' % pal[bg])
+        if name == "def:comment":
+            attrs.append('italic="true"')
+        rows.append("  <style %s/>" % " ".join(attrs))
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n<style-scheme id="%s" '
+           'name="Tawjih %s" version="1.0">\n%s\n</style-scheme>\n'
+           % (sid, theme, "\n".join(rows)))
+    with open(os.path.join(folder, sid + ".xml"), "w",
+              encoding="utf-8") as f:
+        f.write(xml)
+    mgr = GtkSource.StyleSchemeManager.get_default()
+    if folder not in mgr.get_search_path():
+        mgr.append_search_path(folder)
+    mgr.force_rescan()
+    return mgr.get_scheme(sid)
 
 
 # ------------------------------------------------------------------ helpers
@@ -719,6 +836,8 @@ class CodeWindow(EditorWindow):
         self.editors["instructions"] = text_view()
         if GtkSource is not None:
             buf = GtkSource.Buffer()
+            if SCHEME is not None:
+                buf.set_style_scheme(SCHEME)
             buf.set_language(
                 GtkSource.LanguageManager.get_default().get_language("python3")
                 or GtkSource.LanguageManager.get_default().get_language("python"))
@@ -957,6 +1076,7 @@ class App:
             Gtk.main_quit()
 
 
-def main(desk, names):
+def main(desk, names, theme="dark"):
+    apply_theme(theme)
     App(desk).open(names)
     Gtk.main()
