@@ -82,6 +82,25 @@ tawjih produce myprod 1.1 TO 1.2 --input "..." --backend ollama --model llama3.2
 
 Use `-p FOLDER` before the command to work on a project elsewhere.
 
+## Measure it on your own computer
+
+Does the path beat the model asked directly? The example project carries
+20 test cases (quadratic equations in Arabic and English, some rearranged),
+so you can measure it with any model you have:
+
+```
+ollama pull qwen2.5:3b
+python tawjih.py -p examples/quadratic eval branch --backend ollama --model qwen2.5:3b --allow-code
+python tawjih.py -p examples/quadratic eval branch --direct --backend ollama --model qwen2.5:3b
+python tawjih.py -p examples/quadratic eval compare branch
+python tawjih.py -p examples/quadratic eval report branch -o eval.md
+```
+
+The first run sends each case through the path; the second sends the same
+question straight to the model; `compare` lists them case by case, and
+`report` adds time and tokens. No measured result with a real model is
+published here yet.
+
 ## Contents
 
 [Screenshots](#screenshots) ·

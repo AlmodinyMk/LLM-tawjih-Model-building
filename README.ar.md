@@ -77,6 +77,24 @@ tawjih produce myprod 1.1 TO 1.2 --input "..." --backend ollama --model llama3.2
 
 ضع `-p FOLDER` قبل الأمر للعمل على مشروع في مجلد آخر.
 
+## قِسْه على حاسوبك
+
+هل يتفوق المسار على سؤال النموذج مباشرة؟ مشروع المثال فيه 20 حالة اختبار
+(معادلات تربيعية بالعربية والإنجليزية، بعضها مكتوب بترتيب مختلف)، فتستطيع
+قياس ذلك بأي نموذج عندك:
+
+```
+ollama pull qwen2.5:3b
+python tawjih.py -p examples/quadratic eval branch --backend ollama --model qwen2.5:3b --allow-code
+python tawjih.py -p examples/quadratic eval branch --direct --backend ollama --model qwen2.5:3b
+python tawjih.py -p examples/quadratic eval compare branch
+python tawjih.py -p examples/quadratic eval report branch -o eval.md
+```
+
+الأمر الأول يمرّر كل حالة عبر المسار، والثاني يرسل السؤال نفسه إلى النموذج
+مباشرة، و`compare` يعرضهما حالة حالة، و`report` يضيف الزمن وعدد الرموز. ولم
+تُنشر هنا بعد نتيجة مقيسة بنموذج حقيقي.
+
 ## المحتويات
 
 [صور البرنامج](#صور-البرنامج-وهو-يعمل) ·

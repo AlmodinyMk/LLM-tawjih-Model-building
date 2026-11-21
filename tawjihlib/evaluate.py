@@ -220,7 +220,8 @@ def cmd_eval(a):
                                    sandbox=getattr(a, "sandbox", False))
             ok, why = _case_passes(c, out, judge)
         except Die as e:
-            out, ok, why = "", False, "the run failed: %s" % e.code
+            out, ok, why = "", False, "the run failed: %s" % getattr(
+                e, "msg", e.code)
         except Exception as e:                  # a fault in the program
             out, ok, why = "", False, "the run failed: %s: %s" % (
                 type(e).__name__, e)

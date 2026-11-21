@@ -544,5 +544,25 @@ class Home(Base):
             self.assertEqual(code, 0, (p, err))
 
 
+class ExampleCases(unittest.TestCase):
+    """The 20 cases of examples/quadratic: each regex accepts the roots
+    written as x = r and refuses the equation alone."""
+    def test_cases(self):
+        import re
+        f = Path(__file__).resolve().parent.parent / "examples" / \
+            "quadratic" / "paths" / "branch.cases.jsonl"
+        cases = [json.loads(x) for x in f.read_text(encoding="utf-8")
+                 .splitlines() if x and not x.startswith("#")]
+        self.assertEqual(len(cases), 20)
+        for c in cases:
+            good = " و ".join("x = %s" % (("−%d" % -r) if r < 0 else r)
+                             for r in c["roots"])
+            self.assertTrue(re.search(c["expect"], good), c["name"])
+            self.assertFalse(re.search(c["expect"], c["input"]), c["name"])
+            if len(c["roots"]) == 2:
+                self.assertFalse(re.search(c["expect"], "x = %d" %
+                                           c["roots"][0]), c["name"])
+
+
 if __name__ == "__main__":
     unittest.main()
