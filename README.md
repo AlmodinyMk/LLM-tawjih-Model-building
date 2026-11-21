@@ -256,7 +256,7 @@ arXiv) publish their source; look for it before using a PDF.
 | `init` | create a project in the current folder |
 | `new TITLE [--parent REF] [--level L] [--open]` | create a file |
 | `open REF [--editor CMD] [--reading]` | open one editor per side; save on close |
-| `tree [--branch REF]` | show the trees; `H I C R` mark the sides that have content, `!` a stale machine side |
+| `tree [REF]` | show the trees, or one branch, in columns: Code (the stable id), No. (the number on lines `├─ └─ │` joining it to its parent; `▾` has files under it), Title, and Sides (`H I C R` for the sides with content, `·` for an empty one); `!` marks a stale machine side. In a terminal that shows colours, each side letter has its own (`NO_COLOR` turns them off) |
 | `search QUERY [--branch REF] [--side S] [--tag T] [--rank \| --semantic]` | search titles and sides; see [Managing a project](#managing-a-project) for the other commands added in 0.7 |
 | `show REF` / `read REF [--all]` | print a file / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |

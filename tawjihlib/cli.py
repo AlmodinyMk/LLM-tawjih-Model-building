@@ -259,8 +259,12 @@ def build_parser():
                    "and code.py (always done for VS Code)")
     s.set_defaults(fn=cmd_open)
 
-    s = sub.add_parser("tree", help="show trees or a branch (H/I/C/R = sides filled, ! = stale)")
-    s.add_argument("--branch", help="id or number of a branch to display")
+    s = sub.add_parser("tree", help="show trees or a branch as columns: "
+                       "Code, No. on tree lines, Title, Sides (H/I/C/R "
+                       "filled, · empty, ! = stale)")
+    s.add_argument("ref", nargs="?", help="a branch to display (its number "
+                   "or id)")
+    s.add_argument("--branch", help="the same, as an option")
     s.set_defaults(fn=cmd_tree)
 
     s = sub.add_parser("search", help="search across trees or within a branch")

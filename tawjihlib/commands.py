@@ -61,29 +61,105 @@ def cmd_new(a):
         open_editors(st, n.id)
 
 
+def display_width(text):
+    """Columns a terminal gives the text: marks take none, wide
+    characters two."""
+    import unicodedata
+    w = 0
+    for ch in text:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in (
+                "Mn", "Me", "Cf"):
+            continue
+        w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return w
+
+
+def _pad(text, width, right=False):
+    gap = " " * max(0, width - display_width(text))
+    return gap + text if right else text + gap
+
+
+def tree_lines(rows):
+    """rows: [(id, parent id)] in tree order. Returns {id: the number's
+    prefix}: ├─ └─ │ joining each file to its parent, ▾ before a file with
+    files under it and • before one without."""
+    kids, parent = {}, {}
+    for i, p in rows:
+        kids.setdefault(p or "", []).append(i)
+        parent[i] = p or ""
+    last = {i: k[-1] == i for k in kids.values() for i in k}
+    out = {}
+    for i, _ in rows:
+        chain, p = [], parent[i]
+        while p in parent:
+            chain.insert(0, p)
+            p = parent[p]
+        pre = "".join("   " if last[x] else "│  " for x in chain[1:])
+        if chain:
+            pre += "└─ " if last[i] else "├─ "
+        out[i] = pre + ("▾ " if i in kids else "• ")
+    return out
+
+
+def _colors():
+    """ANSI colours only on a terminal that shows them."""
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return None
+    if os.name == "nt" and not (os.environ.get("WT_SESSION")
+                                or os.environ.get("TERM_PROGRAM")):
+        return None
+    return {"dim": "\033[2m", "H": "\033[34m", "I": "\033[32m",
+            "C": "\033[33m", "R": "\033[35m", "end": "\033[0m"}
+
+
 def cmd_tree(a):
+    """The trees as columns: Code (the stable id), No. (the number on lines
+    joining it to its parent), Title, Sides (H human, I instructions,
+    C code, R reading; '·' for an empty side), then '!' when the file is
+    stale and its model."""
     st = Store(a.project)
-    root = st.resolve(a.branch) if getattr(a, "branch", None) else ""
+    ref = getattr(a, "ref", None) or getattr(a, "branch", None)
+    root = st.resolve(ref) if ref else ""
+    nodes = []
 
-    def show_node(n, depth):
-        flags = "".join(c if getattr(n, s).strip() else "-"
-                        for c, s in zip("HICR", SECTIONS))
-        stale = "!" if n.is_stale() else " "
-        m_tag = ("  (%s)" % n.model) if n.model else ""
-        print("%s%-8s [%s] %-8s %s%s %s%s" % (
-            "  " * depth, st.number(n.id), n.id, LEVELS[n.level - 1],
-            flags, stale, n.title, m_tag))
-
-    def walk(pid, depth):
+    def walk(pid):
         for n in st.children(pid):
-            show_node(n, depth)
-            walk(n.id, depth + 1)
+            nodes.append(n)
+            walk(n.id)
 
     if root:
-        show_node(st.nodes[root], 0)
-        walk(root, 1)
+        nodes.append(st.nodes[root])
+        walk(root)
     else:
-        walk("", 0)
+        walk("")
+    if not nodes:
+        print("no files yet (create one with: new TITLE)")
+        return
+    ids = {n.id for n in nodes}
+    pre = tree_lines([(n.id, n.parent if n.parent in ids else "")
+                      for n in nodes])
+    nos = {n.id: pre[n.id] + st.number(n.id) for n in nodes}
+    wn = max(display_width(x) for x in list(nos.values()) + ["No."])
+    wt = min(40, max(display_width(n.title) for n in nodes))
+    wt = max(wt, len("Title"))
+    col = _colors()
+    print("%-6s    %s  %s  %s" % ("Code", _pad("No.", wn),
+                                   _pad("Title", wt, right=True), "Sides"))
+    for n in nodes:
+        sides = [c if getattr(n, s).strip() else "·"
+                 for c, s in zip("HICR", SECTIONS)]
+        code = "%s ┄┄ " % n.id
+        if col:
+            code = col["dim"] + code + col["end"]
+            sides = [col[c] + c + col["end"] if c in col else c
+                     for c in sides]
+        title = n.title if display_width(n.title) <= wt else \
+            n.title[:wt - 1] + "…"
+        extra = ("  !" if n.is_stale() else "") + \
+            (("  (%s)" % n.model) if n.model else "")
+        print("%s%s  %s  %s%s" % (code, _pad(nos[n.id], wn),
+                                  _pad(title, wt, right=True),
+                                  " ".join(sides), extra))
 
 
 def cmd_show(a):

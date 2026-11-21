@@ -392,5 +392,34 @@ class WindowsTrial(Base):
         self.assertIn("'Plain title'", err)
 
 
+class TreeColumns(Base):
+    def test_columns_and_lines(self):
+        for t, parent in (("A", None), ("B", "1"), ("C", "1"), ("D", "1.1"),
+                          ("E", None)):
+            self.cli("new", t, *(["--parent", parent] if parent else []))
+        code, out, err = self.cli("tree")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("Code"))
+        st = self.store()
+        rows = {st.number(i): i for i in st.nodes}
+        self.assertTrue(lines[1].startswith(rows["1"] + " ┄┄ ▾ 1 "))
+        self.assertIn("├─ ▾ 1.1 ", lines[2])
+        self.assertIn("│  └─ • 1.1.1 ", lines[3])
+        self.assertIn("└─ • 1.2 ", lines[4])
+        self.assertIn("▾", lines[1])
+        self.assertTrue(lines[5].split(" ┄┄ ")[1].startswith("• 2 "))
+        self.assertTrue(lines[1].endswith("A  · · · ·"))
+        # a branch, given as a word or with --branch
+        self.assertEqual(self.cli("tree", "1.1")[1],
+                         self.cli("tree", "--branch", "1.1")[1])
+        self.assertEqual(len(self.cli("tree", "1.1")[1].splitlines()), 3)
+
+    def test_widths(self):
+        from tawjihlib.commands import display_width
+        self.assertEqual(display_width("مُعَادَلَة"), 6)   # marks take none
+        self.assertEqual(display_width("漢字"), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
