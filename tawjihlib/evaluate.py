@@ -106,7 +106,7 @@ def _cases_file(st, name, given=None):
 
 def _read_cases(cfile):
     cases = []
-    for k, line in enumerate(cfile.read_text(encoding="utf-8").splitlines(), 1):
+    for k, line in enumerate(cfile.read_text(encoding="utf-8-sig").splitlines(), 1):
         if line.strip() and not line.lstrip().startswith("#"):
             try:
                 c = json.loads(line)
@@ -125,7 +125,7 @@ def _eval_records(st, name, mode=None):
     for f in sorted(st.rdir.glob("eval-%s-*.json" % name), key=_by_time) if \
             st.rdir.is_dir() else []:
         try:
-            r = json.loads(f.read_text(encoding="utf-8"))
+            r = json.loads(f.read_text(encoding="utf-8-sig"))
         except ValueError:
             continue
         if r.get("path") == name and (mode is None or
@@ -150,14 +150,14 @@ def _load_record(st, ref, name):
         if not f.is_file():
             die("no baseline for %s (save one with: eval baseline %s --save)"
                 % (name, name))
-        return json.loads(f.read_text(encoding="utf-8"))
+        return json.loads(f.read_text(encoding="utf-8-sig"))
     if ref in ("path", "direct"):
         return _latest(st, name, ref)
     f = Path(ref)
     if not f.is_file():
         die("no evaluation record %s (give a file, or path, direct, "
             "baseline)" % ref)
-    return json.loads(f.read_text(encoding="utf-8"))
+    return json.loads(f.read_text(encoding="utf-8-sig"))
 
 
 def _changes_between(old, new):
@@ -497,7 +497,7 @@ def _eval_baseline(a, args):
         print("no baseline (save the latest evaluation with: eval baseline "
               "%s --save)" % args[0])
         return
-    print("baseline: " + _summary(json.loads(f.read_text(encoding="utf-8"))))
+    print("baseline: " + _summary(json.loads(f.read_text(encoding="utf-8-sig"))))
 
 
 def _eval_blame(a, args):
@@ -516,7 +516,7 @@ def _eval_blame(a, args):
     for c in failed:
         print("== %s: %s" % (c["name"], c["why"]))
         try:
-            prod = json.loads(Path(c["record"]).read_text(encoding="utf-8"))
+            prod = json.loads(Path(c["record"]).read_text(encoding="utf-8-sig"))
             state = json.loads(Path(prod["state"]).read_text(
                 encoding="utf-8")).get("steps", {})
         except (OSError, ValueError, KeyError, TypeError):
@@ -597,7 +597,7 @@ def _eval_promote(a, args):
     names = {c["name"] for c in failed}
     if cfile.is_file():
         keep, moved = [], []
-        for line in cfile.read_text(encoding="utf-8").splitlines():
+        for line in cfile.read_text(encoding="utf-8-sig").splitlines():
             try:
                 c = json.loads(line) if line.strip() and not \
                     line.lstrip().startswith("#") else None
@@ -700,7 +700,7 @@ def cmd_dataset(a):
                                       "rejected": bad})
     elif a.source == "eval":
         for f in sorted(st.rdir.glob("eval-*.json")) if st.rdir.is_dir() else []:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8-sig"))
             if a.path and data.get("path") != a.path:
                 continue
             if data.get("mode") == "direct":
@@ -714,7 +714,7 @@ def cmd_dataset(a):
     elif a.source == "runs":
         hdir = st.root / "history"
         for f in sorted(hdir.glob("production-*.json")) if hdir.is_dir() else []:
-            rec = json.loads(f.read_text(encoding="utf-8"))
+            rec = json.loads(f.read_text(encoding="utf-8-sig"))
             if rec.get("status") != "done" or "input" not in rec:
                 continue
             if a.path and rec.get("name") != a.path:
@@ -729,7 +729,7 @@ def cmd_dataset(a):
     else:
         cdir = st.root / "cache"
         for f in sorted(cdir.glob("*.json")) if cdir.is_dir() else []:
-            c = json.loads(f.read_text(encoding="utf-8"))
+            c = json.loads(f.read_text(encoding="utf-8-sig"))
             if "prompt" in c and (not a.step or c.get("step") == a.step):
                 rows.append((c["prompt"], c["answer"], {
                     "step": c.get("step", ""), "model": c.get("model", "")}))

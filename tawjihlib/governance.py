@@ -157,7 +157,7 @@ def cmd_mount(a):
     without arguments, list mounts."""
     root = Path(a.project)
     mf = root / "mounts.json"
-    mounts = json.loads(mf.read_text(encoding="utf-8")) if mf.is_file() else {}
+    mounts = json.loads(mf.read_text(encoding="utf-8-sig")) if mf.is_file() else {}
     if not a.where:
         for name, where in sorted(mounts.items()):
             print("%-12s %s" % (name, where))
@@ -188,7 +188,7 @@ def cmd_mount(a):
 def cmd_unmount(a):
     root = Path(a.project)
     mf = root / "mounts.json"
-    mounts = json.loads(mf.read_text(encoding="utf-8")) if mf.is_file() else {}
+    mounts = json.loads(mf.read_text(encoding="utf-8-sig")) if mf.is_file() else {}
     if a.name not in mounts:
         die("%s is not mounted" % a.name)
     st = Store(a.project)
@@ -206,7 +206,7 @@ def _staged(st):
     out = []
     for f in sorted(d.glob("*.json")) if d.is_dir() else []:
         try:
-            out.append((f, json.loads(f.read_text(encoding="utf-8"))))
+            out.append((f, json.loads(f.read_text(encoding="utf-8-sig"))))
         except ValueError:
             continue
     return out
@@ -286,7 +286,7 @@ def cmd_sandbox(a):
     if not load_policy(st.root)["allow_code"]:
         die("the project's policy (%s) does not allow running code"
             % POLICY_FILE)
-    text = Path(a.input_file).read_text(encoding="utf-8") if a.input_file \
+    text = Path(a.input_file).read_text(encoding="utf-8-sig") if a.input_file \
         else (a.input or "")
     shared, before = {}, dict(SANDBOX_LIMITS)
     SANDBOX_LIMITS["memory_mb"] = a.memory
@@ -354,7 +354,7 @@ def cmd_trace(a):
             if st.file_of(nid).is_file() else ""
         for m in sorted(st.root.rglob("*.manifest.json")):
             try:
-                srcs = json.loads(m.read_text(encoding="utf-8")).get("from", {})
+                srcs = json.loads(m.read_text(encoding="utf-8-sig")).get("from", {})
             except ValueError:
                 continue
             if nid in srcs:
@@ -375,7 +375,7 @@ def cmd_trace(a):
         if not f.is_file():
             die("no such file: %s" % f)
         if f.name.endswith(".manifest.json"):
-            man = json.loads(f.read_text(encoding="utf-8"))
+            man = json.loads(f.read_text(encoding="utf-8-sig"))
             print("%s: %d example(s) from %s, %s" % (
                 f.name, man.get("examples", 0), man.get("source"),
                 man.get("created")))
@@ -384,12 +384,12 @@ def cmd_trace(a):
             return
         rec = None
         if f.suffix == ".json" and f.name.startswith("production-"):
-            rec = json.loads(f.read_text(encoding="utf-8"))
+            rec = json.loads(f.read_text(encoding="utf-8-sig"))
         else:            # a run's log or result: find its record
             stem = f.name.split(".")[0]
             for r in sorted((st.root / "history").glob("production-*.json")):
                 try:
-                    d = json.loads(r.read_text(encoding="utf-8"))
+                    d = json.loads(r.read_text(encoding="utf-8-sig"))
                 except ValueError:
                     continue
                 if Path(d.get("log", "")).stem == stem or \
@@ -564,7 +564,7 @@ def cmd_release(a):
         else:
             zb = None
             fb = _digest_map(st.root, _project_entries(st.root))
-            read_b = (lambda e: (st.root / e).read_text(encoding="utf-8"))
+            read_b = (lambda e: (st.root / e).read_text(encoding="utf-8-sig"))
         fa = ma["files"]
         changed = 0
         for e in sorted(set(fa) | set(fb)):
@@ -657,7 +657,7 @@ def cmd_verify(a):
     f = st.root / "seal.json"
     if not f.is_file():
         die("no seal.json (make one with: seal)")
-    seal = json.loads(f.read_text(encoding="utf-8"))
+    seal = json.loads(f.read_text(encoding="utf-8-sig"))
     bad = 0
     asc = f.with_name("seal.json.asc")
     if asc.is_file():
@@ -734,7 +734,7 @@ def cmd_template(a):
     if a.action == "list":
         ts = sorted(tdir.glob("*.json")) if tdir.is_dir() else []
         for t in ts:
-            d = json.loads(t.read_text(encoding="utf-8"))
+            d = json.loads(t.read_text(encoding="utf-8-sig"))
             print("%-20s %d file(s)  from %s" % (t.stem, len(d["files"]),
                                                   d.get("from", "")))
         if not ts:
@@ -775,7 +775,7 @@ def cmd_scaffold(a):
     f = _template_dir(st) / (a.name + ".json")
     if not f.is_file():
         die("no template %s (see: template list)" % a.name)
-    tpl = json.loads(f.read_text(encoding="utf-8"))["files"]
+    tpl = json.loads(f.read_text(encoding="utf-8-sig"))["files"]
     parent = st.resolve(a.parent) if a.parent else ""
     base = st.nodes[parent].level + 1 if parent else 1
     if base + max(x["level"] for x in tpl) > len(LEVELS):
@@ -846,7 +846,7 @@ def cmd_compact(a):
         for k, n in enumerate(st.children(pid), 1):
             if n.mount:
                 continue
-            on_disk = st.file_of(n.id).read_text(encoding="utf-8")
+            on_disk = st.file_of(n.id).read_text(encoding="utf-8-sig")
             if n.order != k or on_disk != n.dump():
                 n.order = k
                 st.save(n)
@@ -911,7 +911,7 @@ def cmd_archive(a):
     if a.list:
         roots = []
         for f in sorted(adir.glob("*.md")) if adir.is_dir() else []:
-            n = Node.parse(f.read_text(encoding="utf-8"))
+            n = Node.parse(f.read_text(encoding="utf-8-sig"))
             if not (adir / (n.parent + ".md")).is_file():
                 roots.append(n)
         for n in roots:
@@ -924,7 +924,7 @@ def cmd_archive(a):
         f = adir / (rid + ".md")
         if not f.is_file():
             die("no archived file %s" % rid)
-        arch = {g.stem: Node.parse(g.read_text(encoding="utf-8"))
+        arch = {g.stem: Node.parse(g.read_text(encoding="utf-8-sig"))
                 for g in adir.glob("*.md")}
         ids, todo = [], [rid]
         while todo:
@@ -1041,7 +1041,7 @@ def cmd_doctor(a):
     for f in sorted((root / "files").glob("*.md")) if (root / "files").is_dir() \
             else []:
         try:
-            n = Node.parse(f.read_text(encoding="utf-8"))
+            n = Node.parse(f.read_text(encoding="utf-8-sig"))
         except Exception as e:
             problems.append("%s cannot be read: %s" % (f.name, e))
             if fix:
@@ -1066,7 +1066,7 @@ def cmd_doctor(a):
         hdir = root / "history"
         hdir.mkdir(exist_ok=True)
         (hdir / ("%s-%s.md" % (n.id, time.strftime("%Y%m%d-%H%M%S")))
-         ).write_text(files[n.id].read_text(encoding="utf-8"),
+         ).write_text(files[n.id].read_text(encoding="utf-8-sig"),
                       encoding="utf-8")
         files[n.id].write_text(n.dump(), encoding="utf-8")
     for n in nodes.values():
@@ -1113,7 +1113,7 @@ def cmd_doctor(a):
         f = root / name
         if f.is_file():
             try:
-                json.loads(f.read_text(encoding="utf-8"))
+                json.loads(f.read_text(encoding="utf-8-sig"))
             except ValueError:
                 problems.append("%s cannot be read" % name)
                 if fix:
@@ -1124,7 +1124,7 @@ def cmd_doctor(a):
     for f in (root / "cache").glob("*.json") if (root / "cache").is_dir() \
             else []:
         try:
-            json.loads(f.read_text(encoding="utf-8"))["answer"]
+            json.loads(f.read_text(encoding="utf-8-sig"))["answer"]
         except (ValueError, KeyError, TypeError):
             bad_cache.append(f)
     if bad_cache:
@@ -1160,7 +1160,7 @@ def _sched_load(root):
     if not f.is_file():
         return {}
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
+        return json.loads(f.read_text(encoding="utf-8-sig"))
     except ValueError:
         die("schedules.json is not readable JSON")
 
@@ -1525,12 +1525,12 @@ def cmd_policy(a):
             return 0
         if not a.yes:
             die("reset removes the project's limits; add --yes")
-        print("it was: " + " ".join(f.read_text(encoding="utf-8").split()))
+        print("it was: " + " ".join(f.read_text(encoding="utf-8-sig").split()))
         f.unlink()
         print("removed %s; the project has no limits of its own now"
               % POLICY_FILE)
         return 0
-    data = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    data = json.loads(f.read_text(encoding="utf-8-sig")) if f.is_file() else {}
     load_policy(st.root)                       # refuse a broken file
     given = {"allow_code": a.allow_code, "allow_network": a.allow_network,
              "sandbox": a.sandbox, "human_approval": a.human_approval}

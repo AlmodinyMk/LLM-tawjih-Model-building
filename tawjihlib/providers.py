@@ -171,7 +171,7 @@ def load_providers(root):
     f = providers_file(root) if root else None
     if f and f.is_file():
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8-sig"))
         except ValueError as e:
             die("providers.json is not readable JSON (%s)" % e)
     data.setdefault("providers", {})
@@ -270,7 +270,7 @@ class Redactor:
         if not f.is_file():
             return None
         rules, words = [], []
-        for k, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+        for k, line in enumerate(f.read_text(encoding="utf-8-sig").splitlines(), 1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -404,7 +404,7 @@ def load_policy(root):
     pol = dict(POLICY_DEFAULT)
     if f and f.is_file():
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8-sig"))
         except ValueError as e:
             die("%s is not readable JSON (%s)" % (POLICY_FILE, e))
         for k, v in data.items():

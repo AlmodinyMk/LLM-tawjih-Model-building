@@ -366,5 +366,31 @@ class KeyValue(Base):
         self.assertIn("group", out)
 
 
+class WindowsTrial(Base):
+    """From a first run on Windows: PowerShell 5.1 writes UTF-8 with a BOM,
+    and a whole path may come as one quoted word."""
+
+    def test_file_saved_with_a_bom_is_read(self):
+        self.cli("new", "Extract Data")
+        n = self.store().nodes[self.store().resolve("1")]
+        f = self.root / "files" / (n.id + ".md")
+        f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
+        code, out, err = self.cli("tree")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Extract Data", out)
+
+    def test_a_quoted_path(self):
+        self.cli("new", "A")
+        self.cli("new", "B", "--parent", "1")
+        self.fill("1", instructions="a")
+        self.fill("1.1", instructions="b")
+        code, out, err = self.cli("produce", "p", "1 TO 1.1", "--plan")
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 step", out + err)
+        # words without a connecting word stay one word
+        code, out, err = self.cli("produce", "q", "Plain title", "--plan")
+        self.assertIn("'Plain title'", err)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -417,7 +417,7 @@ def _versions(st, nid):
             if not m:
                 continue
             try:
-                node = Node.parse(f.read_text(encoding="utf-8"))
+                node = Node.parse(f.read_text(encoding="utf-8-sig"))
             except ValueError:
                 continue
             key = (m.group(1), m.group(2), int(m.group(3) or 1))

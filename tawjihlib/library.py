@@ -28,7 +28,7 @@ def _library(st):
     ldir = st.root / "library"
     ldir.mkdir(exist_ok=True)
     idx = ldir / "index.json"
-    books = json.loads(idx.read_text(encoding="utf-8")) if idx.is_file() else {}
+    books = json.loads(idx.read_text(encoding="utf-8-sig")) if idx.is_file() else {}
     return ldir, idx, books
 
 
@@ -596,7 +596,7 @@ def _xml_load(path, seen=None):
                 f = (path.parent / ch.get("href", "")).resolve()
                 if ch.get("parse") == "text":
                     new = ET.Element("pre")
-                    new.text = f.read_text(encoding="utf-8") if f.is_file() \
+                    new.text = f.read_text(encoding="utf-8-sig") if f.is_file() \
                         else ""
                 elif f.is_file() and f not in seen:
                     new = _xml_load(f, seen)
@@ -831,7 +831,7 @@ def source_to_text(path):
             "often publish it); otherwise turn it into Markdown with: "
             "ingest %s --deposit" % (ext, path.name))
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         die("not a UTF-8 text file")
     conv = SOURCE_FORMATS.get(ext)
@@ -908,7 +908,7 @@ def cmd_library(a):
         rep = ldir / (b + ".filter.json")
         state = "deposited"
         if rep.is_file():
-            done = json.loads(rep.read_text(encoding="utf-8")).get("applied")
+            done = json.loads(rep.read_text(encoding="utf-8-sig")).get("applied")
             state = "accepted" if done else "filtered, awaiting accept"
         print("%s  %s  %8d chars  %s  [%s]" % (b, info["date"], info["chars"],
                                                info["name"], state))
@@ -963,7 +963,7 @@ def cmd_filter(a):
     Writes a review report only; the tree is not touched until 'accept'."""
     st = Store(a.project)
     ldir, bid, info = _book(st, a.book)
-    text = (ldir / (bid + ".txt")).read_text(encoding="utf-8")
+    text = (ldir / (bid + ".txt")).read_text(encoding="utf-8-sig")
     parent = st.resolve(a.parent) if a.parent else ""
     rows = [st.nodes[nid] for nid in st.subtree_ids(parent)]
     if not rows:
@@ -1032,7 +1032,7 @@ def cmd_accept(a):
     rep = ldir / (bid + ".filter.json")
     if not rep.is_file():
         die("this book has not been filtered yet")
-    data = json.loads(rep.read_text(encoding="utf-8"))
+    data = json.loads(rep.read_text(encoding="utf-8-sig"))
     if data.get("applied"):
         die("this report was already accepted")
     made = skipped = 0

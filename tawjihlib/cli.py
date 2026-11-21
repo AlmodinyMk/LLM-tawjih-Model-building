@@ -106,7 +106,7 @@ def cmd_do(a):
     remove anything, and EDIT stages its proposal unless --yes."""
     text = " ".join(a.statements)
     if a.file:
-        text = Path(a.file).read_text(encoding="utf-8") + "\n" + text
+        text = Path(a.file).read_text(encoding="utf-8-sig") + "\n" + text
     if not text.strip():
         die("give statements, or --file SCRIPT")
     todo, problems = translate_script(
@@ -185,7 +185,7 @@ def cmd_approve(a):
     reqs = {f.stem: f for f in sorted(rdir.glob("r*.json"))} \
         if rdir.is_dir() else {}
     if not a.ids:
-        waiting = [(k, json.loads(f.read_text(encoding="utf-8")))
+        waiting = [(k, json.loads(f.read_text(encoding="utf-8-sig")))
                    for k, f in reqs.items()]
         waiting = [(k, r) for k, r in waiting if r["status"] == "pending"]
         for k, r in waiting:
@@ -199,7 +199,7 @@ def cmd_approve(a):
         if rid not in reqs:
             die("no request %s" % rid)
         f = reqs[rid]
-        r = json.loads(f.read_text(encoding="utf-8"))
+        r = json.loads(f.read_text(encoding="utf-8-sig"))
         print("== %s (%s)\n%s" % (rid, r["status"], r["summary"]))
         if r["status"] != "pending":
             continue

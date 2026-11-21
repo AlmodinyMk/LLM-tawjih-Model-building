@@ -197,7 +197,7 @@ def load_schema(root, name):
     if not f.is_file():
         return None, "no schema %s (schemas/%s.json)" % (name, name)
     try:
-        schema = json.loads(f.read_text(encoding="utf-8"))
+        schema = json.loads(f.read_text(encoding="utf-8-sig"))
     except ValueError as e:
         return None, "schemas/%s.json is not JSON (%s)" % (name, e)
     probs = schema_problems(schema)
@@ -593,7 +593,7 @@ class Store:
         self.nodes = {}
         for f in sorted(self.fdir.glob("*.md")):
             try:
-                n = Node.parse(f.read_text(encoding="utf-8"))
+                n = Node.parse(f.read_text(encoding="utf-8-sig"))
             except Exception as e:
                 die("%s: %s" % (f.name, e))
             if n.id != f.stem:
@@ -605,7 +605,7 @@ class Store:
         mf = self.root / "mounts.json"
         if mf.is_file():
             try:
-                self.mounts = json.loads(mf.read_text(encoding="utf-8"))
+                self.mounts = json.loads(mf.read_text(encoding="utf-8-sig"))
             except ValueError:
                 die("mounts.json is not readable JSON")
         self._mount_dirs = {}
@@ -617,7 +617,7 @@ class Store:
                 continue
             for f in sorted(mdir.glob("*.md")):
                 try:
-                    n = Node.parse(f.read_text(encoding="utf-8"))
+                    n = Node.parse(f.read_text(encoding="utf-8-sig"))
                 except Exception as e:
                     die("mounted %s, %s: %s" % (name, f.name, e))
                 if n.id in self.nodes:
@@ -639,7 +639,7 @@ class Store:
         if not hasattr(self, "_state"):
             f = self.root / "state.json"
             try:
-                self._state = json.loads(f.read_text(encoding="utf-8"))
+                self._state = json.loads(f.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 self._state = {}
         return self._state
@@ -689,7 +689,7 @@ class Store:
         f = self.file_of(n.id)
         if f.is_file():
             try:
-                old = Node.parse(f.read_text(encoding="utf-8"))
+                old = Node.parse(f.read_text(encoding="utf-8-sig"))
             except ValueError:
                 return
             if old.locked and n.locked and \
@@ -783,7 +783,7 @@ class Store:
         if not f.is_file():
             die("no path named '%s'" % name)
         lines = [l.split("#", 1)[0].strip()
-                 for l in f.read_text(encoding="utf-8").splitlines()]
+                 for l in f.read_text(encoding="utf-8-sig").splitlines()]
         lines = [l for l in lines if l]
         return lines if whole_lines else [l.split()[0] for l in lines]
 

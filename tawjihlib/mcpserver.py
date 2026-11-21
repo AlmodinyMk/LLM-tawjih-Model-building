@@ -331,7 +331,7 @@ class Server:
             f = Store(self.project).root / "requests" / (a["id"] + ".json")
             if not f.is_file():
                 return "no request %s" % a["id"], 1
-            req = json.loads(f.read_text(encoding="utf-8"))
+            req = json.loads(f.read_text(encoding="utf-8-sig"))
             text = "%s: %s\n%s" % (a["id"], req["status"], req["summary"])
             if req.get("result") is not None:
                 text += "\n\nresult:\n" + mark_data(req["result"])
@@ -447,7 +447,7 @@ class Server:
         cases = 1
         if name == "tawjih_eval":
             cf = st.pdir / (args["name"] + ".cases.jsonl")
-            cases = sum(1 for l in cf.read_text(encoding="utf-8")
+            cases = sum(1 for l in cf.read_text(encoding="utf-8-sig")
                         .splitlines() if l.strip()) if cf.is_file() else 0
         out = ["  provider: %s, model: %s" % (
                    self.backend, self.model or "each step's own, or "
@@ -651,7 +651,7 @@ def language_text():
                  if f.is_file()), None)
     if spec is None:
         return "SPEC.md is not next to the program"
-    text = spec.read_text(encoding="utf-8")
+    text = spec.read_text(encoding="utf-8-sig")
     keep = []
     for part in re.split(r"(?m)^(?=## )", text):
         if part.startswith(("## File\n", "## Contracts", "## Path language",

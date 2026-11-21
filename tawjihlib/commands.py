@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .core import (
     CONTRACT_HELP, Die, EXTRA, FlowError, LEVELS, MARK, SECTIONS, SPLITS,
-    Store, _parse_contract, build_flow, contract_fits, die,
+    Store, _kw, _parse_contract, build_flow, contract_fits, die,
     flow_condition_notes, flow_contract_errors, load_schema, parse_examples,
     parse_level, schema_file, schema_problems,
 )
@@ -113,7 +113,7 @@ def install_schema(st, src):
         die("no such file: %s" % src)
     name = re.sub(r"[^\w\-]", "_", f.stem)
     try:
-        schema = json.loads(f.read_text(encoding="utf-8"))
+        schema = json.loads(f.read_text(encoding="utf-8-sig"))
     except ValueError as e:
         die("%s is not JSON (%s)" % (src, e))
     probs = schema_problems(schema)
@@ -345,6 +345,17 @@ def _flow_from_args(st, name, refs):
     """Build and save a flow from command-line words, or load the saved one."""
     if not re.fullmatch(r"[\w\-]+", name):
         die("path names may contain only letters, digits, '_' and '-'")
+    titles = {n.title.casefold() for n in st.nodes.values()}
+    words = []
+    for r in refs or []:
+        # a whole path given in one quoted word: "1 TO 1.1"
+        parts = r.split()
+        if len(parts) > 1 and r.casefold() not in titles and any(
+                _kw(w) for w in parts):
+            words += parts
+        else:
+            words.append(r)
+    refs = words
     try:
         if refs:
             flow = build_flow(split_statements(refs), st.resolve,
@@ -384,7 +395,7 @@ def _run_from_args(st, a, flow):
     use_model(a)
     text = a.input
     if a.input_file:
-        text = Path(a.input_file).read_text(encoding="utf-8")
+        text = Path(a.input_file).read_text(encoding="utf-8-sig")
     redo = [st.resolve(r) for r in a.redo or []]
     stray = [st.number(r) for r in redo if r not in flow.nodes]
     if stray:
@@ -694,7 +705,7 @@ def cmd_generate(a):
             die("there is no proposal named '%s' (make one with generate)"
                 % a.name)
         stmts = []
-        for line in prop.read_text(encoding="utf-8").splitlines():
+        for line in prop.read_text(encoding="utf-8-sig").splitlines():
             line = line.split("#", 1)[0].strip()
             if line:
                 try:
@@ -814,7 +825,7 @@ def cmd_import(a):
         die("the parent is already at the deepest level (part)")
     src = Path(a.file)
     chunks, title, body = [], src.stem, []
-    for line in src.read_text(encoding="utf-8").splitlines():
+    for line in src.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("#"):
             if "\n".join(body).strip():
                 chunks.append((title, body))
@@ -903,7 +914,7 @@ def cmd_edit(a):
         parts.append("## Current %s side\n%s" % (sec, getattr(n, sec) or "(empty)"))
     if a.source:
         parts.append("# Source material\n"
-                     + Path(a.source).read_text(encoding="utf-8"))
+                     + Path(a.source).read_text(encoding="utf-8-sig"))
     parts.append("# Request\n" + a.ask)
     prompt = "\n\n".join(parts)
     use_model(a)

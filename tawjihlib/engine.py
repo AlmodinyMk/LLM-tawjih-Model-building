@@ -656,7 +656,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             if resume and cfile is not None and cfile.is_file() \
                     and p["id"] not in redo:
                 try:
-                    kept = json.loads(cfile.read_text(encoding="utf-8"))["answer"]
+                    kept = json.loads(cfile.read_text(encoding="utf-8-sig"))["answer"]
                 except (ValueError, KeyError, TypeError):
                     kept = None
             if isinstance(kept, str) and kept.strip():

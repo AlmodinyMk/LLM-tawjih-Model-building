@@ -127,7 +127,7 @@ def cmd_index(a):
     f = _index_file(st)
     old = {}
     if f.is_file():
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
         if data.get("backend") == a.backend and data.get("model") == model:
             old = {c["sha"]: c["vector"] for c in data["chunks"]}
     chunks = _search_chunks(st, st.subtree_ids(""), ["human", "reading"])
@@ -164,7 +164,7 @@ def search_ranked(st, query, ids, sides, semantic=False, top=10):
         f = _index_file(st)
         if not f.is_file():
             die("no semantic index yet; build it with: index --backend ollama")
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
         vecs = {c["sha"]: c["vector"] for c in data["chunks"]}
         try:
             q = EMBEDDERS[data["backend"]]([query], data["model"])[0]
@@ -741,7 +741,7 @@ def cmd_redact(a):
     red = Redactor.load(st.root)
     if red is None:
         die("no redact.txt in this project (create it with: redact --init)")
-    text = Path(a.file).read_text(encoding="utf-8") if a.file else a.text
+    text = Path(a.file).read_text(encoding="utf-8-sig") if a.file else a.text
     if text is None:
         die("give a text, or --file")
     masked, mapping = red.mask(text)
@@ -757,7 +757,7 @@ def _prices(st):
     if not f.is_file():
         return {}
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
+        return json.loads(f.read_text(encoding="utf-8-sig"))
     except ValueError as e:
         die("prices.json: %s" % e)
 
@@ -775,7 +775,7 @@ def cmd_stats(a):
         if f.stat().st_mtime < since:
             continue
         try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
+            rec = json.loads(f.read_text(encoding="utf-8-sig"))
         except ValueError:
             continue
         name = rec.get("name", "?")
@@ -808,7 +808,7 @@ def cmd_stats(a):
     for f in sorted(st.rdir.glob("eval-*.json"), key=_by_time) \
             if st.rdir.is_dir() else []:
         try:
-            e = json.loads(f.read_text(encoding="utf-8"))
+            e = json.loads(f.read_text(encoding="utf-8-sig"))
         except ValueError:
             continue
         if e.get("mode") == "direct":
