@@ -98,6 +98,17 @@ class Lab(Base):
         self.assertEqual(len(self.store().nodes), 5)
         self.assertIn("Apex: layers", self.cli("arch", "list")[1])
 
+    def test_deep_lineage_stays_a_valid_tree(self):
+        self.cli("arch", "create", "A", "--preset", "tiny")
+        ref = "1"
+        for i in range(7):
+            code, _, err = self.cli("arch", "derive", ref, "d%d" % i)
+            self.assertEqual(code, 0, err)
+            ref = self.store().number(max(self.store().nodes.values(),
+                                          key=lambda n: n.order * 0 +
+                                          n.level).id)
+        self.assertIn("0 error(s)", self.cli("check")[1])
+
     def test_set_validate_export(self):
         self.cli("arch", "create", "A", "--preset", "tiny")
         code, _, err = self.cli("arch", "set", "1", "hidden=250")

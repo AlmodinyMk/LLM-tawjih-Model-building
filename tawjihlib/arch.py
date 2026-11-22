@@ -290,7 +290,11 @@ def _measured(st, nid):
 
 
 def _new(st, title, parent, spec, human=HUMAN_TEMPLATE):
-    level = 1 if not parent else min(st.nodes[parent].level + 1, 6)
+    if parent and st.nodes[parent].level >= 6:
+        # the deepest level: a derived design goes beside its source, and
+        # its derived-from link keeps the lineage
+        parent = st.nodes[parent].parent
+    level = 1 if not parent else st.nodes[parent].level + 1
     n = st.new_node(title, level, parent)
     n.tags = [TAG]
     n.human = human

@@ -91,6 +91,12 @@ class Runtimes(Bridge):
                                "--submit", "run --api_key=abcdefghijkl")
         self.assertIn("key or password", err)
 
+    def test_default_alone_and_no_jobs(self):
+        self.assertIn("default runtime: local",
+                      self.cli("runtime", "default")[1])
+        self.assertIn("no job has been started", self.cli(
+            "runtime", "status")[2])
+
     def test_check_here(self):
         code, out, err = self.cli("runtime", "check")
         self.assertEqual(code, 0, err)

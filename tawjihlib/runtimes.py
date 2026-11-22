@@ -184,7 +184,8 @@ def find_job(root, jid):
                    not in (None, "made")]
         hits = sorted(started, key=lambda x: record(x).get("started", ""))[-1:]
     if len(hits) != 1:
-        fail("no job %s" % jid if not hits else
+        fail(("no job %s" % jid if jid != "last" else "no job has been "
+              "started yet") if not hits else
              "%s names %d jobs; give more of its id" % (jid, len(hits)))
     return hits[0]
 
@@ -472,7 +473,10 @@ def cmd_runtime(a):
         print("removed %s" % args[0])
         return 0
     if act == "default":
-        get(args[0] if args else None)
+        if not args:
+            print("default runtime: %s" % (data["default"] or "local"))
+            return 0
+        get(args[0])
         data["default"] = args[0]
         save(data)
         print("default runtime: %s" % args[0])
