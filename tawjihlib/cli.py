@@ -57,6 +57,7 @@ from .script import (
 from .arch import cmd_arch
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
+from .monitor import cmd_top
 from .mcpserver import (
     APPROVAL_MODES, Server, ToolError, serve_stdio,
 )
@@ -242,6 +243,24 @@ def build_parser():
     s.add_argument("topic", nargs="?", metavar="TOPIC",
                    help="one of: " + ", ".join(TOPICS))
     s.set_defaults(fn=cmd_home)
+
+    s = sub.add_parser("top", aliases=["monitor", "مراقبة"],
+                       help="a live board of runs on paths and files beside "
+                       "the computer's CPU, memory, disk, network and GPU")
+    s.add_argument("--interval", type=float, default=2.0, metavar="S",
+                   help="seconds between refreshes (default 2; + and - "
+                   "change it)")
+    s.add_argument("--once", action="store_true",
+                   help="print one frame and stop")
+    s.add_argument("--json", action="store_true",
+                   help="print what the board shows as JSON")
+    s.add_argument("--width", type=int, default=0, help=argparse.SUPPRESS)
+    s.add_argument("--height", type=int, default=0, help=argparse.SUPPRESS)
+    s.add_argument("--ascii", action="store_true",
+                   help="plain characters for fonts without box drawing")
+    s.add_argument("--color", choices=("auto", "always", "never"),
+                   default="auto")
+    s.set_defaults(fn=cmd_top)
 
     s = sub.add_parser("init", help="create a project")
     s.set_defaults(fn=cmd_init)

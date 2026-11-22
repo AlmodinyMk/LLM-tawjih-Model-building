@@ -116,6 +116,7 @@ published here yet.
 [Governance](#governance-locks-reviews-releases-schedules) ·
 [Training](#training-adapters-the-neural-bridge) ·
 [Architecture lab](#the-architecture-lab) ·
+[Watching runs](#watching-runs-tawjih-top) ·
 [Runtimes](#runtimes-where-jobs-run) ·
 [Linux windows](#desktop-windows-for-linux-users) ·
 [Limitations](#limitations) ·
@@ -358,6 +359,38 @@ and macOS terminals); `NO_COLOR` turns them off. The screen is in English,
 because terminals do not lay out right-to-left text reliably.
 
 ![The home screen](docs/images/home-screen.png)
+
+## Watching runs: `tawjih top`
+
+`tawjih top` (also `monitor`, and in Arabic `مراقبة`) is a live board in
+the manner of btop: the computer's performance beside the runs of paths
+over the files of the trees.
+
+- **cpu**: a graph of the last minutes, each core, the load average.
+- **mem · disk · net**: memory, the free space of the project's disk, the
+  network, the GPU when `nvidia-smi` is there, and the CPU and memory of
+  the runs going now.
+- **trees**: every file on its tree lines, with how often it ran, how
+  often it succeeded and how long it takes on average; ▶ marks a file
+  running now.
+- **the chosen run**: its status, time, calls, tokens, retries,
+  fallbacks and model, and each step with the time it took as a bar; the
+  step running now is ▶ and its time keeps counting.
+- **runs**: the runs going now, the runtime jobs (with the percentage
+  their log shows), then the finished runs.
+
+Up and down choose a run, PgUp and PgDn move the trees, + and - change the
+refresh time, q quits. `top --once` prints one frame, and `top --json`
+gives the same facts to a script.
+
+A run writes `history/live/PID-….json` as each step starts and ends and
+removes it when it ends; a run whose process has gone shows as stopped.
+The record in `history/` now also keeps each step's time. CPU, memory and
+network are read from the system on Linux, and CPU and memory on Windows;
+on macOS the CPU comes from the load average and memory is not shown.
+Arabic titles show as the terminal lays them out.
+
+![tawjih top: the processor, memory, the trees with each file's runs, the step running now, and the runs](docs/images/top.png)
 
 ## Commands
 
@@ -739,7 +772,10 @@ cannot route by file.
 What is verified: the test suite checks the data, the configurations, the
 commands and the registry without any training library; the generated
 `torch` scripts were run on a CPU with a tiny random model made on the spot
-(SFT, DPO, merge and fuse). Not verified: a real model, a GPU, QLoRA,
+(SFT, DPO, merge and fuse). With 0.15 the whole chain was run again on a
+CPU: a tiny Llama built by `arch build`, `compile`, `train --engine torch
+--run` with LoRA, then `merge`, also as jobs with `--runtime local`, and
+the merged model generated text. Not verified: a real model, a GPU, QLoRA,
 Unsloth, axolotl, vLLM, Ollama adapters and llama.cpp. The training
 libraries change their arguments often; the scripts pass only the ones the
 installed TRL knows, and say what they left out.
@@ -985,7 +1021,8 @@ datasets/ compiled training data (neural bridge; git-ignored)
 The program itself is `tawjih.py`, which runs and imports the package
 `tawjihlib/`: `core` (file model, store, path language), `providers`,
 `engine` (code and path execution), `commands`, `library`, `manage`,
-`outputs`, `evaluate`, `governance`, `script`, `mcpserver` and `cli`. Each module imports only from
+`outputs`, `evaluate`, `governance`, `runtimes`, `arch`, `script`,
+`mcpserver`, `home`, `monitor` (`top`) and `cli`. Each module imports only from
 the ones before it, and everything is reachable as `tawjih.NAME`. Keep the
 two together when you copy the program.
 
@@ -1065,7 +1102,9 @@ to overlap), `ITERATE`, the runtimes (a local job, and a command runtime
 driving a stand-in for a remote service), and the architecture lab: `arch
 build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
 (Llama with GQA and MQA, GPT-2, Mixtral), and their parameters matched the
-counts. The neural bridge has its own section above.
+counts; and `top`, its frames drawn at several sizes with and without
+colour, and its keys driven in a pseudo-terminal on Linux. The neural
+bridge has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 

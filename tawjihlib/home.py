@@ -117,6 +117,8 @@ CARDS = [
          "papers."),
         ("arch build", "verify", "arch build REF --run",
          "Built with transformers; parameters checked against the count."),
+        ("top", "watch", "top",
+         "Runs, files and the computer live, like btop; q quits."),
         ("runtime", "jobs", "runtime add NAME --kind ssh --host H",
          "Run long jobs here, on another computer, or on a service."),
         ("show --type", "faces", "show REF --type machine",
@@ -217,6 +219,16 @@ TOPICS = {
          "--run\nParameter counts are exact; build makes the model with "
          "transformers, runs it forward and backward, and checks the "
          "count. arch rank compares them."),
+    ]),
+    "top": ("Watching runs (top)", [
+        ("The board", "tawjih top\nThe processor, memory, disk, network "
+         "and GPU beside the runs of paths: the step running now, the time "
+         "each step took, calls, tokens, retries; and each file of the trees "
+         "with its runs, success and average time. Arabic: مراقبة."),
+        ("Keys", "up and down choose a run, PgUp and PgDn move the trees, + "
+         "and - change the refresh time, q quits."),
+        ("Without a screen", "tawjih top --once\ntawjih top --json\nOne "
+         "frame, or the same facts as JSON for a script."),
     ]),
     "training": ("Training (plugin)", [
         ("From files to data", "python plugins/neural_bridge.py compile "

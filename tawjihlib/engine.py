@@ -591,7 +591,30 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
               "usage": {"in": 0, "out": 0, "seconds": 0.0, "calls": 0,
                         "retries": 0, "fallbacks": 0, "redacted": 0},
               "max_workers": max_workers, "on_failure": on_failure,
-              "round": list(round_of) if round_of else None}
+              "round": list(round_of) if round_of else None,
+              "pid": os.getpid(), "t0": time.time()}
+    livefile = store.root / "history" / "live" / ("%d-%s.json" % (
+        os.getpid(), logfile.stem))
+    done_flag = []
+
+    def live():
+        """The run as it stands, for tawjih top; gone when it ends."""
+        if done_flag:
+            return
+        with lock:
+            try:
+                data = json.dumps({k: v for k, v in record.items()
+                                   if k != "input"}, ensure_ascii=False)
+            except RuntimeError:        # a step changed it meanwhile
+                return
+        try:
+            livefile.parent.mkdir(parents=True, exist_ok=True)
+            tmp = livefile.with_name(livefile.name + ".%d.tmp"
+                                     % threading.get_ident())
+            tmp.write_text(data, encoding="utf-8")
+            os.replace(tmp, livefile)
+        except OSError:
+            pass
 
     def save_state(outputs_map):
         statefile.write_text(json.dumps({
@@ -601,6 +624,12 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def document():
+        done_flag.append(1)
+        try:
+            livefile.unlink()
+        except OSError:
+            pass
+        record["seconds"] = round(time.time() - record["t0"], 3)
         record["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
         record["usage"]["seconds"] = round(record["usage"]["seconds"], 3)
         rec = _stamped(store.root / "history", "production-" + name, ".json")
@@ -619,6 +648,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
         logfile.write_text("\n".join(log) + "\n", encoding="utf-8")
         save_state(outputs_map)
         p["status"] = "failed"
+        p["seconds"] = round(time.time() - p.get("started_at", time.time()),
+                             3)
         record.update(status="failed", failed_step=p["step"],
                       error="%s: %s: %s" % (what, type(e).__name__, e))
         rec = document()
@@ -952,13 +983,24 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
         return not (n.approve or ps.get("approve")) or approve != "ask"
 
     def guarded(p):
+        t = time.time()
+        p.update(status="running", started_at=round(t, 3))
+        live()
         try:
             run_step(p)
         except _BranchFailed:
             failures.append(p["step"])
+        finally:
+            p["seconds"] = round(time.time() - t, 3)
+            if p.get("status") == "running":
+                p["status"] = "stopped"
+            live()
 
     deps = {p["id"]: {e["src"] for e in flow.incoming(p["id"])}
             for p in plan}
+    for p in plan:
+        p["status"] = "waiting"
+    live()
     if max_workers <= 1:
         for p in plan:
             guarded(p)

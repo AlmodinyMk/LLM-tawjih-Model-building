@@ -804,6 +804,21 @@ computer needs `--yes`, and is refused when the project's policy has
 `tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
 copies every name of its modules into its own namespace and runs `main()`.
 The modules, in order: `core`, `providers`, `engine`, `commands`,
-`library`, `manage`, `outputs`, `evaluate`, `governance`, `script`, `mcpserver`, `cli`. A module
+`library`, `manage`, `outputs`, `evaluate`, `governance`, `runtimes`,
+`arch`, `script`, `mcpserver`, `home`, `monitor`, `cli`. A module
 imports only from those before it, by name, and only the standard library
 from outside; each lists its names in `__all__`.
+
+## Live runs
+
+While a path runs, the run keeps `history/live/PID-NAME-STAMP.json`: the
+record that goes to `history/` at the end, without the input text. It is
+written when the run starts, when each step starts and when each step
+ends, by replacing the file whole, and removed when the run ends (done,
+partial or failed). Each step carries `status` (`waiting`, `running`,
+`done`, `failed`, `skipped`, or `stopped` if the step was interrupted),
+`started_at` (seconds since the epoch) and `seconds` (its wall time). The
+record carries `pid`, `t0` and, at the end, `seconds`. A live file whose
+process no longer exists belongs to a run that was stopped. `tawjih top`
+reads these files, the records in `history/` and `models/jobs/`; it
+writes nothing.
