@@ -32,12 +32,15 @@ TEMPLATES = ("submit", "status", "logs", "cancel", "collect", "check")
 LOCAL = {"kind": "local"}
 
 
-class RuntimeError_(Exception):
-    pass
+from .core import Die, die
+from .providers import load_policy
+
+
+RuntimeError_ = Die          # what a runtime or job problem raises
 
 
 def fail(msg):
-    raise RuntimeError_(msg)
+    die(msg)
 
 
 # ----------------------------------------------------------------- settings
@@ -112,11 +115,7 @@ def is_local(cfg):
 def allowed(root, name, cfg, yes):
     """Refuse what the project's policy forbids; ask for --yes before data
     leaves this computer (and may cost money)."""
-    try:
-        from tawjihlib.providers import load_policy
-        net = load_policy(root)["allow_network"]
-    except Exception:
-        net = True
+    net = load_policy(root)["allow_network"]
     if not is_local(cfg):
         if net is not True:
             fail("the project's policy allows no runtime outside this "
@@ -407,3 +406,120 @@ def check(name, cfg):
         return json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):
         fail("%s did not answer the check (%s)" % (name, out.strip()[:300]))
+
+
+def finish(root, jdir, cfg):
+    """Collect a job's results and note them in models/registry.json."""
+    where = collect(jdir, cfg)
+    rec = record(jdir)
+    print("results of job %s in %s" % (jdir.name, where))
+    if rec.get("kind") in ("train", "merge") and rec.get("adapter"):
+        f = Path(root) / "models" / "registry.json"
+        reg = json.loads(f.read_text(encoding="utf-8")) if f.is_file() \
+            else {"adapters": {}, "bindings": {}}
+        entry = reg.setdefault("adapters", {}).setdefault(rec["adapter"], {})
+        if rec["kind"] == "train":
+            entry["trained"] = True
+        else:
+            try:
+                entry["merged"] = Path(rec["collect_to"]).resolve(
+                    ).relative_to(Path(root).resolve()).as_posix()
+            except ValueError:
+                entry["merged"] = rec["collect_to"]
+        entry.setdefault("jobs", []).append(jdir.name)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(reg, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8")
+
+
+def cmd_runtime(a):
+    """Where long jobs run (kept in the person's settings, not the
+    project), and the project's jobs."""
+    act, args = a.action, a.args
+    data = load()
+    if act == "list":
+        names = ["local"] + sorted(n for n in data["runtimes"]
+                                   if n != "local")
+        for n in names:
+            cfg = data["runtimes"].get(n, LOCAL)
+            print("%-14s %-8s %s%s" % (
+                n, cfg["kind"], cfg.get("host") or cfg.get("submit", "")
+                or "this computer", "  (default)" if n == (
+                    data["default"] or "local") else ""))
+        print("settings: %s" % runtimes_file())
+        return 0
+    if act == "add":
+        if len(args) != 1 or not re.fullmatch(r"[\w\-]+", args[0]):
+            fail("runtime add NAME --kind local|ssh|command ...")
+        cfg = {"kind": a.kind}
+        for k in ("host", "python", "workdir") + TEMPLATES:
+            v = getattr(a, "rt_python" if k == "python" else k, None)
+            if v:
+                cfg[k] = v
+        check_settings(cfg)
+        data["runtimes"][args[0]] = cfg
+        save(data)
+        print("runtime %s (%s) saved in %s" % (args[0], a.kind,
+                                               runtimes_file()))
+        return 0
+    if act == "rm":
+        if not args or args[0] not in data["runtimes"]:
+            fail("no runtime %s" % (args[0] if args else ""))
+        del data["runtimes"][args[0]]
+        if data["default"] == args[0]:
+            data["default"] = "local"
+        save(data)
+        print("removed %s" % args[0])
+        return 0
+    if act == "default":
+        get(args[0] if args else None)
+        data["default"] = args[0]
+        save(data)
+        print("default runtime: %s" % args[0])
+        return 0
+    if act == "check":
+        name, cfg = get(args[0] if args else None)
+        info = check(name, cfg)
+        if info is None:
+            print("%s has no check command" % name)
+            return 0
+        print("%s: Python %s, %s, %s CPU(s), %s GB free" % (
+            name, info["python"], info.get("system", ""),
+            info.get("cpus", "?"), info.get("free_gb", "?")))
+        for m, v in info["modules"].items():
+            print("  %-13s %s" % (m, v or "-"))
+        print("GPU: %s" % (", ".join(info["gpus"]) if info.get("gpus") else
+                           "Apple MPS" if info.get("mps") else "none found"))
+        return 0
+    if act == "jobs":
+        d = jobs_dir(a.project)
+        rows = sorted(d.iterdir()) if d.is_dir() else []
+        for jd in rows:
+            rec = record(jd)
+            print("%-22s %-10s %-14s %s" % (jd.name, rec.get("runtime", ""),
+                                             rec.get("status", ""),
+                                             rec.get("name", "")))
+        if not rows:
+            print("no jobs yet")
+        return 0
+    if act in ("status", "logs", "cancel", "collect"):
+        jdir = find_job(a.project, args[0] if args else "last")
+        rec = record(jdir)
+        name, cfg = get(rec["runtime"])
+        if act == "status":
+            st = status(jdir, cfg)
+            record(jdir, {"last_status": st})
+            print("%s: %s" % (jdir.name, st))
+        elif act == "logs":
+            print(logs(jdir, cfg), end="")
+        elif act == "cancel":
+            cancel(jdir, cfg)
+            print("cancelled %s" % jdir.name)
+        else:
+            finish(a.project, jdir, cfg)
+        return 0
+    fail("unknown action %s" % act)
+
+
+
+__all__ = ['cmd_runtime', 'runtimes_file']

@@ -54,6 +54,8 @@ from .governance import (
 from .script import (
     translate_script,
 )
+from .arch import cmd_arch
+from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .mcpserver import (
     APPROVAL_MODES, Server, ToolError, serve_stdio,
@@ -1036,6 +1038,54 @@ def build_parser():
     s.add_argument("--backend", default=None, metavar="PROVIDER",
                    help="for EDIT, unless it says USING a provider")
     s.set_defaults(fn=cmd_do)
+
+    s = sub.add_parser("arch", help="architecture lab: language-model "
+                       "architectures as three-faced files")
+    s.add_argument("action", choices=["create", "derive", "list", "show",
+                                      "validate", "set", "diff",
+                                      "components", "mutate", "export",
+                                      "build", "rank"])
+    s.add_argument("args", nargs="*")
+    s.add_argument("--preset", default="small", help="create: tiny, small, "
+                   "llama-7b-like, gpt2-like, moe-small")
+    s.add_argument("--parent", help="create: the file to put it under")
+    s.add_argument("--set", dest="pairs", action="append",
+                   metavar="KEY=VALUE", help="create, derive: change a key")
+    s.add_argument("--count", type=int, default=6, help="mutate: how many "
+                   "variants")
+    s.add_argument("--by", choices=["params", "kv", "speed"],
+                   default="params", help="rank: order")
+    s.add_argument("-o", "--out", help="export: the folder for config.json")
+    s.add_argument("--runtime", metavar="NAME", help="build: where to run "
+                   "it (tawjih runtime list)")
+    s.add_argument("--python", help="build: the Python with torch and "
+                   "transformers")
+    s.add_argument("--run", action="store_true", help="build: start it")
+    s.add_argument("--yes", action="store_true", help="mutate: make the "
+                   "variants; build: allow a runtime off this computer")
+    s.add_argument("--force", action="store_true", help="set: keep an "
+                   "invalid change; build: a large model")
+    s.set_defaults(fn=cmd_arch)
+
+    s = sub.add_parser("runtime", help="where long jobs run (this computer, "
+                       "ssh, or your own commands for a service) and the "
+                       "project's jobs")
+    s.add_argument("action", choices=["list", "add", "rm", "default",
+                                      "check", "jobs", "status", "logs",
+                                      "cancel", "collect"])
+    s.add_argument("args", nargs="*")
+    s.add_argument("--kind", choices=RUNTIME_KINDS, default="local")
+    s.add_argument("--host", help="ssh: user@machine (your ssh keys are "
+                   "used; nothing is stored)")
+    s.add_argument("--python", dest="rt_python", help="the Python there "
+                   "(default python3)")
+    s.add_argument("--workdir", help="ssh, command: the folder for jobs "
+                   "there (default tawjih-jobs)")
+    for t in RUNTIME_TEMPLATES:
+        s.add_argument("--" + t, metavar="COMMAND", help="command kind: the "
+                       "command line to %s; {job} is the job folder, {id} "
+                       "its id, {workdir}" % t)
+    s.set_defaults(fn=cmd_runtime)
 
     s = sub.add_parser("provider", help="named providers (providers.json): "
                        "address, model, key variable, retries, default, "

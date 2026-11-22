@@ -15,9 +15,8 @@ is given.
     quantize   a GGUF model to Q4_K_M, Q8_0, ... (llama.cpp)
     lora       the project's adapters: add, rm, list, bind, unbind, route,
                apply (sets each file's model: line), fuse, serve, lineage
-    runtime    where jobs run: this computer, another one over ssh, or a
-               service driven by your own commands; jobs, status, logs,
-               cancel, collect (train and merge take --runtime NAME)
+    (train and merge take --runtime NAME: a job on this computer, another
+    one over ssh, or a service you drive; see `tawjih runtime`)
 
 Routing works through what Tawjih already has: a file's `model:` line
 chooses the model of its step, and a server that offers each adapter under
@@ -34,7 +33,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -44,8 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tawjih  # noqa: E402
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import runtimes  # noqa: E402
+from tawjihlib import runtimes  # noqa: E402
 
 ENGINES = ("torch", "unsloth", "axolotl")
 QUANTS = ("Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_1", "Q4_K_S",
@@ -925,114 +922,12 @@ def job(a, what, prog, args, files, texts, collect_to, extra):
     code = runtimes.submit(a.project, jdir, name, cfg)
     if cfg["kind"] == "local":
         if code == 0:
-            finish(a, jdir, cfg)
+            runtimes.finish(a.project, jdir, cfg)
         return code
-    print("started; follow it with: runtime status %s, runtime logs %s, "
-          "then runtime collect %s" % (jdir.name, jdir.name, jdir.name))
+    print("started; follow it with: tawjih runtime status %s, tawjih "
+          "runtime logs %s, then tawjih runtime collect %s" % (
+              jdir.name, jdir.name, jdir.name))
     return 0
-
-
-def finish(a, jdir, cfg):
-    """Collect a job's results and note them in the registry."""
-    where = runtimes.collect(jdir, cfg)
-    rec = runtimes.record(jdir)
-    print("results of job %s in %s" % (jdir.name, where))
-    if rec.get("kind") in ("train", "merge") and rec.get("adapter"):
-        reg = load_registry(a)
-        entry = reg["adapters"].setdefault(rec["adapter"], {})
-        if rec["kind"] == "train":
-            entry["trained"] = True
-        else:
-            entry["merged"] = rel(a, Path(rec["collect_to"]))
-        entry.setdefault("jobs", []).append(jdir.name)
-        save_registry(a, reg)
-
-
-def cmd_runtime(a):
-    act, args = a.action, a.args
-    data = runtimes.load()
-    if act == "list":
-        names = ["local"] + sorted(n for n in data["runtimes"]
-                                   if n != "local")
-        for n in names:
-            cfg = data["runtimes"].get(n, runtimes.LOCAL)
-            print("%-14s %-8s %s%s" % (
-                n, cfg["kind"], cfg.get("host") or cfg.get("submit", "")
-                or "this computer", "  (default)" if n == (
-                    data["default"] or "local") else ""))
-        print("settings: %s" % runtimes.runtimes_file())
-        return 0
-    if act == "add":
-        if len(args) != 1 or not re.fullmatch(r"[\w\-]+", args[0]):
-            fail("runtime add NAME --kind local|ssh|command ...")
-        cfg = {"kind": a.kind}
-        for k in ("host", "python", "workdir") + runtimes.TEMPLATES:
-            v = getattr(a, "rt_python" if k == "python" else k, None)
-            if v:
-                cfg[k] = v
-        runtimes.check_settings(cfg)
-        data["runtimes"][args[0]] = cfg
-        runtimes.save(data)
-        print("runtime %s (%s) saved in %s" % (args[0], a.kind,
-                                               runtimes.runtimes_file()))
-        return 0
-    if act == "rm":
-        if not args or args[0] not in data["runtimes"]:
-            fail("no runtime %s" % (args[0] if args else ""))
-        del data["runtimes"][args[0]]
-        if data["default"] == args[0]:
-            data["default"] = "local"
-        runtimes.save(data)
-        print("removed %s" % args[0])
-        return 0
-    if act == "default":
-        runtimes.get(args[0] if args else None)
-        data["default"] = args[0]
-        runtimes.save(data)
-        print("default runtime: %s" % args[0])
-        return 0
-    if act == "check":
-        name, cfg = runtimes.get(args[0] if args else None)
-        info = runtimes.check(name, cfg)
-        if info is None:
-            print("%s has no check command" % name)
-            return 0
-        print("%s: Python %s, %s, %s CPU(s), %s GB free" % (
-            name, info["python"], info.get("system", ""),
-            info.get("cpus", "?"), info.get("free_gb", "?")))
-        for m, v in info["modules"].items():
-            print("  %-13s %s" % (m, v or "-"))
-        print("GPU: %s" % (", ".join(info["gpus"]) if info.get("gpus") else
-                           "Apple MPS" if info.get("mps") else "none found"))
-        return 0
-    if act == "jobs":
-        d = runtimes.jobs_dir(a.project)
-        rows = sorted(d.iterdir()) if d.is_dir() else []
-        for jd in rows:
-            rec = runtimes.record(jd)
-            print("%-22s %-10s %-14s %s" % (jd.name, rec.get("runtime", ""),
-                                             rec.get("status", ""),
-                                             rec.get("name", "")))
-        if not rows:
-            print("no jobs yet")
-        return 0
-    if act in ("status", "logs", "cancel", "collect"):
-        jdir = runtimes.find_job(a.project, args[0] if args else "last")
-        rec = runtimes.record(jdir)
-        name, cfg = runtimes.get(rec["runtime"])
-        if act == "status":
-            st = runtimes.status(jdir, cfg)
-            runtimes.record(jdir, {"last_status": st})
-            print("%s: %s" % (jdir.name, st))
-        elif act == "logs":
-            print(runtimes.logs(jdir, cfg), end="")
-        elif act == "cancel":
-            runtimes.cancel(jdir, cfg)
-            print("cancelled %s" % jdir.name)
-        else:
-            finish(a, jdir, cfg)
-        return 0
-    fail("unknown action %s" % act)
 
 
 def build_parser():
@@ -1142,24 +1037,6 @@ def build_parser():
     runnable(s)
     s.set_defaults(fn=cmd_lora)
 
-    s = sub.add_parser("runtime", help="where jobs run: list, add, rm, "
-                       "default, check, jobs, status, logs, cancel, collect")
-    s.add_argument("action", choices=["list", "add", "rm", "default",
-                                      "check", "jobs", "status", "logs",
-                                      "cancel", "collect"])
-    s.add_argument("args", nargs="*")
-    s.add_argument("--kind", choices=runtimes.KINDS, default="local")
-    s.add_argument("--host", help="ssh: user@machine (your ssh keys are "
-                   "used; nothing is stored)")
-    s.add_argument("--python", dest="rt_python", help="the Python there "
-                   "(default python3)")
-    s.add_argument("--workdir", help="ssh, command: the folder for jobs "
-                   "there (default tawjih-jobs)")
-    for t in runtimes.TEMPLATES:
-        s.add_argument("--" + t, metavar="COMMAND", help="command: the "
-                       "command line to %s; {job} is the job folder, {id} "
-                       "its id, {workdir}" % t)
-    s.set_defaults(fn=cmd_runtime)
     return p
 
 
@@ -1173,7 +1050,7 @@ def main(argv=None):
             return 2
     try:
         return a.fn(a) or 0
-    except (BridgeError, runtimes.RuntimeError_) as e:
+    except BridgeError as e:
         print("error: %s" % e, file=sys.stderr)
         return 1
     except tawjih.Die:

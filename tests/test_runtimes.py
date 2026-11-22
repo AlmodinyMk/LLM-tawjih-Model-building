@@ -64,7 +64,7 @@ class Runtimes(Bridge):
 
     def add_cloud(self):
         c = str(self.cloud)
-        code, out, err = self.nb(
+        code, out, err = self.cli(
             "runtime", "add", "cloud", "--kind", "command",
             "--python", str(self.py),
             "--submit", "mkdir -p %s/{id} && cp -r {job}/. %s/{id}/ && "
@@ -75,24 +75,24 @@ class Runtimes(Bridge):
         self.assertEqual(code, 0, err)
 
     def test_list_add_rm_default(self):
-        out = self.nb("runtime", "list")[1]
+        out = self.cli("runtime", "list")[1]
         self.assertIn("local", out)
         self.add_cloud()
-        self.assertIn("cloud", self.nb("runtime", "list")[1])
-        self.assertEqual(self.nb("runtime", "default", "cloud")[0], 0)
-        self.assertIn("(default)", [l for l in self.nb(
+        self.assertIn("cloud", self.cli("runtime", "list")[1])
+        self.assertEqual(self.cli("runtime", "default", "cloud")[0], 0)
+        self.assertIn("(default)", [l for l in self.cli(
             "runtime", "list")[1].splitlines() if l.startswith("cloud")][0])
-        self.assertEqual(self.nb("runtime", "rm", "cloud")[0], 0)
+        self.assertEqual(self.cli("runtime", "rm", "cloud")[0], 0)
         data = json.loads((self.root / "rt.json").read_text())
         self.assertEqual(data["default"], "local")
-        code, _, err = self.nb("runtime", "add", "x", "--kind", "ssh")
+        code, _, err = self.cli("runtime", "add", "x", "--kind", "ssh")
         self.assertIn("--host", err)
-        code, _, err = self.nb("runtime", "add", "x", "--kind", "command",
+        code, _, err = self.cli("runtime", "add", "x", "--kind", "command",
                                "--submit", "run --api_key=abcdefghijkl")
         self.assertIn("key or password", err)
 
     def test_check_here(self):
-        code, out, err = self.nb("runtime", "check")
+        code, out, err = self.cli("runtime", "check")
         self.assertEqual(code, 0, err)
         self.assertIn("Python", out)
         self.assertIn("GB free", out)
@@ -108,7 +108,7 @@ class Runtimes(Bridge):
         reg = json.loads((self.root / "models" / "registry.json")
                          .read_text())
         self.assertTrue(reg["adapters"]["a1"]["trained"])
-        self.assertIn("collected", self.nb("runtime", "jobs")[1])
+        self.assertIn("collected", self.cli("runtime", "jobs")[1])
 
     def test_train_on_a_remote_service(self):
         self.add_cloud()
@@ -124,12 +124,12 @@ class Runtimes(Bridge):
         code, out, err = self.nb(*args, "--run", "--yes")
         self.assertEqual(code, 0, err)
         self.assertIn("runtime collect", out)
-        self.assertIn(": done", self.nb("runtime", "status", "last")[1])
-        self.assertIn("training with", self.nb("runtime", "logs",
+        self.assertIn(": done", self.cli("runtime", "status", "last")[1])
+        self.assertIn("training with", self.cli("runtime", "logs",
                                                "last")[1])
         adir = self.root / "models" / "adapters" / "a2"
         self.assertFalse((adir / "adapter_config.json").is_file())
-        code, out, err = self.nb("runtime", "collect", "last")
+        code, out, err = self.cli("runtime", "collect", "last")
         self.assertEqual(code, 0, err)
         self.assertTrue((adir / "adapter_config.json").is_file())
         # the dataset went with the job, and no absolute path of here
