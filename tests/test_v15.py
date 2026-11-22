@@ -157,5 +157,123 @@ class Faces(Base):
         self.assertTrue((self.root / "quarantine" / self.nid).is_dir())
 
 
+class Parallel(Base):
+    """A start step feeding four branches joined at the end."""
+
+    def setUp(self):
+        super().setUp()
+        import threading
+        import time
+        import tawjih
+        self.active, self.peak, lock = 0, 0, threading.Lock()
+
+        def slow(prompt, model=""):
+            with lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            time.sleep(0.3)
+            with lock:
+                self.active -= 1
+            if "FAIL-ME" in prompt:
+                return ""                  # an empty answer fails the step
+            word = prompt.split("# Instructions\n")[1].split("\n")[0]
+            return "out of " + word
+        tawjih.BACKENDS["slow"] = slow
+        self.addCleanup(tawjih.BACKENDS.pop, "slow", None)
+        for t in ("start", "b1", "b2", "b3", "b4", "join"):
+            self.cli("new", t)
+            self.fill(str(len(self.store().nodes)), instructions=t)
+        self.cli("path", "p", "1 TO 2 AND 3 AND 4 AND 5, 2 AND 3 AND 4 "
+                 "AND 5 TO 6")
+
+    def run_p(self, *extra):
+        import time
+        t0 = time.monotonic()
+        code, out, err = self.cli("run", "p", "--input", "x", "--backend",
+                                  "slow", "--no-cache", *extra)
+        return code, out, err, time.monotonic() - t0
+
+    def test_same_result_faster(self):
+        code, one, err, t1 = self.run_p()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.peak, 1)
+        code, four, err, t4 = self.run_p("--max-workers", "4")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(one, four)
+        self.assertEqual(self.peak, 4)
+        self.assertLess(t4, t1 - 0.6)
+        self.assertIn("at the same time", err)
+        log = sorted((self.root / "runs").glob("p-*.md"))[-1].read_text(
+            encoding="utf-8")
+        steps = [l for l in log.splitlines() if l.startswith("## Step")]
+        self.assertEqual([int(l.split()[2].rstrip(":")) for l in steps],
+                         [1, 2, 3, 4, 5, 6])
+
+    def test_on_failure(self):
+        self.fill("3", instructions="FAIL-ME")
+        code, _, err, _ = self.run_p("--max-workers", "4")
+        self.assertNotEqual(code, 0)
+        self.assertIn("failed", err)
+        code, out, err, _ = self.run_p("--max-workers", "4", "--on-failure",
+                                       "continue")
+        self.assertEqual(code, 0, err)
+        self.assertIn("left out", err)
+        self.assertIn("out of join", out)
+        rec = json.loads(max((self.root / "history").glob(
+            "production-p-*.json"), key=lambda f: f.stat().st_mtime_ns)
+            .read_text(encoding="utf-8"))
+        self.assertEqual(rec["status"], "partial")
+        self.assertEqual(rec["failed_steps"], [3])
+
+    def test_code_steps_run_one_by_one(self):
+        self.fill("2", instructions="", code="output = input + '!'")
+        code, out, err, _ = self.run_p("--max-workers", "4", "--allow-code")
+        self.assertEqual(code, 0, err)
+
+
+class Iterate(Base):
+    def setUp(self):
+        super().setUp()
+        self.cli("new", "A")
+        self.fill("1", instructions="improve")
+        self.cli("path", "p", "1, ITERATE 3 UNTIL status = pass")
+
+    def test_rounds_until(self):
+        self.replies = ['{"status": "fail"}', '{"status": "pass"}']
+        code, out, err = self.cli("run", "p", "--input", "x", "--backend",
+                                  "fake", "--no-cache")
+        self.assertEqual(code, 0, err)
+        self.assertIn("round 2 of 3", err)
+        self.assertNotIn("round 3", err)
+        self.assertIn("pass", out)
+        # the second round got the first round's result
+        self.assertIn('"status": "fail"', self.prompts[1])
+
+    def test_not_met(self):
+        self.replies = ['{"status": "fail"}'] * 3
+        code, _, err = self.cli("run", "p", "--input", "x", "--backend",
+                                "fake", "--no-cache")
+        self.assertNotEqual(code, 0)
+        self.assertIn("after 3 round", err)
+
+    def test_command_line_and_arabic(self):
+        self.cli("path", "q", "1")
+        self.replies = ["a", "b"]
+        code, out, err = self.cli("run", "q", "--input", "x", "--backend",
+                                  "fake", "--no-cache", "--iterate", "2")
+        self.assertEqual(code, 0, err)
+        self.assertIn("round 2 of 2", err)
+        self.assertEqual(self.cli("run", "q", "--input", "x", "--until",
+                                  "ok")[0] != 0, True)
+        self.assertEqual(self.cli("path", "r", "1، كرر 2 حتى تم")[0], 0)
+        self.assertIn("ITERATE 2 UNTIL", (self.root / "paths" / "r.path")
+                      .read_text(encoding="utf-8"))
+        self.cli("new", "B")
+        code, _, err = self.cli("path", "s", "1 TO 2 ITERATE 2")
+        self.assertIn("separate it with a comma", err)
+        code, _, err = self.cli("path", "t", "1, ITERATE 99")
+        self.assertIn("1 to 50", err)
+
+
 if __name__ == "__main__":
     unittest.main()

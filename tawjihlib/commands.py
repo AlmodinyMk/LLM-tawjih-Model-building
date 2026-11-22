@@ -23,6 +23,7 @@ from .core import (
     SECTIONS, SPLITS, Store, _kw, _parse_contract, face_of, build_flow,
     contract_fits, die,
     flow_condition_notes, flow_contract_errors, load_schema, parse_examples,
+    parse_iterate,
     parse_level, schema_file, schema_problems,
 )
 from .providers import (
@@ -511,6 +512,12 @@ def cmd_path(a):
     st = Store(a.project)
     flow = _flow_from_args(st, a.name, a.refs)
     print_plan(st, a.name, plan_steps(st, flow), sys.stdout)
+    if flow.iterate:
+        n_, c_ = flow.iterate
+        print("ITERATE: the whole path up to %d time(s)%s" % (n_, (
+            ", until the result meets %s%s" % ("NOT " if c_[0] else "",
+                                                c_[1])) if c_ else ""),
+              file=sys.stdout)
 
 
 def cmd_run(a):
@@ -542,12 +549,28 @@ def _run_from_args(st, a, flow):
             "asked again anyway)")
     if a.allow_code:
         audit_warnings(st, flow)
+    workers = getattr(a, "max_workers", 1) or 1
+    if workers < 1 or workers > 32:
+        die("--max-workers takes 1 to 32")
+    iterate = None
+    if getattr(a, "iterate", None) is not None:
+        words = ["ITERATE", str(a.iterate)] + (
+            ["UNTIL"] + a.until.split() if a.until else [])
+        try:
+            iterate = parse_iterate(words)
+        except FlowError as e:
+            die(str(e).replace("ITERATE", "--iterate"))
+    elif getattr(a, "until", None):
+        die("--until goes with --iterate N")
     return run_flow(st, a.name, text, a.backend, a.allow_code, flow,
                     resume=a.resume, use_cache=not a.no_cache, redo=redo,
                     model_override=getattr(a, "model", None) or "",
                     code_timeout=a.code_timeout,
                     retries=a.retries, approve=a.approve,
-                    sandbox=getattr(a, "sandbox", False))
+                    sandbox=getattr(a, "sandbox", False),
+                    max_workers=workers,
+                    on_failure=getattr(a, "on_failure", "stop"),
+                    iterate=iterate)
 
 
 def cmd_trees(a):
@@ -580,6 +603,12 @@ def cmd_produce(a):
     flow = _flow_from_args(st, a.name, a.refs)
     plan = plan_steps(st, flow)
     print_plan(st, a.name, plan, sys.stdout if a.plan else sys.stderr)
+    if flow.iterate:
+        n_, c_ = flow.iterate
+        print("ITERATE: the whole path up to %d time(s)%s" % (n_, (
+            ", until the result meets %s%s" % ("NOT " if c_[0] else "",
+                                                c_[1])) if c_ else ""),
+              file=sys.stdout if a.plan else sys.stderr)
     problems = []
     for p in plan:
         if not p["instructions"] and not p["code"]:
@@ -860,6 +889,12 @@ def cmd_generate(a):
         prop.unlink()
         print("accepted: paths/%s.path" % a.name)
         print_plan(st, a.name, plan_steps(st, flow), sys.stdout)
+    if flow.iterate:
+        n_, c_ = flow.iterate
+        print("ITERATE: the whole path up to %d time(s)%s" % (n_, (
+            ", until the result meets %s%s" % ("NOT " if c_[0] else "",
+                                                c_[1])) if c_ else ""),
+              file=sys.stdout)
         return
     allowed = _scope_ids(st, a.scope)
     if not allowed:

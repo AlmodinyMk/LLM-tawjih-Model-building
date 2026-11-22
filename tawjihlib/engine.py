@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
 
@@ -481,14 +482,68 @@ def _ask_approval(n, when, text, mode):
     return False, None
 
 
+class _BranchFailed(Exception):
+    """A step failed and the run goes on without it (--on-failure
+    continue)."""
+
+
+class _RoutedLog(list):
+    """The run's log; while a step runs in a worker thread, its lines go to
+    that step's own buffer, merged in plan order afterwards."""
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.local = threading.local()
+
+    def append(self, line):
+        buf = getattr(self.local, "buf", None)
+        (buf if buf is not None else super()).append(line)
+
+
 def run_flow(store, name, text, backend, allow_code, flow, resume=False,
              use_cache=True, redo=(), model_override="",
              code_timeout=CODE_TIMEOUT, retries=None, approve=None,
-             sandbox=False):
+             sandbox=False, max_workers=1, on_failure="stop", iterate=None):
+    """Run a flow once, or with ITERATE (or iterate=(rounds, cond)) again
+    and again, each round on the result of the one before, until the result
+    meets the condition (as for IF). Returns the last result."""
+    it = iterate or getattr(flow, "iterate", None)
+    kw = dict(resume=resume, use_cache=use_cache, redo=redo,
+              model_override=model_override, code_timeout=code_timeout,
+              retries=retries, approve=approve, sandbox=sandbox,
+              max_workers=max_workers, on_failure=on_failure)
+    if not it:
+        return _run_once(store, name, text, backend, allow_code, flow, **kw)
+    rounds, cond = it
+    result = None
+    for r in range(1, rounds + 1):
+        print("round %d of %d" % (r, rounds), file=sys.stderr)
+        result = _run_once(store, name, text, backend, allow_code, flow,
+                           start_input=None if r == 1 else result,
+                           round_of=(r, rounds), **kw)
+        if cond and condition_holds(result, cond[1]) != cond[0]:
+            print("ITERATE: %s%s met in round %d" % (
+                "NOT " if cond[0] else "", cond[1], r), file=sys.stderr)
+            return result
+    if cond:
+        die("ITERATE: the result still does not meet UNTIL %s%s after %d "
+            "round(s); the last result is in runs/" % (
+                "NOT " if cond[0] else "", cond[1], rounds))
+    return result
+
+
+def _run_once(store, name, text, backend, allow_code, flow, resume=False,
+              use_cache=True, redo=(), model_override="",
+              code_timeout=CODE_TIMEOUT, retries=None, approve=None,
+              sandbox=False, max_workers=1, on_failure="stop",
+              start_input=None, round_of=None):
     """Execute the machine sides of the files of a flow. A file runs after
     the files that feed it and receives their outputs; a file none of whose
-    connections is active is skipped. Writes the log, state snapshot and
-    result to runs/ and a record of the operation to history/."""
+    connections is active is skipped. With max_workers above 1, steps whose
+    inputs are ready run at the same time (steps that run code or ask for
+    approval run one by one). With on_failure "continue", a failed step
+    without a fallback is left out and the steps after it are skipped,
+    instead of stopping the run. Writes the log, state snapshot and result
+    to runs/ and a record of the operation to history/."""
     backend = backend or default_backend(store.root)
     pol = load_policy(store.root)
     if allow_code and not pol["allow_code"]:
@@ -505,7 +560,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
         if p["tree"] not in [t["id"] for t in trees]:
             trees.append({"id": p["tree"], "title": p["tree_title"]})
     tree_of = {p["id"]: p["tree"] for p in plan}
-    log = ["# Run of path '%s'" % name]
+    log = _RoutedLog(["# Run of path '%s'%s" % (name, " (round %d of %d)"
+                                                 % round_of if round_of
+                                                 else "")])
+    lock = threading.RLock()
+    failures = []
     logfile = _stamped(store.rdir, name, ".md")
     resfile = logfile.with_name(logfile.stem + ".result.txt")
     statefile = logfile.with_name(logfile.stem + ".state.json")
@@ -530,7 +589,9 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
               "result": "", "model": default_model,
               "resume": bool(resume), "from_cache": 0, "redo": list(redo),
               "usage": {"in": 0, "out": 0, "seconds": 0.0, "calls": 0,
-                        "retries": 0, "fallbacks": 0, "redacted": 0}}
+                        "retries": 0, "fallbacks": 0, "redacted": 0},
+              "max_workers": max_workers, "on_failure": on_failure,
+              "round": list(round_of) if round_of else None}
 
     def save_state(outputs_map):
         statefile.write_text(json.dumps({
@@ -549,6 +610,12 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
 
     def fail(p, n, what, e, outputs_map):
         log.append("### FAILED (%s)\n%s: %s" % (what, type(e).__name__, e))
+        if on_failure == "continue":
+            p["status"] = "failed"
+            p["error"] = "%s: %s: %s" % (what, type(e).__name__, e)
+            print("  step %d failed (%s: %s); going on without it" % (
+                p["step"], what, e), file=sys.stderr)
+            raise _BranchFailed(p["error"])
         logfile.write_text("\n".join(log) + "\n", encoding="utf-8")
         save_state(outputs_map)
         p["status"] = "failed"
@@ -662,7 +729,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             if isinstance(kept, str) and kept.strip():
                 out = kept
                 p["cached"] = True
-                record["from_cache"] += 1
+                with lock:
+                    record["from_cache"] += 1
                 print("  answer taken from the cache", file=sys.stderr)
                 log.append("(answer taken from the cache: %s)" % cfile.name)
             else:
@@ -671,7 +739,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 ask, problem = prompt, None
                 for attempt in range(allowed + 1):
                     if attempt:
-                        record["usage"]["retries"] += 1
+                        with lock:
+                            record["usage"]["retries"] += 1
                         print("  asking again (%d of %d): %s" % (
                             attempt, allowed, problem), file=sys.stderr)
                         log.append("(answer rejected: %s; asked again)"
@@ -686,10 +755,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                         raise
                     except Exception as e:
                         raise StepFailure("model call", e)
-                    u = record["usage"]
-                    u["calls"] += 1
-                    for k in ("in", "out", "seconds", "redacted"):
-                        u[k] += usage.get(k, 0)
+                    with lock:
+                        u = record["usage"]
+                        u["calls"] += 1
+                        for k in ("in", "out", "seconds", "redacted"):
+                            u[k] += usage.get(k, 0)
                     pu = p.setdefault("usage", {"in": 0, "out": 0,
                                                 "seconds": 0.0, "calls": 0})
                     pu["calls"] += 1
@@ -731,7 +801,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 raise StepFailure("contract", ValueError(cerr))
         return out
 
-    for p in plan:
+    def run_step(p):
         n = store.nodes[p["id"]]
         head = "step %d/%d  %s [%s] %s" % (p["step"], len(plan), p["number"],
                                            n.id, n.title)
@@ -742,7 +812,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             p["step"], n.title, n.id, p["tree_title"], p["machine_sha"]))
         incoming = flow.incoming(n.id)
         if not incoming:
-            prev, feeders = text, []
+            prev, feeders = (text if start_input is None else start_input), []
         else:
             live = [e for e in incoming if active(e)]
             if not live:
@@ -750,7 +820,7 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 print(head + "  (skipped: no active connection)",
                       file=sys.stderr)
                 log.append("skipped: no active connection")
-                continue
+                return
             feeders = [e["src"] for e in live if not e.get("order")]
             p["after"] = [e["src"] for e in live if e.get("order")]
             if not feeders:              # only LINKs: the original request
@@ -765,7 +835,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
         for f in feeders:
             log.append("input from: %s [%s]" % (store.nodes[f].title, f))
             if tree_of[f] != p["tree"]:
-                record["handoffs"] += 1
+                with lock:
+                    record["handoffs"] += 1
                 print("  handoff from tree: %s" % store.ancestors(f)[0].title,
                       file=sys.stderr)
         ps = flow.steps.get(n.id, {})
@@ -786,7 +857,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
             for attempt in range(ps.get("retry", 0) if until else 0):
                 if condition_holds(out, until[1]) != until[0]:
                     break
-                record["usage"]["retries"] += 1
+                with lock:
+                    record["usage"]["retries"] += 1
                 print("  UNTIL %s%s not met; trying again (%d of %d)" % (
                     "NOT " if until[0] else "", until[1], attempt + 1,
                     ps["retry"]), file=sys.stderr)
@@ -810,7 +882,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                 sf.what, sf.err, fb.title, fb.id), file=sys.stderr)
             log.append("### FAILED (%s), falling back to %s [%s]\n%s" % (
                 sf.what, fb.title, fb.id, sf.err))
-            record["usage"]["fallbacks"] += 1
+            with lock:
+                record["usage"]["fallbacks"] += 1
             p["fallback"] = fb.id
             try:
                 out = execute(p, fb, prev)
@@ -866,6 +939,67 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
                                       store.nodes[pick].title), file=sys.stderr)
             log.append("chose: %s [%s]" % (store.nodes[pick].title, pick))
         p.update(status="done", output_chars=len(out))
+
+    def threadable(p):
+        """A step a worker thread may run: no code to run here and no
+        question to ask on the terminal (those run one by one)."""
+        n = store.nodes[p["id"]]
+        ps = flow.steps.get(n.id, {})
+        fb = store.nodes.get(n.fallback) if n.fallback else None
+        for m in [n] + ([fb] if fb else []):
+            if allow_code and m.code.strip():
+                return False
+        return not (n.approve or ps.get("approve")) or approve != "ask"
+
+    def guarded(p):
+        try:
+            run_step(p)
+        except _BranchFailed:
+            failures.append(p["step"])
+
+    deps = {p["id"]: {e["src"] for e in flow.incoming(p["id"])}
+            for p in plan}
+    if max_workers <= 1:
+        for p in plan:
+            guarded(p)
+    else:
+        import concurrent.futures as cf
+        pending, finished = list(plan), set()
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            while pending:
+                ready = [p for p in pending if deps[p["id"]] <= finished] \
+                    or pending[:1]
+                alone = [p for p in ready if not threadable(p)]
+                together = [p for p in ready if threadable(p)]
+                for p in alone:
+                    guarded(p)
+                bufs = {}
+
+                def work(p):
+                    log.local.buf = bufs[p["id"]] = []
+                    try:
+                        guarded(p)
+                    finally:
+                        log.local.buf = None
+                if len(together) > 1:
+                    print("  running %d step(s) at the same time: %s" % (
+                        len(together), ", ".join(str(p["step"])
+                                                 for p in together)),
+                          file=sys.stderr)
+                futures = [pool.submit(work, p) for p in together]
+                errors = []
+                for f in futures:
+                    try:
+                        f.result()
+                    except BaseException as e:      # Die, KeyboardInterrupt
+                        errors.append(e)
+                for p in together:                  # the log in plan order
+                    log.extend(bufs.get(p["id"], []))
+                if errors:
+                    raise errors[0]
+                for p in ready:
+                    finished.add(p["id"])
+                    pending.remove(p)
     ends = [t for t in flow.terminals() if t in outputs]
     if len(ends) == 1:
         result = outputs[ends[0]]
@@ -878,7 +1012,13 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     logfile.write_text("\n".join(log) + "\n", encoding="utf-8")
     resfile.write_text(result + "\n", encoding="utf-8")
     save_state(outputs)
-    record.update(status="done", result=str(resfile), final_steps=ends)
+    record.update(status="partial" if failures else "done",
+                  result=str(resfile), final_steps=ends,
+                  failed_steps=failures)
+    if failures:
+        print("warning: step(s) %s failed and were left out (--on-failure "
+              "continue)" % ", ".join(map(str, sorted(failures))),
+              file=sys.stderr)
     rec = document()
     print("log: %s\nstate: %s\nresult: %s\nrecord: %s" % (
         logfile, statefile, resfile, rec), file=sys.stderr)
@@ -888,7 +1028,8 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
 __all__ = [
     'CODE_TIMEOUT', 'CodeTimeout', 'SANDBOX_BOOT', 'SANDBOX_FILE_MB',
     'SANDBOX_LIMITS', 'SANDBOX_MEMORY_MB', 'SandboxError', 'StepFailure',
-    'StepOutputs', '_ask_approval', '_exec_limited', '_stamped',
+    'StepOutputs', '_BranchFailed', '_RoutedLog', '_ask_approval',
+    '_exec_limited', '_run_once', '_stamped',
     'build_prompt', 'cache_file', 'choose_among', 'choose_by_key',
     'edge_text',
     'flow_text', 'machine_side', 'plan_steps', 'print_plan', 'run_code',

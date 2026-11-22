@@ -1081,6 +1081,8 @@ KEYWORDS = {
     # how a step runs in this path
     "USING": "USING", "RETRY": "RETRY", "UNTIL": "UNTIL", "PICK": "PICK",
     "BY": "BY",
+    # the whole path, again and again
+    "ITERATE": "ITERATE", "كرر": "ITERATE", "كرّر": "ITERATE",
     # reserved, with a reason (see UNSUPPORTED)
     "PARALLEL": "PARALLEL", "CACHE": "CACHE",
     "إلى": "TO", "الى": "TO", "مرر": "TO", "مرّر": "TO", "و": "AND",
@@ -1094,7 +1096,7 @@ CONNECTING = {"TO", "AND", "IF", "NOT", "ELSE", "AMONG", "THROUGH", "LINK"}
 UNSUPPORTED = {
     "PARALLEL": "PARALLEL is not a word of the path language: files joined "
                 "by AND (A TO B AND C) are already independent branches; "
-                "running them at the same time is not implemented",
+                "run them at the same time with --max-workers N",
     "CACHE": "CACHE is not a word of the path language: every model answer "
              "is kept already, and --resume reuses them"}
 STEP_KEYS = ("using", "retry", "until", "pick", "each", "approve")
@@ -1109,6 +1111,7 @@ class Flow:
         self.nodes, self.edges, self.lines, self._groups = [], [], [], 0
         self.steps, self.calls = {}, []    # per-file settings; CALLed paths
         self.among_by = {}                 # AMONG group -> JSON key (BY)
+        self.iterate = None                # (rounds, (negated, word) or None)
 
     def add_node(self, nid):
         if nid not in self.nodes:
@@ -1143,6 +1146,9 @@ class Flow:
             raise FlowError("path %s calls itself (through %s)" % (
                 name, " -> ".join(calling)))
         sub = build_flow(load(name), resolve, load, calling + (name,))
+        if sub.iterate:
+            raise FlowError("path %s has ITERATE, which repeats a whole path; "
+                            "it cannot be CALLed" % name)
         for nid in sub.nodes:
             if nid in self.nodes:
                 raise FlowError("file %s is in this path and in the called "
@@ -1365,6 +1371,10 @@ class Flow:
                     connect(cur, other, [], [not cond[0], cond[1]])
                     tgt = tgt + other
                 cur = tgt
+            elif _kw(tokens[pos]) == "ITERATE":
+                raise FlowError("ITERATE starts a statement of its own: "
+                                "separate it with a comma (1 TO 2, ITERATE "
+                                "3 UNTIL ok)")
             else:
                 raise FlowError("expected TO, LINK or AMONG but found '%s' "
                                 "in: %s" % (tokens[pos], text))
@@ -1410,10 +1420,48 @@ class Flow:
                 if not any(e["src"] == n for e in self.edges)]
 
 
+def parse_iterate(tokens):
+    """ITERATE n [UNTIL [NOT] word | key = value]: the whole path runs at
+    most n times, each round on the result of the one before, until the
+    result meets the condition (as for IF). Returns (n, cond or None)."""
+    t = list(tokens[1:])
+    if not t or not t[0].isdigit() or not 1 <= int(t[0]) <= 50:
+        raise FlowError("ITERATE needs a number of rounds from 1 to 50 "
+                        "(ITERATE 5 UNTIL ok)")
+    n, t = int(t[0]), t[1:]
+    if not t:
+        return n, None
+    if _kw(t[0]) != "UNTIL":
+        raise FlowError("after ITERATE %d comes UNTIL, or nothing" % n)
+    t = t[1:]
+    neg = bool(t) and _kw(t[0]) == "NOT"
+    t = t[1:] if neg else t
+    word = "".join(t)
+    if not word or ("=" not in word and len(t) > 1) or \
+            word.startswith("=") or word.endswith("="):
+        raise FlowError("ITERATE ... UNTIL takes one word, or key = value")
+    return n, (neg, word)
+
+
 def build_flow(statements, resolve, load=None, calling=()):
     """Statements without any connecting word are a plain sequence.
     load(name) gives the statements of a saved path, for CALL."""
     flow = Flow()
+    rest = []
+    for st in statements:
+        if st and _kw(st[0]) == "ITERATE":
+            if flow.iterate:
+                raise FlowError("ITERATE is given twice")
+            flow.iterate = parse_iterate(st)
+            n, cond = flow.iterate
+            flow.lines.append(["ITERATE", str(n)] + (
+                ["UNTIL"] + (["NOT"] if cond[0] else []) + [cond[1]]
+                if cond else []))
+        else:
+            rest.append(st)
+    if flow.iterate and not rest:
+        raise FlowError("ITERATE repeats a path; give its files too")
+    statements = rest
     words = {_kw(t) for st in statements for t in st} - {None}
     if not words:
         ids = [resolve(t) for st in statements for t in st]
@@ -1510,6 +1558,7 @@ def flow_condition_notes(store, flow):
 
 __all__ = [
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
+    'parse_iterate',
     'SCHEMA_KEYWORDS', 'SCHEMA_TYPES', '_as_keys', '_same', 'load_schema',
     'schema_errors', 'schema_file', 'schema_problems', 'CONNECTING', 'STEP_KEYS', 'UNSUPPORTED', 'CONTRACT_HELP', 'DESCRIPTION', 'Die', 'EXAMPLE_KEYS', 'EXTRA',
     'FALSE_WORDS', 'Flow', 'FlowError', 'KEYWORDS', 'LEVELS', 'LEVELS_AR',

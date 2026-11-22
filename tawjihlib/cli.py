@@ -662,6 +662,18 @@ def build_parser():
                    "otherwise)")
     s.add_argument("--sandbox", action="store_true",
                    help="run code steps in a separate, limited process")
+    s.add_argument("--max-workers", type=int, default=1, metavar="N",
+                   help="run up to N steps whose inputs are ready at the "
+                   "same time (default 1: one by one)")
+    s.add_argument("--on-failure", choices=["stop", "continue"],
+                   default="stop", help="continue: leave a failed step "
+                   "out and skip what needs it, instead of stopping")
+    s.add_argument("--iterate", type=int, metavar="N",
+                   help="run the whole path up to N times, each round on "
+                   "the result of the one before (like ITERATE N)")
+    s.add_argument("--until", metavar="COND", help="with --iterate: stop "
+                   "when the result meets this word, NOT word, or "
+                   "key=value")
     s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
                    metavar="SECONDS", help="stop a code step that runs longer "
                    "(default %g; 0 for no limit)" % CODE_TIMEOUT)
@@ -706,6 +718,18 @@ def build_parser():
                    "otherwise)")
     s.add_argument("--sandbox", action="store_true",
                    help="run code steps in a separate, limited process")
+    s.add_argument("--max-workers", type=int, default=1, metavar="N",
+                   help="run up to N steps whose inputs are ready at the "
+                   "same time (default 1: one by one)")
+    s.add_argument("--on-failure", choices=["stop", "continue"],
+                   default="stop", help="continue: leave a failed step "
+                   "out and skip what needs it, instead of stopping")
+    s.add_argument("--iterate", type=int, metavar="N",
+                   help="run the whole path up to N times, each round on "
+                   "the result of the one before (like ITERATE N)")
+    s.add_argument("--until", metavar="COND", help="with --iterate: stop "
+                   "when the result meets this word, NOT word, or "
+                   "key=value")
     s.add_argument("--code-timeout", type=float, default=CODE_TIMEOUT,
                    metavar="SECONDS", help="stop a code step that runs longer "
                    "(default %g; 0 for no limit)" % CODE_TIMEOUT)
