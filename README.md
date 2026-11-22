@@ -897,6 +897,43 @@ this computer needs `--yes`, since its files are sent and it may cost
 money, and a project policy with `--allow-network false` or `local`
 refuses it.
 
+### Renting a GPU
+
+A rented GPU machine (from services such as RunPod, Vast.ai or Lambda that
+give ssh access) is an `ssh` runtime:
+
+1. Rent a machine with an NVIDIA GPU and a PyTorch image, and add your
+   public ssh key in the service's settings. It gives you an address and,
+   often, a port other than 22.
+2. Put it in `~/.ssh/config` (on Windows `C:\Users\YOU\.ssh\config`), so
+   ssh and scp find the port and the key:
+
+   ```
+   Host gpu
+       HostName 203.0.113.7
+       Port 22022
+       User root
+       IdentityFile ~/.ssh/id_ed25519
+   ```
+3. Install the libraries there once: `ssh gpu pip install transformers
+   peft trl datasets accelerate bitsandbytes`.
+4. Add and check it: `tawjih runtime add gpu --kind ssh --host gpu
+   --python python3`, then `tawjih runtime check gpu` (its libraries and
+   GPUs).
+5. Send jobs with `--runtime gpu --run --yes`, follow them with `runtime
+   status last` and `runtime logs last`, and bring the results back with
+   `runtime collect last`.
+6. Stop the machine in the service when you are done: Tawjih does not rent
+   or stop machines, and a running machine is charged.
+
+A local folder given as `--base-model` is not sent with the job; use a
+Hugging Face model id, or copy the folder there under the same path. To
+test a trained model on the GPU, serve it there (for example with vLLM,
+`lora serve` prints the command), open a tunnel with `ssh -N -L
+8000:localhost:8000 gpu`, and add a provider at
+`http://localhost:8000/v1`; the tunnel ends on this computer, so a policy
+of `"allow_network": "local"` still allows it.
+
 ## Desktop windows, for Linux users
 
 **For Linux users only.** `linux/tawjih_desk.py` opens four independent
@@ -1194,7 +1231,10 @@ were driven by a script on a virtual display; see
 [linux/README.md](linux/README.md).
 
 Not yet verified: real editors and the desktop windows used by a person,
-real providers, a real Langfuse server, an ssh runtime against a real computer, and any cloud
+real providers, a real Langfuse server, an ssh runtime against another computer
+(it was run against an ssh server on this one, on port 2222 through a
+`~/.ssh/config` alias: `train` with DoRA, `merge` and `arch build`, each
+sent, followed and collected), a real GPU, and any cloud
 service. The three network backends, and the retries and fallback
 chains of named providers, were checked only against a local mock server
 that imitates the response formats and the busy statuses.

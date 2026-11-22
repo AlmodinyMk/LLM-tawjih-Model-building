@@ -134,6 +134,7 @@ class Runtimes(Bridge):
                            .read_text())["adapters"]["a4"]
         self.assertEqual(entry["path"], "models/adapters/a4")
         self.assertEqual(entry["base"], "mybase")
+        self.assertEqual(entry["peft"], "lora")
         code, out, err = self.nb("merge", "a4", "--runtime", "local")
         self.assertEqual(code, 0, err + out)
         self.assertIn(str(base.resolve()), out)
