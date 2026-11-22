@@ -241,7 +241,7 @@ class State(Base):
         n = st.nodes[self.id]
         n.built_sha = n.source_digest()
         st.save(n)
-        f = self.root / "files" / (self.id + ".md")
+        f = self.root / "files" / self.id / "machine.md"
         f.write_text(f.read_text(encoding="utf-8").replace("output = 1",
                                                            "output = 2"),
                      encoding="utf-8")
@@ -250,8 +250,8 @@ class State(Base):
         self.assertIn("changed outside Tawjih: 1.1.1", out)
         self.assertIn("machine", out)
         self.assertIn("in sync", self.cli("sync")[1])
-        f.write_text(f.read_text(encoding="utf-8").replace("=== human ===\nh",
-                                                           "=== human ===\nH2"),
+        h = self.root / "files" / self.id / "human.md"
+        h.write_text(h.read_text(encoding="utf-8").replace("\nh\n", "\nH2\n"),
                      encoding="utf-8")
         out = self.cli("sync")[1]
         self.assertIn("now stale", out)

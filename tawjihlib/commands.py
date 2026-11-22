@@ -19,8 +19,9 @@ import time
 from pathlib import Path
 
 from .core import (
-    CONTRACT_HELP, Die, EXTRA, FlowError, LEVELS, MARK, SECTIONS, SPLITS,
-    Store, _kw, _parse_contract, build_flow, contract_fits, die,
+    CONTRACT_HELP, Die, EXTRA, FACE_FILES, FlowError, LEVELS, MARK,
+    SECTIONS, SPLITS, Store, _kw, _parse_contract, face_of, build_flow,
+    contract_fits, die,
     flow_condition_notes, flow_contract_errors, load_schema, parse_examples,
     parse_level, schema_file, schema_problems,
 )
@@ -171,11 +172,61 @@ def cmd_tree(a):
                                   " ".join(sides), extra))
 
 
+FACE_TITLES = {"human": "human (بشري)", "machine": "machine (آلي)",
+               "science": "science (علمي)"}
+
+
+def face_text(n, face):
+    """The text of one face of a file."""
+    if face == "human":
+        return n.human
+    if face == "science":
+        return n.reading
+    out = [MARK.format("instructions"), n.instructions, MARK.format("code"),
+           n.code]
+    if n.examples.strip():
+        out += [MARK.format("examples"), n.examples]
+    return "\n".join(x.strip("\n") for x in out)
+
+
 def cmd_show(a):
+    """A file's three faces under its one title, code and number; --type
+    picks faces (human, machine, science, or بشري، آلي، علمي)."""
     st = Store(a.project)
     nid = st.resolve(a.ref)
-    print("# %s  number %s" % (st.file_of(nid), st.number(nid)))
-    print(st.nodes[nid].dump(), end="")
+    n = st.nodes[nid]
+    if getattr(a, "raw", False):
+        print("# %s  number %s" % (st.file_of(nid), st.number(nid)))
+        print(n.dump(), end="")
+        return
+    faces = [face_of(t) for t in (a.type or [])] or list(FACE_FILES)
+    print("%s  [%s]  %s%s" % (st.number(nid), nid, n.title,
+                              "  (%s)" % st.file_of(nid)))
+    for f in faces:
+        print("\n── %s %s" % (FACE_TITLES[f], "─" * max(
+            3, 50 - display_width(FACE_TITLES[f]))))
+        body = face_text(n, f).strip("\n")
+        print(body if body.strip() and body.strip() != "\n".join(
+            [MARK.format("instructions"), MARK.format("code")]) else
+            "(empty)")
+
+
+def cmd_migrate(a):
+    """Turn files made before 0.15 (one files/ID.md each) into folders with
+    head.json and the human, machine and science faces."""
+    st = Store(a.project)
+    old = sorted(i for i in st.legacy if not st.nodes[i].mount)
+    if not old:
+        print("every file is already a folder of faces")
+        return
+    if not a.yes:
+        print("%d file(s) would become folders (files/ID/head.json, "
+              "human.md, machine.md, science.md); run again with --yes"
+              % len(old))
+        return
+    for i in old:
+        st.write(st.nodes[i])
+    print("%d file(s) are now folders of faces" % len(old))
 
 
 def cmd_link(a):
@@ -1113,9 +1164,10 @@ def _backup(st, n):
 
 
 def open_editors(st, nid, editor=None, force_reading=False, split=False,
-                 discard=False):
-    """Open one editor per side: human, machine, and reading when the file
-    has deposited-book passages. Changes are saved when the editors close."""
+                 discard=False, faces=None):
+    """Open one editor per side: human, machine, and reading (the science
+    face) when the file has deposited-book passages, or only the faces
+    asked for. Changes are saved when the editors close."""
     n = st.nodes[nid]
     cmd, ename = editor_command(editor)
     split = split or ename in VSCODE
@@ -1128,9 +1180,15 @@ def open_editors(st, nid, editor=None, force_reading=False, split=False,
         sides = [("human", "human.txt", n.human),
                  ("machine", "machine.txt", "%s\n%s\n%s\n%s" % (
                      m_ins, n.instructions, m_code, n.code))]
-    if n.reading.strip() or force_reading:
+    if n.reading.strip() or force_reading or (faces and "science" in faces):
         sides.append(("reading", "reading.md" if split else "reading.txt",
                       n.reading))
+    if faces:
+        want = {"human": {"human"}, "machine": {"machine", "instructions",
+                                                "code"},
+                "science": {"reading"}}
+        keep = set().union(*(want[f] for f in faces))
+        sides = [x for x in sides if x[0] in keep]
     wdir = st.root / "work" / nid
     if wdir.is_dir() and any(wdir.iterdir()):
         if not discard:
@@ -1179,8 +1237,10 @@ def open_editors(st, nid, editor=None, force_reading=False, split=False,
             die("the %s side contains a '=== ... ===' marker line; nothing "
                 "changed (your text is still in %s)" % (name, wdir))
     ins, code, cur = [], [], None
-    if split:
+    if split and "instructions" in new:
         ins, code = new["instructions"].splitlines(), new["code"].splitlines()
+    elif "machine" not in new:
+        ins, code = n.instructions.splitlines(), n.code.splitlines()
     for line in new.get("machine", "").splitlines():
         if line.strip() == m_ins:
             cur = ins
@@ -1188,7 +1248,7 @@ def open_editors(st, nid, editor=None, force_reading=False, split=False,
             cur = code
         else:
             (ins if cur is None else cur).append(line)
-    result = {"human": new["human"],
+    result = {"human": new.get("human", n.human.strip("\n")),
               "instructions": "\n".join(ins).strip("\n"),
               "code": "\n".join(code).strip("\n"),
               "reading": new.get("reading", n.reading.strip("\n"))}
@@ -1218,8 +1278,9 @@ def open_editors(st, nid, editor=None, force_reading=False, split=False,
 
 def cmd_open(a):
     st = Store(a.project)
+    faces = [face_of(t) for t in (a.type or [])]
     open_editors(st, st.resolve(a.ref), a.editor, a.reading, a.split,
-                 a.discard)
+                 a.discard, faces)
 
 
 def cmd_cache(a):

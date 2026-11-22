@@ -24,7 +24,7 @@ from .engine import (
 )
 from .commands import (
     GRAPH_FORMATS, cmd_cache, cmd_check, cmd_confirm, cmd_contract,
-    cmd_edit, cmd_generate, cmd_graph, cmd_import, cmd_init, cmd_link,
+    cmd_edit, cmd_generate, cmd_graph, cmd_import, cmd_init, cmd_link, cmd_migrate,
     cmd_new, cmd_open, cmd_path, cmd_produce, cmd_run, cmd_show,
     cmd_tangle, cmd_tree, cmd_trees,
 )
@@ -264,6 +264,9 @@ def build_parser():
     s.add_argument("--split", action="store_true",
                    help="open the machine side as two files, instructions.md "
                    "and code.py (always done for VS Code)")
+    s.add_argument("--type", action="append", metavar="TYPE",
+                   help="only this face: human, machine or science (بشري، "
+                   "آلي، علمي); may be given more than once")
     s.set_defaults(fn=cmd_open)
 
     s = sub.add_parser("tree", help="show trees or a branch as columns: "
@@ -559,9 +562,20 @@ def build_parser():
                    help="add where each example came from")
     s.set_defaults(fn=cmd_dataset)
 
-    s = sub.add_parser("show", help="print one file and its location")
+    s = sub.add_parser("show", help="print a file's three faces (human, "
+                       "machine, science) under its title, code and number")
     s.add_argument("ref")
+    s.add_argument("--type", action="append", metavar="TYPE",
+                   help="only this face: human, machine or science (بشري، "
+                   "آلي، علمي); may be given more than once")
+    s.add_argument("--raw", action="store_true",
+                   help="the whole file as one text, with its header")
     s.set_defaults(fn=cmd_show)
+
+    s = sub.add_parser("migrate", help="turn files made before 0.15 (one "
+                       ".md each) into folders of faces")
+    s.add_argument("--yes", action="store_true")
+    s.set_defaults(fn=cmd_migrate)
 
     s = sub.add_parser("link", help="link a file to any file, any tree")
     s.add_argument("src")

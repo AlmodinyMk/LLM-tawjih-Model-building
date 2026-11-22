@@ -4,8 +4,27 @@ This is the contract the program and the tests follow.
 
 ## File
 
-One file per node, `files/<id>.md`, UTF-8. The id in the header must equal
-the file name.
+Each node is a folder `files/<id>/` (the id is 6 hexadecimal digits) with
+four UTF-8 files that share its code, number and title:
+
+| File | Holds |
+|---|---|
+| `head.json` | the header below, as a JSON object; empty fields left out; `links` is a list of `[id, type]`, `tags` and `aliases` lists |
+| `human.md` | the human face: the `human` section |
+| `machine.md` | the machine face: `=== instructions ===`, `=== code ===` and, when there are any, `=== examples ===`; a machine.md without these marker lines is all instructions |
+| `science.md` | the science face: the `reading` section |
+
+A face file may start with a line `<!-- tawjih ID FACE: TITLE -->`, which
+the program writes and ignores when reading. A missing face file is an
+empty face. The id in `head.json` must equal the folder name. The type
+words for the faces are `human`, `machine`, `science` (Arabic `بشري`,
+`آلي`, `علمي`; `reading` is accepted for `science`).
+
+A node may instead be one file `files/<id>.md` (the form before 0.15),
+which holds the same header and sections in one text, shown below. It is
+read as it is and becomes a folder the next time the program saves it, or
+with `migrate --yes`; a node present both ways is an error. Releases,
+packs, backups and the archive keep each node as this one text.
 
 ```
 ---

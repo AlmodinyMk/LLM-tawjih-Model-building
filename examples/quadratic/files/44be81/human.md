@@ -1,16 +1,2 @@
----
-id: 44be81
-title: بايثون
-level: 2
-parent: 760ae4
-order: 1
-links: 
----
-=== human ===
+<!-- tawjih 44be81 human: بايثون -->
 لغة عامة الغرض. الأعداد العشرية فيها تقريبية، فتُقارن بهامش خطأ لا بالتساوي التام.
-=== instructions ===
-
-=== code ===
-
-=== reading ===
-

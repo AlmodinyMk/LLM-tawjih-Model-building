@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from .core import (
-    Die, EXTRA, FlowError, LEVELS, Node, SECTIONS, Store, __version__,
+    Die, EXTRA, FlowError, HEAD_FILE, LEVELS, Node, SECTIONS, Store, __version__,
     _kw, die, parse_examples,
 )
 from .providers import (
@@ -350,8 +350,7 @@ def cmd_trace(a):
         for fb in st.nodes.values():
             if fb.fallback == nid:
                 print("  fallback of: %s [%s]" % (fb.title, fb.id))
-        digest = hashlib.sha256(st.file_of(nid).read_bytes()).hexdigest() \
-            if st.file_of(nid).is_file() else ""
+        digest = hashlib.sha256(st.node_bytes(nid)).hexdigest()
         for m in sorted(st.root.rglob("*.manifest.json")):
             try:
                 srcs = json.loads(m.read_text(encoding="utf-8-sig")).get("from", {})
@@ -364,7 +363,8 @@ def cmd_trace(a):
                     "version)"))
         rel = sorted((st.root / "releases").glob("*.zip")) \
             if (st.root / "releases").is_dir() else []
-        inrel = [r.stem for r in rel if _release_has(r, "files/%s.md" % nid)]
+        inrel = [r.stem for r in rel if _release_has(r, "files/%s.md" % nid)
+                 or _release_has(r, "files/%s/%s" % (nid, HEAD_FILE))]
         if inrel:
             print("  in release(s): %s" % ", ".join(inrel))
         if n.locked:
@@ -420,7 +420,7 @@ def _trace_file(st, nid, sha):
     if n is None:
         print("  [%s] (no longer in the project)" % nid)
         return
-    now = hashlib.sha256(st.file_of(nid).read_bytes()).hexdigest()
+    now = hashlib.sha256(st.node_bytes(nid)).hexdigest()
     print("  %s [%s] %s%s" % (st.number(nid), nid, n.title,
                               "" if now == sha else "  (changed since)"))
     for src in sorted(set(re.findall(r"\[source: ([^\]]+)\]", n.reading))):
@@ -487,7 +487,9 @@ def _release_read(st, name):
     # file, and nothing that would be written outside the project
     names = set(z.namelist())
     bad = [e for e in files if not (
-        re.fullmatch(r"(files|paths)/[\w.\-]+", e) and ".." not in e
+        (re.fullmatch(r"(files|paths)/[\w.\-]+", e) or re.fullmatch(
+            r"files/[0-9a-f]{6}/(head\.json|human\.md|machine\.md|"
+            r"science\.md)", e)) and ".." not in e
         or e in RELEASE_EXTRA) or e not in names]
     if bad:
         z.close()
@@ -574,7 +576,13 @@ def cmd_release(a):
             what = "added" if e not in fa else "removed" if e not in fb \
                 else "changed"
             extra = ""
-            if what == "changed" and e.startswith("files/"):
+            m = re.fullmatch(r"files/([0-9a-f]{6})/(\w+)\.(md|json)", e)
+            if m:
+                nid, face = m.group(1), m.group(2)
+                title = st.nodes[nid].title if nid in st.nodes else nid
+                extra = "  %s: %s" % (title, "header" if face == "head"
+                                      else face + " face")
+            elif what == "changed" and e.startswith("files/"):
                 try:
                     old = Node.parse(za.read(e).decode("utf-8"))
                     new = Node.parse(read_b(e))
@@ -593,10 +601,14 @@ def cmd_release(a):
             die("release rollback NAME --yes")
         z, man = _release_read(st, a.names[0])
         with z:
+            def entries(nid):
+                return [e for e in set(man["files"]) | set(
+                    _project_entries(st.root)) if e == "files/%s.md" % nid
+                    or e.startswith("files/%s/" % nid)]
             locked = [n for n in st.nodes.values() if n.locked and not n.mount
-                      and man["files"].get("files/%s.md" % n.id) !=
-                      _digest_map(st.root, ["files/%s.md" % n.id]).get(
-                          "files/%s.md" % n.id)]
+                      and any(man["files"].get(e) != (_digest_map(
+                          st.root, [e])[e] if (st.root / e).is_file()
+                          else None) for e in entries(n.id))]
             if locked and not a.force:
                 die("locked file(s) would change: %s (unlock them, or "
                     "--force)" % ", ".join(n.title for n in locked))
@@ -846,12 +858,25 @@ def cmd_compact(a):
         for k, n in enumerate(st.children(pid), 1):
             if n.mount:
                 continue
-            on_disk = st.file_of(n.id).read_text(encoding="utf-8-sig")
-            if n.order != k or on_disk != n.dump():
+            disk = st.load_node(n.id)
+            if n.order != k or n.id in st.legacy or disk is None or \
+                    disk.dump() != n.dump() or _faces_differ(st, n):
                 n.order = k
                 st.save(n)
                 changed += 1
     print("%d file(s) rewritten" % changed)
+
+
+def _faces_differ(st, n):
+    """True when a face file on disk is not in the standard form."""
+    folder = st.file_of(n.id)
+    if folder.suffix == ".md":
+        return True
+    for name, text in n.faces().items():
+        f = folder / name
+        if not f.is_file() or f.read_text(encoding="utf-8-sig") != text:
+            return True
+    return False
 
 
 def _formatted(n):
@@ -939,7 +964,7 @@ def cmd_archive(a):
                 die("[%s] exists in the project already" % i)
         for i in ids:
             n = arch[i]
-            st.file_of(i).write_text(n.dump(), encoding="utf-8")
+            st.write(n)
             st.nodes[i] = n
             st.record(n)
             (adir / (i + ".md")).unlink()
@@ -968,7 +993,8 @@ def cmd_archive(a):
     adir.mkdir(exist_ok=True)
     parent = st.nodes[nid].parent
     for i in ids:
-        shutil.move(str(st.file_of(i)), str(adir / (i + ".md")))
+        (adir / (i + ".md")).write_text(st.nodes[i].dump(), encoding="utf-8")
+        st.remove_file(i)
         del st.nodes[i]
         st.forget(i)
     _renumber(st, parent)
@@ -1038,10 +1064,16 @@ def cmd_doctor(a):
                 (root / d).mkdir(parents=True, exist_ok=True)
                 fixed.append("created %s/" % d)
     nodes, files = {}, {}
-    for f in sorted((root / "files").glob("*.md")) if (root / "files").is_dir() \
-            else []:
+    fdir = root / "files"
+    entries = [f for f in sorted(fdir.iterdir()) if (f.suffix == ".md" and
+               f.is_file()) or (f.is_dir() and re.fullmatch(
+                   r"[0-9a-f]{6}", f.name))] if fdir.is_dir() else []
+    for f in entries:
+        single = f.suffix == ".md"
+        stem = f.stem if single else f.name
         try:
-            n = Node.parse(f.read_text(encoding="utf-8-sig"))
+            n = Node.parse(f.read_text(encoding="utf-8-sig")) if single \
+                else Node.from_faces(f)
         except Exception as e:
             problems.append("%s cannot be read: %s" % (f.name, e))
             if fix:
@@ -1051,24 +1083,34 @@ def cmd_doctor(a):
                 fixed.append("moved %s to quarantine/ to be mended by hand"
                              % f.name)
             continue
-        if n.id != f.stem:
+        if n.id != stem:
             problems.append("%s holds id %s" % (f.name, n.id))
-            if fix and not (root / "files" / (n.id + ".md")).exists():
-                target = root / "files" / (n.id + ".md")
+            target = fdir / (n.id + (".md" if single else ""))
+            if fix and not target.exists() and not (fdir / n.id).exists():
                 f.rename(target)
+                fixed.append("renamed %s to %s" % (f.name, target.name))
                 f = target
-                fixed.append("renamed %s to %s.md" % (f.name, n.id))
             elif fix:
                 continue
+        if n.id in nodes:
+            problems.append("%s is there twice (a folder and a .md file)"
+                            % n.id)
+            continue
         nodes[n.id], files[n.id] = n, f
 
     def save(n):
         hdir = root / "history"
         hdir.mkdir(exist_ok=True)
+        f = files[n.id]
+        before = f.read_text(encoding="utf-8-sig") if f.suffix == ".md" \
+            else Node.from_faces(f).dump()
         (hdir / ("%s-%s.md" % (n.id, time.strftime("%Y%m%d-%H%M%S")))
-         ).write_text(files[n.id].read_text(encoding="utf-8-sig"),
-                      encoding="utf-8")
-        files[n.id].write_text(n.dump(), encoding="utf-8")
+         ).write_text(before, encoding="utf-8")
+        if f.suffix == ".md":
+            f.write_text(n.dump(), encoding="utf-8")
+        else:
+            for name, text in n.faces().items():
+                (f / name).write_text(text, encoding="utf-8")
     for n in nodes.values():
         if n.parent and n.parent not in nodes:
             problems.append("%s (%s): its parent %s is missing" % (

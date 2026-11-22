@@ -396,7 +396,7 @@ def cmd_pack(a):
         z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False,
                                                indent=2))
         for i in ids:
-            z.write(st.file_of(i), "files/%s.md" % i)
+            z.writestr("files/%s.md" % i, st.nodes[i].dump())
         for name in names:
             z.write(st.pdir / (name + ".path"), "paths/%s.path" % name)
     print("packed %d file(s) and %d path(s) into %s" % (len(ids), len(names),

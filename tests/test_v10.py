@@ -289,7 +289,7 @@ class Doctor(Base):
         nid = st.resolve("1.1.1")
         (self.root / "files" / "bad000.md").write_text("garbage",
                                                        encoding="utf-8")
-        f = self.root / "files" / (nid + ".md")
+        f = self.root / "files" / nid / "head.json"
         f.write_text(f.read_text(encoding="utf-8").replace(
             st.nodes[nid].parent, "ffffff"), encoding="utf-8")
         (self.root / "state.json").write_text("{bad", encoding="utf-8")

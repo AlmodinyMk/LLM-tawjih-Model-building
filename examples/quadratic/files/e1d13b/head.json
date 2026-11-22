@@ -1,0 +1,8 @@
+{
+ "id": "e1d13b",
+ "title": "استخراج المعاملات",
+ "level": 5,
+ "parent": "15d0c1",
+ "order": 1,
+ "produces": "json(a, b, c)"
+}

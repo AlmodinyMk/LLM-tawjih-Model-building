@@ -395,11 +395,19 @@ class WindowsTrial(Base):
     def test_file_saved_with_a_bom_is_read(self):
         self.cli("new", "Extract Data")
         n = self.store().nodes[self.store().resolve("1")]
-        f = self.root / "files" / (n.id + ".md")
-        f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
+        for name in ("head.json", "human.md", "machine.md", "science.md"):
+            f = self.root / "files" / n.id / name
+            f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
         code, out, err = self.cli("tree")
         self.assertEqual(code, 0, err)
         self.assertIn("Extract Data", out)
+        # and a single file of the old kind
+        st = self.store()
+        old = st.nodes[n.id].dump()
+        st.remove_file(n.id)
+        (self.root / "files" / (n.id + ".md")).write_bytes(
+            b"\xef\xbb\xbf" + old.encode("utf-8"))
+        self.assertIn("Extract Data", self.cli("tree")[1])
 
     def test_a_quoted_path(self):
         self.cli("new", "A")

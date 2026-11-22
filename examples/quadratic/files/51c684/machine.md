@@ -1,14 +1,4 @@
----
-id: 51c684
-title: الحل بالمميز
-level: 5
-parent: 15d0c1
-order: 2
-links: de5595:verified-by
-expects: json(a, b, c)
----
-=== human ===
-يُحسب المميز أولاً ثم يُعوَّض في القانون العام.
+<!-- tawjih 51c684 machine: الحل بالمميز -->
 === instructions ===
 
 === code ===
@@ -22,5 +12,3 @@ root = math.sqrt(d) if d >= 0 else cmath.sqrt(d)
 r = [(-b + root) / (2*a), (-b - root) / (2*a)]
 vars.update(a=a, b=b, c=c, d=d, roots=r)
 output = json.dumps({"a": a, "b": b, "c": c, "delta": d, "roots": [str(x) for x in r]})
-=== reading ===
-

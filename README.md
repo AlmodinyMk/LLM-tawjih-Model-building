@@ -137,13 +137,18 @@ imitates Ollama; everything else is the program's real output.
 
 ![How Tawjih is built: interfaces, build time, the three-sided file, run time, the network, evaluation and governance, the training bridge, and the project on disk](docs/images/architecture-en.png)
 
-Every file has three sides:
+Every file has three faces, each kept in its own file on disk, all three
+under the file's one code (such as `e1d13b`), number (such as `1.1.7`) and
+title; they differ only by type:
 
-| Side | Holds | Used when |
-|---|---|---|
-| **human** | the expressive human concept of the subject | building the file |
-| **machine** | instructions for the model, and optional Python code | building, and **running a path** |
-| **reading** | passages filtered from deposited books and research, with their source | building the file |
+| Face (type) | On disk | Holds | Used when |
+|---|---|---|---|
+| **human** (بشري) | `files/e1d13b/human.md` | the expressive human concept of the subject | building the file |
+| **machine** (آلي) | `files/e1d13b/machine.md` | instructions for the model, and optional Python code | building, and **running a path** |
+| **science** (علمي) | `files/e1d13b/science.md` | the reading side: passages filtered from deposited books and research, with their source | building the file |
+
+`show 1.1.7` prints the three under the one title; `show e1d13b --type
+machine` or `open 1.1.7 --type human` takes one face only.
 
 A fifth, optional side holds worked examples, for evaluation and training
 (see [Examples](#examples-training-data-and-evaluation)); it is never sent
@@ -337,10 +342,11 @@ because terminals do not lay out right-to-left text reliably.
 | `home [TOPIC]` | the home screen (also `tawjih.py` alone), or an explanation of one topic |
 | `init` | create a project in the current folder |
 | `new TITLE [--parent REF] [--level L] [--open]` | create a file |
-| `open REF [--editor CMD] [--reading]` | open one editor per side; save on close |
+| `open REF [--type TYPE] [--editor CMD] [--reading]` | open one editor per side, or only the faces given with `--type` (human, machine, science; بشري، آلي، علمي); save on close |
+| `migrate [--yes]` | turn files made before 0.15 (one `ID.md` each) into folders of faces |
 | `tree [REF]` | show the trees, or one branch, in columns: Code (the stable id), No. (the number on lines `├─ └─ │` joining it to its parent; `▾` has files under it), Title, and Sides (`H I C R` for the sides with content, `·` for an empty one); `!` marks a stale machine side. In a terminal that shows colours, each side letter has its own (`NO_COLOR` turns them off) |
 | `search QUERY [--branch REF] [--side S] [--tag T] [--rank \| --semantic]` | search titles and sides; see [Managing a project](#managing-a-project) for the other commands added in 0.7 |
-| `show REF` / `read REF [--all]` | print a file / print its reading side |
+| `show REF [--type TYPE] [--raw]` / `read REF [--all]` | print a file's three faces under its code, number and title, or only the faces given / print its reading side |
 | `link SRC DST [--type T]` | record a link between any two files |
 | `contract REF [--expects S \| --expects-schema FILE] [--produces S \| --produces-schema FILE] [--model M] [--retries N] [--fallback REF] [--approve WHEN] [--split S] [--weight W] [--each yes\|KEY]` | show or set a file's contracts, model, retries, fallback, approval, split, weight and FOR EACH |
 | `redact [TEXT] [--init]` / `stats` | private data hidden before model calls / what runs cost; see [Failures, approval, privacy and cost](#failures-approval-privacy-and-cost) |
@@ -831,8 +837,14 @@ The time limit is a safeguard against mistakes, not a sandbox.
 ## Project layout
 
 ```
-files/    one .md file per tree file (header + four marked sections,
-          and examples when there are any)
+files/    one folder per tree file, named by its code:
+            e1d13b/head.json    code, title, place in the tree, contracts
+            e1d13b/human.md     the human face
+            e1d13b/machine.md   the machine face: instructions, code,
+                                and examples when there are any
+            e1d13b/science.md   the science face: the reading side
+          (a single e1d13b.md from before 0.15 is still read;
+          `migrate --yes` turns those into folders)
 paths/    one .path file per path, and .proposed files from generate
 library/  deposited books and filter reports   (git-ignored)
 runs/     log, result and state of every run   (git-ignored)

@@ -688,7 +688,7 @@ def cmd_dataset(a):
             w = float(n.weight or 1)
             if w == 0:          # weight 0 keeps a file out of training data
                 continue
-            sources[i] = hashlib.sha256(st.file_of(i).read_bytes()).hexdigest()
+            sources[i] = hashlib.sha256(st.node_bytes(i)).hexdigest()
             for ex in exs:
                 prompt = ex["q"]
                 if a.with_rules and n.instructions.strip():

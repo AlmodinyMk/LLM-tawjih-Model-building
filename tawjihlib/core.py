@@ -34,6 +34,29 @@ DESCRIPTION = "tawjih - personal LLM command-directing (توجيه أوامر ا
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
 LEVELS_AR = {"عام": 1, "قسم": 2, "فصل": 3, "موضوع": 4, "فرع": 5, "جزء": 6}
 SECTIONS = ["human", "instructions", "code", "reading"]
+# Each file is a folder files/ID/ with its head and three face files that
+# share its code (ID), number and title: human, machine (instructions,
+# code and examples) and science (the reading side: sources and research).
+HEAD_FILE = "head.json"
+FACE_FILES = {"human": "human.md", "machine": "machine.md",
+              "science": "science.md"}
+FACE_WORDS = {"human": "human", "بشري": "human", "البشري": "human",
+              "machine": "machine", "آلي": "machine", "الي": "machine",
+              "الآلي": "machine", "science": "science", "علمي": "science",
+              "العلمي": "science", "reading": "science",
+              "قراءة": "science"}
+FACE_SIDES = {"human": ("human",), "machine": ("instructions", "code",
+                                               "examples"),
+              "science": ("reading",)}
+
+
+def face_of(word):
+    """human, machine or science from a word in English or Arabic."""
+    f = FACE_WORDS.get((word or "").strip().casefold())
+    if not f:
+        die("no type '%s'; use human, machine or science (بشري، آلي، علمي)"
+            % word)
+    return f
 # a fifth, optional section: worked questions and answers, the material for
 # evaluation cases and training data (never sent when a path runs)
 EXTRA = ["examples"]
@@ -427,6 +450,93 @@ class Node:
             out += [MARK.format("examples"), self.examples.strip("\n")]
         return "\n".join(out) + "\n"
 
+    HEAD_KEYS = ("id", "title", "level", "parent", "order", "links", "model",
+                 "expects", "produces", "built_sha", "tags", "aliases",
+                 "retries", "fallback", "approve", "split", "weight",
+                 "examples_sha", "each", "locked", "reviewed_sha",
+                 "reviewed_on")
+
+    def head(self):
+        """The header as a dict for head.json; empty fields left out."""
+        out = {}
+        for k in self.HEAD_KEYS:
+            v = getattr(self, k)
+            if k == "links":
+                v = [[t, ty] for t, ty in v]
+            if v or k in ("id", "title", "level", "parent", "order"):
+                out[k] = v
+        return out
+
+    def faces(self):
+        """{file name: text} of the folder files/ID/."""
+        def banner(face):
+            return "<!-- tawjih %s %s: %s -->\n" % (self.id, face,
+                                                    self.title)
+        machine = [MARK.format("instructions"),
+                   self.instructions.strip("\n"), MARK.format("code"),
+                   self.code.strip("\n")]
+        if self.examples.strip():
+            machine += [MARK.format("examples"), self.examples.strip("\n")]
+        body = {"human": self.human.strip("\n"),
+                "machine": "\n".join(machine),
+                "science": self.reading.strip("\n")}
+        out = {HEAD_FILE: json.dumps(self.head(), ensure_ascii=False,
+                                     indent=1) + "\n"}
+        for face, name in FACE_FILES.items():
+            out[name] = banner(face) + body[face] + "\n"
+        return out
+
+    @staticmethod
+    def from_faces(folder):
+        """A file read from its folder: head.json and the three faces (a
+        missing face is empty)."""
+        folder = Path(folder)
+        try:
+            meta = json.loads((folder / HEAD_FILE).read_text(
+                encoding="utf-8-sig"))
+        except FileNotFoundError:
+            raise ValueError("%s is missing" % HEAD_FILE)
+        except ValueError as e:
+            raise ValueError("%s is not readable JSON (%s)" % (HEAD_FILE, e))
+        if not isinstance(meta, dict) or not meta.get("id"):
+            raise ValueError("%s has no id" % HEAD_FILE)
+
+        def face(name):
+            f = folder / FACE_FILES[name]
+            if not f.is_file():
+                return ""
+            lines = f.read_text(encoding="utf-8-sig").splitlines()
+            if lines and lines[0].startswith("<!-- tawjih "):
+                lines = lines[1:]
+            return "\n".join(lines).strip("\n")
+        sec = {s: [] for s in ("instructions", "code", "examples")}
+        cur = None
+        machine = face("machine")
+        if machine and not any(line.strip() in (MARK.format(s) for s in sec)
+                               for line in machine.splitlines()):
+            sec["instructions"] = machine.splitlines()    # written by hand
+        else:
+            for line in machine.splitlines():
+                if line.strip() == MARK.format("anti_examples"):
+                    line = MARK.format("examples")
+                hit = [s for s in sec if line.strip() == MARK.format(s)]
+                if hit:
+                    cur = hit[0]
+                elif cur:
+                    sec[cur].append(line)
+        kw = {k: meta.get(k, "") for k in Node.HEAD_KEYS
+              if k not in ("links", "tags", "aliases")}
+        kw["level"] = kw["level"] or 1
+        kw["order"] = kw["order"] or 0
+        n = Node(links=[tuple(x) for x in meta.get("links", [])],
+                 tags=list(meta.get("tags", [])),
+                 aliases=list(meta.get("aliases", [])),
+                 human=face("human"), reading=face("science"),
+                 **{k: "\n".join(v).strip("\n") for k, v in sec.items()},
+                 **{k: str(v) if k not in ("level", "order") else v
+                    for k, v in kw.items()})
+        return n
+
     @staticmethod
     def parse(text):
         lines = text.splitlines()
@@ -590,16 +700,11 @@ class Store:
         self.rdir = self.root / "runs"
         if not self.fdir.is_dir():
             die("not a tawjih project here (run: tawjih.py init)")
-        self.nodes = {}
-        for f in sorted(self.fdir.glob("*.md")):
-            try:
-                n = Node.parse(f.read_text(encoding="utf-8-sig"))
-            except Exception as e:
-                die("%s: %s" % (f.name, e))
-            if n.id != f.stem:
-                die("%s: the id in the header (%s) does not match the file "
-                    "name" % (f.name, n.id))
+        self.nodes, self.legacy = {}, set()
+        for n, single in self._read_dir(self.fdir, ""):
             self.nodes[n.id] = n
+            if single:
+                self.legacy.add(n.id)
         # mounted projects: their files take part, read-only
         self.mounts = {}
         mf = self.root / "mounts.json"
@@ -615,11 +720,7 @@ class Store:
                 print("warning: mounted project %s is not found at %s"
                       % (name, where), file=sys.stderr)
                 continue
-            for f in sorted(mdir.glob("*.md")):
-                try:
-                    n = Node.parse(f.read_text(encoding="utf-8-sig"))
-                except Exception as e:
-                    die("mounted %s, %s: %s" % (name, f.name, e))
+            for n, single in self._read_dir(mdir, "mounted %s, " % name):
                 if n.id in self.nodes:
                     die("mounted project %s has file %s, which is also here; "
                         "unmount it" % (name, n.id))
@@ -627,10 +728,85 @@ class Store:
                 self.nodes[n.id] = n
                 self._mount_dirs[n.id] = mdir
 
+    @staticmethod
+    def _read_dir(fdir, where):
+        """[(node, True if a single .md file)] of a files/ folder: each file
+        is a folder ID/ with head.json and its faces, or, as made before
+        0.15, one file ID.md."""
+        out, seen = [], set()
+        for f in sorted(fdir.iterdir()):
+            single = f.suffix == ".md" and f.is_file()
+            if not (single or (f.is_dir() and re.fullmatch(r"[0-9a-f]{6}",
+                                                            f.name))):
+                continue
+            try:
+                n = Node.parse(f.read_text(encoding="utf-8-sig")) if single \
+                    else Node.from_faces(f)
+            except Exception as e:
+                die("%s%s: %s" % (where, f.name, e))
+            stem = f.stem if single else f.name
+            if n.id != stem:
+                die("%s%s: the id in the header (%s) does not match the "
+                    "name" % (where, f.name, n.id))
+            if n.id in seen:
+                die("%sfiles/%s is there both as a folder and as %s.md; "
+                    "keep one" % (where, n.id, n.id))
+            seen.add(n.id)
+            out.append((n, single))
+        return out
+
     def file_of(self, nid):
-        if nid in getattr(self, "_mount_dirs", {}):
-            return self._mount_dirs[nid] / (nid + ".md")
-        return self.fdir / (nid + ".md")
+        """The folder files/ID/ of a file, or files/ID.md for one made
+        before 0.15 that was not saved since."""
+        base = self._mount_dirs.get(nid, self.fdir) \
+            if hasattr(self, "_mount_dirs") else self.fdir
+        single = base / (nid + ".md")
+        return single if single.is_file() else base / nid
+
+    def face_file(self, nid, face):
+        f = self.file_of(nid)
+        return f if f.suffix == ".md" else f / FACE_FILES[face]
+
+    def load_node(self, nid):
+        """The file as it is on disk now, or None."""
+        f = self.file_of(nid)
+        try:
+            if f.suffix == ".md":
+                return Node.parse(f.read_text(encoding="utf-8-sig")) \
+                    if f.is_file() else None
+            return Node.from_faces(f) if (f / HEAD_FILE).is_file() else None
+        except ValueError:
+            return None
+
+    def node_bytes(self, nid):
+        """The file's content as bytes, for digests: the single file as it
+        is, or the standard text of a folder."""
+        f = self.file_of(nid)
+        if f.suffix == ".md":
+            return f.read_bytes() if f.is_file() else b""
+        n = self.load_node(nid)
+        return n.dump().encode("utf-8") if n else b""
+
+    def write(self, n):
+        """Write n as its folder, replacing a single .md file if any."""
+        folder = self.fdir / n.id
+        folder.mkdir(parents=True, exist_ok=True)
+        for name, text in n.faces().items():
+            target = folder / name
+            if not target.is_file() or target.read_text(
+                    encoding="utf-8-sig") != text:
+                target.write_text(text, encoding="utf-8")
+        old = self.fdir / (n.id + ".md")
+        if old.is_file():
+            old.unlink()
+        self.legacy.discard(n.id)
+
+    def remove_file(self, nid):
+        f = self.file_of(nid)
+        if f.suffix == ".md":
+            f.unlink()
+        elif f.is_dir():
+            shutil.rmtree(f)
 
     # The digests of each file's sides as Tawjih last wrote them, so that
     # edits made outside the program can be found (sync, status).
@@ -686,12 +862,8 @@ class Store:
         if n.mount:
             die("%s [%s] belongs to the mounted project %s and is read-only"
                 % (n.title, n.id, n.mount))
-        f = self.file_of(n.id)
-        if f.is_file():
-            try:
-                old = Node.parse(f.read_text(encoding="utf-8-sig"))
-            except ValueError:
-                return
+        old = self.load_node(n.id)
+        if old is not None:
             if old.locked and n.locked and \
                     old.content_key() != n.content_key():
                 die("%s [%s] is locked; unlock it first (unlock %s)"
@@ -699,7 +871,7 @@ class Store:
 
     def save(self, n):
         self.guard(n)
-        self.file_of(n.id).write_text(n.dump(), encoding="utf-8")
+        self.write(n)
         self.nodes[n.id] = n
         self.record(n)
 
@@ -766,7 +938,7 @@ class Store:
     def new_node(self, title, level, parent):
         nid = uuid.uuid4().hex[:6]
         while nid in self.nodes or (self.root / "archive" / (
-                nid + ".md")).exists():
+                nid + ".md")).exists() or (self.fdir / nid).exists():
             nid = uuid.uuid4().hex[:6]
         order = max([s.order for s in self.children(parent)] + [0]) + 1
         title = " ".join(title.split())
@@ -1337,6 +1509,7 @@ def flow_condition_notes(store, flow):
 
 
 __all__ = [
+    'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'SCHEMA_KEYWORDS', 'SCHEMA_TYPES', '_as_keys', '_same', 'load_schema',
     'schema_errors', 'schema_file', 'schema_problems', 'CONNECTING', 'STEP_KEYS', 'UNSUPPORTED', 'CONTRACT_HELP', 'DESCRIPTION', 'Die', 'EXAMPLE_KEYS', 'EXTRA',
     'FALSE_WORDS', 'Flow', 'FlowError', 'KEYWORDS', 'LEVELS', 'LEVELS_AR',

@@ -105,7 +105,7 @@ class FileFormat(Base):
         self.tree()
         st = self.store()
         nid = st.resolve("1")
-        os.replace(str(st.file_of(nid)), str(st.fdir / "zzzzzz.md"))
+        os.replace(str(st.file_of(nid)), str(st.fdir / "abcdef"))
         code, _, err = self.cli("tree")
         self.assertEqual(code, 1)
         self.assertIn("does not match", err)

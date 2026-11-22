@@ -38,9 +38,12 @@ class ExamplesSide(Base):
 
     def test_file_format_keeps_old_files_and_reads_anti_examples(self):
         self.fill("1.1.1", human="h")
+        st = self.store()
+        old = st.nodes[self.id].dump()           # a file made before 0.15
+        self.assertNotIn("=== examples ===", old)
+        st.remove_file(self.id)
         f = self.root / "files" / (self.id + ".md")
-        self.assertNotIn("=== examples ===", f.read_text(encoding="utf-8"))
-        f.write_text(f.read_text(encoding="utf-8") + "=== examples ===\n"
+        f.write_text(old + "=== examples ===\n"
                      "Q: a\nA: b\n=== anti_examples ===\nQ: a\nBAD: c\n",
                      encoding="utf-8")
         n = self.store().nodes[self.id]

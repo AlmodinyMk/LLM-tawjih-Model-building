@@ -244,7 +244,7 @@ def _remove_files(st, ids):
             "is" if len(blocked) == 1 else "are"))
     for i in ids:
         _backup(st, st.nodes[i])
-        st.file_of(i).unlink()
+        st.remove_file(i)
         del st.nodes[i]
         st.forget(i)
 
