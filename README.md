@@ -117,6 +117,7 @@ published here yet.
 [Training](#training-adapters-the-neural-bridge) ·
 [Architecture lab](#the-architecture-lab) ·
 [Watching runs](#watching-runs-tawjih-top) ·
+[Langfuse](#traces-langfuse-and-opentelemetry) ·
 [Runtimes](#runtimes-where-jobs-run) ·
 [Linux windows](#desktop-windows-for-linux-users) ·
 [Limitations](#limitations) ·
@@ -927,6 +928,47 @@ The machine side is one document with two parts, instructions above the
 `=== code ===` line and Python below it. The reading editor opens only when
 the file already has passages, or with `--reading`.
 
+## Traces: Langfuse and OpenTelemetry
+
+`run` and `produce` with `--trace` send the run to
+[Langfuse](https://langfuse.com), or to any OpenTelemetry collector, as one
+trace:
+
+- the path is the root observation, with the input and the result;
+- each step is a span under it, with its file's code, number and tree,
+  and its status (a failed step is an error, a skipped one a warning);
+- each model call is a generation under its step, with the model, the
+  prompt as it was sent, the answer, the tokens and the times.
+
+```
+export LANGFUSE_PUBLIC_KEY=pk-lf-...  LANGFUSE_SECRET_KEY=sk-lf-...
+export LANGFUSE_HOST=https://cloud.langfuse.com   # or your own server
+tawjih observe check          # a test trace
+tawjih run solve --input "x^2-5x+6=0" --trace
+```
+
+It uses Langfuse's OpenTelemetry endpoint (`/api/public/otel/v1/traces`,
+OTLP over HTTP with JSON, `x-langfuse-ingestion-version: 4`), which is the
+way Langfuse takes traces since it removed its older batch ingestion for
+traces on 16 November 2026. No Langfuse library is needed. For another
+collector (Phoenix, Jaeger, an OpenTelemetry Collector), set
+`TAWJIH_OTLP_ENDPOINT` to its traces URL and `TAWJIH_OTLP_HEADERS` to
+`name=value,name=value`.
+
+- **Asked for, never by default:** `--trace`, or `TAWJIH_TRACE=1` for every
+  run. The keys come from the environment only, never from the project.
+- **Privacy:** texts go after the project's redaction (`redact.txt`), the
+  same placeholders a model sees; `--trace-no-content` (or
+  `TAWJIH_TRACE_CONTENT=0`) sends only names, times, models and counts. The
+  project's policy is obeyed: with `"allow_network": "local"` traces may go
+  only to a server on this computer.
+- **Never lost, never in the way:** a trace that cannot be sent is kept in
+  `history/traces-pending/` and sent by `tawjih observe flush`; the run
+  itself goes on.
+- The rounds of `ITERATE` share a session; `--trace-session ID` sets one.
+- `tawjih observe` (also `langfuse`) shows where traces go; `check` sends
+  a test trace.
+
 ## AI providers
 
 The built-in kinds:
@@ -1057,6 +1099,7 @@ datasets/ compiled training data (neural bridge; git-ignored)
 
 The program itself is `tawjih.py`, which runs and imports the package
 `tawjihlib/`: `core` (file model, store, path language), `providers`,
+`tracing`,
 `engine` (code and path execution), `commands`, `library`, `manage`,
 `outputs`, `evaluate`, `governance`, `runtimes`, `arch`, `script`,
 `mcpserver`, `home`, `monitor` (`top`) and `cli`. Each module imports only from
@@ -1139,7 +1182,7 @@ to overlap), `ITERATE`, the runtimes (a local job, and a command runtime
 driving a stand-in for a remote service), and the architecture lab: `arch
 build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
 (Llama with GQA and MQA, GPT-2, Mixtral), and their parameters matched the
-counts; and `top`, its frames drawn at several sizes with and without
+counts; traces (`--trace`): checked against the OpenTelemetry payload of Langfuse's own Python SDK 5.2 (same path, headers and attribute names) and parsed by a real OpenTelemetry Collector 0.115, with Langfuse itself replaced by a stand-in server; and `top`, its frames drawn at several sizes with and without
 colour, and its keys driven in a pseudo-terminal on Linux. The neural
 bridge has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
@@ -1151,7 +1194,7 @@ were driven by a script on a virtual display; see
 [linux/README.md](linux/README.md).
 
 Not yet verified: real editors and the desktop windows used by a person,
-real providers, an ssh runtime against a real computer, and any cloud
+real providers, a real Langfuse server, an ssh runtime against a real computer, and any cloud
 service. The three network backends, and the retries and fallback
 chains of named providers, were checked only against a local mock server
 that imitates the response formats and the busy statuses.

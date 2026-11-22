@@ -119,6 +119,8 @@ CARDS = [
          "Built with transformers; parameters checked against the count."),
         ("top", "watch", "top",
          "Runs, files and the computer live, like btop; q quits."),
+        ("--trace", "Langfuse", "run NAME --input TEXT --trace",
+         "Each run as a trace in Langfuse or any OpenTelemetry tool."),
         ("runtime", "jobs", "runtime add NAME --kind ssh --host H",
          "Run long jobs here, on another computer, or on a service."),
         ("show --type", "faces", "show REF --type machine",
@@ -229,6 +231,16 @@ TOPICS = {
          "and - change the refresh time, q quits."),
         ("Without a screen", "tawjih top --once\ntawjih top --json\nOne "
          "frame, or the same facts as JSON for a script."),
+    ]),
+    "langfuse": ("Traces in Langfuse", [
+        ("Where", "LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_HOST "
+         "in the environment (or TAWJIH_OTLP_ENDPOINT for another "
+         "OpenTelemetry collector).\ntawjih observe check"),
+        ("What", "tawjih run NAME --input TEXT --trace\nThe path, each step "
+         "and each model call with its model, prompt, answer, tokens and "
+         "times; texts after redaction, or none with --trace-no-content."),
+        ("When it fails", "A trace that cannot be sent waits in "
+         "history/traces-pending/ for: tawjih observe flush"),
     ]),
     "training": ("Training (plugin)", [
         ("From files to data", "python plugins/neural_bridge.py compile "

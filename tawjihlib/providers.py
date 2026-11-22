@@ -382,7 +382,8 @@ def call_model(store_root, backend, prompt, model="", fallback=True):
     usage = dict(getattr(_usage, "last", None) or {},
                  seconds=round(time.monotonic() - t0, 3),
                  chars_in=len(sent), chars_out=len(answer),
-                 redacted=len(mapping), provider=used, attempts=attempts)
+                 redacted=len(mapping), provider=used, attempts=attempts,
+                 sent=sent, answer=answer)   # as they crossed the network
     if mapping:
         answer = Redactor.unmask(answer, mapping)
     return answer, usage

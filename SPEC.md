@@ -803,7 +803,7 @@ computer needs `--yes`, and is refused when the project's policy has
 
 `tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
 copies every name of its modules into its own namespace and runs `main()`.
-The modules, in order: `core`, `providers`, `engine`, `commands`,
+The modules, in order: `core`, `providers`, `tracing`, `engine`, `commands`,
 `library`, `manage`, `outputs`, `evaluate`, `governance`, `runtimes`,
 `arch`, `script`, `mcpserver`, `home`, `monitor`, `cli`. A module
 imports only from those before it, by name, and only the standard library
@@ -822,3 +822,26 @@ record carries `pid`, `t0` and, at the end, `seconds`. A live file whose
 process no longer exists belongs to a run that was stopped. `tawjih top`
 reads these files, the records in `history/` and `models/jobs/`; it
 writes nothing.
+
+## Traces
+
+With `--trace`, a run is sent at its end as one OTLP/HTTP JSON request to
+`LANGFUSE_HOST` + `/api/public/otel/v1/traces` (Basic authentication with
+`LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY`, `x-langfuse-ingestion-version:
+4`), or to `TAWJIH_OTLP_ENDPOINT` with `TAWJIH_OTLP_HEADERS`. Spans:
+
+- the root, `path NAME`, `langfuse.observation.type` `chain`, with the input
+  and the result;
+- one per step that ran, under the root: `NUMBER TITLE`, type `span` (or
+  `tool` for a step with code), level `ERROR` when it failed and `WARNING`
+  when skipped or stopped, metadata `file_id`, `number`, `tree`,
+  `machine_sha`, `status`;
+- one per model call, under its step: type `generation`, with
+  `langfuse.observation.model.name`, the input and output as sent and
+  received (after redaction), and `langfuse.observation.usage_details`
+  `{"input", "output"}` when the provider reports tokens.
+
+Every span carries `langfuse.trace.name`, `langfuse.trace.tags` (`tawjih`
+and the trees), `langfuse.release` and, when there is one,
+`langfuse.session.id`. Texts are cut at 100,000 characters. A request that
+fails is written to `history/traces-pending/` as it would have been sent.

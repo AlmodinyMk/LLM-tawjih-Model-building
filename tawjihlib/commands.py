@@ -570,7 +570,9 @@ def _run_from_args(st, a, flow):
                     sandbox=getattr(a, "sandbox", False),
                     max_workers=workers,
                     on_failure=getattr(a, "on_failure", "stop"),
-                    iterate=iterate)
+                    iterate=iterate, trace=getattr(a, "trace", False),
+                    trace_content=not getattr(a, "trace_no_content", False),
+                    trace_session=getattr(a, "trace_session", None) or "")
 
 
 def cmd_trees(a):

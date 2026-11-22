@@ -24,6 +24,7 @@ from .providers import (
     POLICY_FILE, backend_kind, call_model, default_backend, load_policy,
     load_providers,
 )
+from .tracing import Tracer, check_allowed, sink, wanted
 
 
 # ----------------------------------------------------------------- execution
@@ -502,7 +503,8 @@ class _RoutedLog(list):
 def run_flow(store, name, text, backend, allow_code, flow, resume=False,
              use_cache=True, redo=(), model_override="",
              code_timeout=CODE_TIMEOUT, retries=None, approve=None,
-             sandbox=False, max_workers=1, on_failure="stop", iterate=None):
+             sandbox=False, max_workers=1, on_failure="stop", iterate=None,
+             trace=False, trace_content=True, trace_session=""):
     """Run a flow once, or with ITERATE (or iterate=(rounds, cond)) again
     and again, each round on the result of the one before, until the result
     meets the condition (as for IF). Returns the last result."""
@@ -510,7 +512,11 @@ def run_flow(store, name, text, backend, allow_code, flow, resume=False,
     kw = dict(resume=resume, use_cache=use_cache, redo=redo,
               model_override=model_override, code_timeout=code_timeout,
               retries=retries, approve=approve, sandbox=sandbox,
-              max_workers=max_workers, on_failure=on_failure)
+              max_workers=max_workers, on_failure=on_failure,
+              trace=trace, trace_content=trace_content,
+              trace_session=trace_session or (
+                  "tawjih-%s-%s" % (name, time.strftime("%Y%m%d-%H%M%S"))
+                  if it else ""))
     if not it:
         return _run_once(store, name, text, backend, allow_code, flow, **kw)
     rounds, cond = it
@@ -535,7 +541,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
               use_cache=True, redo=(), model_override="",
               code_timeout=CODE_TIMEOUT, retries=None, approve=None,
               sandbox=False, max_workers=1, on_failure="stop",
-              start_input=None, round_of=None):
+              start_input=None, round_of=None, trace=False,
+              trace_content=True, trace_session=""):
     """Execute the machine sides of the files of a flow. A file runs after
     the files that feed it and receives their outputs; a file none of whose
     connections is active is skipped. With max_workers above 1, steps whose
@@ -593,6 +600,15 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
               "max_workers": max_workers, "on_failure": on_failure,
               "round": list(round_of) if round_of else None,
               "pid": os.getpid(), "t0": time.time()}
+    tracer = None
+    if wanted(trace):
+        where = sink()
+        if not where:
+            die("--trace: set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, "
+                "or TAWJIH_OTLP_ENDPOINT (see: tawjih observe status)")
+        check_allowed(store.root, where[1])
+        tracer = Tracer(store.root, name, plan, record, trace_content,
+                        trace_session)
     livefile = store.root / "history" / "live" / ("%d-%s.json" % (
         os.getpid(), logfile.stem))
     done_flag = []
@@ -653,6 +669,9 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
         record.update(status="failed", failed_step=p["step"],
                       error="%s: %s: %s" % (what, type(e).__name__, e))
         rec = document()
+        if tracer:
+            tracer.finish(None, "step %d %s failed in %s: %s" % (
+                p["step"], n.title, what, e))
         suspects = [n.id] if what in ("AMONG", "contract") \
             else p.get("received_from", [])
         suspects = [x for x in suspects if use_cache
@@ -779,13 +798,22 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                         ask = (prompt + "\n\n## Your previous answer was "
                                "rejected\n" + problem + "\nAnswer again, "
                                "following the instructions exactly.")
+                    t_call = time.time()
                     try:
                         out, usage = call_model(store.root, backend, ask,
                                                 step_model)
                     except Die:
                         raise
                     except Exception as e:
+                        if tracer:
+                            tracer.generation(p["step"], step_model, {},
+                                              t_call, time.time(), str(e),
+                                              attempt + 1)
                         raise StepFailure("model call", e)
+                    if tracer:
+                        tracer.generation(p["step"], step_model, usage,
+                                          t_call, time.time(), None,
+                                          attempt + 1)
                     with lock:
                         u = record["usage"]
                         u["calls"] += 1
@@ -1062,6 +1090,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
               "continue)" % ", ".join(map(str, sorted(failures))),
               file=sys.stderr)
     rec = document()
+    if tracer:
+        tracer.finish(result)
     print("log: %s\nstate: %s\nresult: %s\nrecord: %s" % (
         logfile, statefile, resfile, rec), file=sys.stderr)
     return result

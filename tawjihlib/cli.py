@@ -58,6 +58,7 @@ from .arch import cmd_arch
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .monitor import cmd_top
+from .tracing import cmd_observe
 from .mcpserver import (
     APPROVAL_MODES, Server, ToolError, serve_stdio,
 )
@@ -261,6 +262,13 @@ def build_parser():
     s.add_argument("--color", choices=("auto", "always", "never"),
                    default="auto")
     s.set_defaults(fn=cmd_top)
+
+    s = sub.add_parser("observe", aliases=["langfuse"],
+                       help="traces of runs for Langfuse or any "
+                       "OpenTelemetry collector: status, check, flush")
+    s.add_argument("action", nargs="?", default="status",
+                   choices=["status", "check", "flush"])
+    s.set_defaults(fn=cmd_observe)
 
     s = sub.add_parser("init", help="create a project")
     s.set_defaults(fn=cmd_init)
@@ -689,6 +697,14 @@ def build_parser():
     s.add_argument("--on-failure", choices=["stop", "continue"],
                    default="stop", help="continue: leave a failed step "
                    "out and skip what needs it, instead of stopping")
+    s.add_argument("--trace", action="store_true",
+                   help="send the run as a trace to Langfuse (or another "
+                   "OpenTelemetry collector); see: tawjih observe status")
+    s.add_argument("--trace-no-content", action="store_true",
+                   help="with --trace: only names, times, models and "
+                   "counts, no texts")
+    s.add_argument("--trace-session", metavar="ID",
+                   help="with --trace: a session that groups traces")
     s.add_argument("--iterate", type=int, metavar="N",
                    help="run the whole path up to N times, each round on "
                    "the result of the one before (like ITERATE N)")
@@ -745,6 +761,14 @@ def build_parser():
     s.add_argument("--on-failure", choices=["stop", "continue"],
                    default="stop", help="continue: leave a failed step "
                    "out and skip what needs it, instead of stopping")
+    s.add_argument("--trace", action="store_true",
+                   help="send the run as a trace to Langfuse (or another "
+                   "OpenTelemetry collector); see: tawjih observe status")
+    s.add_argument("--trace-no-content", action="store_true",
+                   help="with --trace: only names, times, models and "
+                   "counts, no texts")
+    s.add_argument("--trace-session", metavar="ID",
+                   help="with --trace: a session that groups traces")
     s.add_argument("--iterate", type=int, metavar="N",
                    help="run the whole path up to N times, each round on "
                    "the result of the one before (like ITERATE N)")
