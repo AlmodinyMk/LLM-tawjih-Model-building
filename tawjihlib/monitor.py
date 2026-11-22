@@ -1,5 +1,6 @@
 """tawjih top (مراقبة): a live board, like btop, of the runs of paths over
-the files of the trees beside the computer's performance: CPU, memory, disk, network and GPU. It reads history/live/ (written by runs as
+the files of the trees beside the computer's performance: CPU, memory,
+disk, network and GPU. It reads history/live/ (written by runs as
 they go), history/ (finished runs), models/jobs/ (runtime jobs) and the
 system, and changes nothing.
 

@@ -226,8 +226,8 @@ def _ssh(cfg, command):
 
 def _ssh_steps(jdir, cfg, rec):
     """(argv, folder to run it in) that send the job and start it. scp runs
-    inside the job folder with relative names, so no local path (a drive letter)
-    is ever taken for a host."""
+    inside the job folder with relative names, so no local path (with a
+    drive letter) is ever taken for a host."""
     host, rdir = cfg["host"], _remote(cfg, rec)
     names = sorted(x.name for x in Path(jdir).iterdir())
     return [(["ssh", host, "mkdir -p %s" % shlex.quote(rdir)], None),

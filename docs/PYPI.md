@@ -39,6 +39,10 @@ tawjih tree
   over ssh, or on a service you drive.
 - A home screen in the terminal (`tawjih` alone): the project at a glance,
   the commands as cards, and `tawjih home TOPIC` explanations.
+- `tawjih top`: a live board like btop, the runs of paths and the files of
+  the trees beside the computer's CPU, memory, disk, network and GPU.
+- `run --trace`: each run as a trace in Langfuse or any OpenTelemetry
+  collector (OTLP/JSON, no extra library), texts after redaction.
 - A project policy that can only restrict: no code, local providers only,
   always sandboxed, a least level of human approval.
 - Evaluation: cases from the examples, a path compared with the model asked
@@ -49,7 +53,10 @@ tawjih tree
 - `tawjih do`: management statements in English or Arabic.
 
 Full documentation, the example project, the Linux windows and the optional
-training bridge are in the repository:
+training bridge are in the repository. The bridge (`plugins/neural_bridge.py`:
+SFT and DPO with LoRA, QLoRA, DoRA, PiSSA, LoHa, IA3, VeRA, OFT, prompt
+tuning and other PEFT methods, here or on a rented GPU over ssh) is one
+file that works beside this package:
 <https://github.com/AlmodinyMk/LLM-tawjih-Model-building>
 ([العربية](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/blob/main/README.ar.md)).
 

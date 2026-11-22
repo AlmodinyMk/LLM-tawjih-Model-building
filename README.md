@@ -724,7 +724,9 @@ Since 0.10 a project can be guarded and kept over time.
 
 Tawjih trains nothing itself. `plugins/neural_bridge.py`, a separate
 program with the same standard-library rule, carries a project to the
-training tools and back. The heavy work is done by the Python you name with
+training tools and back. It is in this repository, not in the PyPI
+package; with `pip install tawjih`, download that one file and run it with
+the same Python. The heavy work is done by the Python you name with
 `--python` (PyTorch, transformers, PEFT, TRL; or Unsloth; or axolotl) and by
 llama.cpp. Every command that would start such a program only shows its
 plan, unless `--run` is given.
