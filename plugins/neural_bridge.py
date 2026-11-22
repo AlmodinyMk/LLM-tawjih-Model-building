@@ -1414,7 +1414,10 @@ def cmd_pipeline(a):
     ca = argparse.Namespace(project=a.project, out=str(out),
                             branch=a.branch, with_rules=a.with_rules,
                             repeat_by_weight=False, format=a.format)
-    cmd_compile(ca)
+    if cmd_compile(ca):
+        fail("the training and evaluation data share questions, so the "
+             "evaluation would not be fair: fix the split first (tawjih.py "
+             "check), then run the pipeline again")
     a.dataset = str(out / ("dpo_train.jsonl" if a.method == "dpo"
                            else "sft_train.jsonl"))
     a.eval = None
@@ -1546,8 +1549,8 @@ def serverless(a, base, items):
     if a.sleep:
         flags.append("--enable-sleep-mode")
         why.append("--enable-sleep-mode: POST /sleep frees the GPU and POST "
-                   "/wake_up brings the model back in about a second, "
-                   "instead of a cold start; needs VLLM_SERVER_DEV_MODE=1, "
+                   "/wake_up brings the model back in seconds (more for "
+                   "large models) instead of a cold start; needs VLLM_SERVER_DEV_MODE=1, "
                    "so keep the server off the open internet")
     mods = []
     if items:
@@ -1561,7 +1564,9 @@ def serverless(a, base, items):
             if dst.exists():
                 shutil.rmtree(dst)
             shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
-                *ADAPTER_IGNORE[:-1]))
+                "checkpoint-*", "initial-adapter", "train.py",
+                "train_config.json", "axolotl.yml", "dataset.manifest.json",
+                "training_args.bin"))
             mods.append("%s=/models/adapters/%s" % (served_name(n, e), n))
         flags += mods
     env = {"VLLM_CACHE_ROOT": a.cache_dir, "HF_HUB_OFFLINE": "1"}
@@ -1592,18 +1597,27 @@ def serverless(a, base, items):
                "ENTRYPOINT [\"sh\", \"/start.sh\"]"]
     (out / "Dockerfile").write_text("\n".join(docker) + "\n",
                                     encoding="utf-8")
-    first = (items[0][0] if items else base)
+    first = served_name(*items[0]) if items else served
     warm = ["#!/bin/sh",
             "# written by neural_bridge: run once on a machine with the same",
             "# GPU and the cache volume at %s, so the compile cache is filled"
             % a.cache_dir,
             "# and later cold starts skip compiling",
             "set -e", "sh /start.sh &", "PID=$!",
-            "until curl -sf localhost:8000/health >/dev/null; do sleep 2; "
-            "done",
-            "curl -s localhost:8000/v1/completions -H 'Content-Type: "
-            "application/json' -d '{\"model\": \"%s\", \"prompt\": \"hi\", "
-            "\"max_tokens\": 4}' >/dev/null" % first,
+            "python3 - <<'EOF'",
+            "import json, time, urllib.request",
+            "while True:",
+            "    try:",
+            "        urllib.request.urlopen('http://localhost:8000/health')",
+            "        break",
+            "    except OSError:",
+            "        time.sleep(2)",
+            "body = json.dumps({'model': %r, 'prompt': 'hi', "
+            "'max_tokens': 4}).encode()" % first,
+            "urllib.request.urlopen(urllib.request.Request(",
+            "    'http://localhost:8000/v1/completions', body,",
+            "    {'Content-Type': 'application/json'}))",
+            "EOF",
             "kill $PID", "echo warm: the cache in %s is ready" % a.cache_dir]
     (out / "warmup.sh").write_text("\n".join(warm) + "\n", encoding="utf-8")
     readme = ["# Serving %s with vLLM, for cold starts" % base, "",
@@ -1626,7 +1640,9 @@ def serverless(a, base, items):
                    "(`HF_HUB_OFFLINE=1`).",
                    "volume": "on a network volume mounted at `/models/base`, "
                    "read ahead with `--safetensors-load-strategy prefetch`.",
-                   "stream": "streamed with the Run:ai model streamer."}[
+                   "stream": "streamed with the Run:ai model streamer; to "
+                   "stream from storage, put its s3:// or gs:// path in "
+                   "place of `/models/base` in `start.sh`."}[
                        a.weights],
                "- `VLLM_CACHE_ROOT=%s`: keep this on a volume that outlives "
                "the machine. vLLM keeps its torch.compile results there; "

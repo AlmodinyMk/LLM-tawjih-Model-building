@@ -580,6 +580,14 @@ class Hub(BridgeBase):
             "pipeline", "p1", "--base-model", "Org/B", "--peft", "prompt",
             "--merge")[2])
 
+    def test_pipeline_stops_on_shared_questions(self):
+        self.fill("2", examples="Q: 2x+4=10\nA: x = 3")
+        code, out, err = self.nb("pipeline", "p2", "--base-model", "Org/B",
+                                 "--data-dir", str(self.ds))
+        self.assertNotEqual(code, 0)
+        self.assertIn("share questions", err)
+        self.assertNotIn("== 2. train", out)
+
     def test_vllm_ranks(self):
         self.assertEqual([nb.vllm_rank(r) for r in (4, 8, 12, 24, 300)],
                          [8, 8, 16, 32, 320])
@@ -617,6 +625,9 @@ class Hub(BridgeBase):
         self.assertNotIn("cudagraph", start)
         self.assertIn("runai_streamer", start)
         self.assertIn("vllm[runai]", (out_dir / "Dockerfile").read_text())
+        warm = (out_dir / "warmup.sh").read_text()
+        self.assertIn("'model': 'alg'", warm)
+        self.assertNotIn("curl", warm)
         code, out, err = self.nb("lora", "serve", "--serverless",
                                  "--base-model", "Org/Base-1B", "--out-dir",
                                  str(out_dir))
