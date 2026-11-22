@@ -1,0 +1,409 @@
+"""runtimes - where long jobs (training, merging, building models) run.
+
+A runtime is this computer (local), another computer reached with ssh, or
+any service driven by commands you write (command), such as a cloud tool's
+command line. Runtimes belong to the person, not to a project: they are kept
+in ~/.config/tawjih/runtimes.json (or the file TAWJIH_RUNTIMES names), so a
+project copied from elsewhere cannot bring commands that would run on this
+computer. No key or password is ever stored: ssh uses your own keys, and a
+command runtime's commands use whatever your tools already have.
+
+A job is a folder models/jobs/ID/ in the project: run.sh, the files it needs,
+and job.json, its record. run.sh writes log.txt while it runs, and `exit`
+with its exit status when it ends; results go to out/ inside the folder and
+are collected from there.
+
+Copyright (c) 2026 Mohammed Khalid Almodiny
+SPDX-License-Identifier: CC-BY-NC-SA-4.0
+"""
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+KINDS = ("local", "ssh", "command")
+TEMPLATES = ("submit", "status", "logs", "cancel", "collect", "check")
+LOCAL = {"kind": "local"}
+
+
+class RuntimeError_(Exception):
+    pass
+
+
+def fail(msg):
+    raise RuntimeError_(msg)
+
+
+# ----------------------------------------------------------------- settings
+def runtimes_file():
+    env = os.environ.get("TAWJIH_RUNTIMES")
+    if env:
+        return Path(env)
+    base = os.environ.get("XDG_CONFIG_HOME") or (
+        os.environ.get("APPDATA") if os.name == "nt" else None) or \
+        str(Path.home() / ".config")
+    return Path(base) / "tawjih" / "runtimes.json"
+
+
+def load():
+    f = runtimes_file()
+    data = {}
+    if f.is_file():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8-sig"))
+        except ValueError as e:
+            fail("%s is not readable JSON (%s)" % (f, e))
+    data.setdefault("runtimes", {})
+    data.setdefault("default", "local")
+    return data
+
+
+def save(data):
+    f = runtimes_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                 encoding="utf-8")
+
+
+def get(name=None):
+    """(name, settings) of a runtime; 'local' always exists."""
+    data = load()
+    name = name or data["default"] or "local"
+    if name == "local" and name not in data["runtimes"]:
+        return name, dict(LOCAL)
+    if name not in data["runtimes"]:
+        fail("no runtime '%s' (runtime list shows them; runtime add "
+             "creates one)" % name)
+    return name, dict(data["runtimes"][name])
+
+
+SECRET = re.compile(r"(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|"
+                    r"(api[_-]?key|token|password|secret)\s*=\s*\S{8,})",
+                    re.I)
+
+
+def check_settings(cfg):
+    kind = cfg.get("kind")
+    if kind not in KINDS:
+        fail("kind must be one of: %s" % ", ".join(KINDS))
+    if kind == "ssh" and not re.fullmatch(r"[\w.\-]+@?[\w.\-]*",
+                                          cfg.get("host", "")):
+        fail("an ssh runtime needs --host user@machine")
+    if kind == "command" and not cfg.get("submit"):
+        fail("a command runtime needs --submit 'COMMAND {job}'")
+    for k in TEMPLATES + ("python", "workdir", "host"):
+        if SECRET.search(str(cfg.get(k, ""))):
+            fail("%s looks like it holds a key or password; keep those in "
+                 "your tools' own settings or environment variables" % k)
+
+
+def is_local(cfg):
+    return cfg.get("kind") == "local" or (
+        cfg.get("kind") == "ssh" and cfg.get("host", "").split("@")[-1] in
+        ("localhost", "127.0.0.1", "::1"))
+
+
+def allowed(root, name, cfg, yes):
+    """Refuse what the project's policy forbids; ask for --yes before data
+    leaves this computer (and may cost money)."""
+    try:
+        from tawjihlib.providers import load_policy
+        net = load_policy(root)["allow_network"]
+    except Exception:
+        net = True
+    if not is_local(cfg):
+        if net is not True:
+            fail("the project's policy allows no runtime outside this "
+                 "computer; %s is one" % name)
+        if not yes:
+            fail("runtime %s is outside this computer: the job's files are "
+                 "sent there and it may cost money. Check the plan above, "
+                 "then add --yes" % name)
+
+
+# --------------------------------------------------------------------- jobs
+def jobs_dir(root):
+    return Path(root) / "models" / "jobs"
+
+
+def make_job(root, name, runtime, command, files=None, texts=None,
+             collect_to=None):
+    """A job folder: files copied in (bundle path -> source), texts written
+    (bundle path -> text), and run.sh running command (a list, run inside
+    the folder). Returns the folder."""
+    jid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    jdir = jobs_dir(root) / jid
+    jdir.mkdir(parents=True)
+    for rel, src in (files or {}).items():
+        target = jdir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, target)
+    for rel, text in (texts or {}).items():
+        target = jdir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    (jdir / "out").mkdir(exist_ok=True)
+    (jdir / "run.sh").write_text(
+        "#!/bin/sh\n# written by Tawjih: job %s (%s)\n"
+        "cd \"$(dirname \"$0\")\" || exit 1\n"
+        "echo $$ > pid\n"
+        "rm -f exit\n"
+        "%s > log.txt 2>&1\n"
+        "echo $? > exit\n" % (jid, name, " ".join(shlex.quote(str(c))
+                                                  for c in command)),
+        encoding="utf-8")
+    record(jdir, {"id": jid, "name": name, "runtime": runtime,
+                  "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "command": [str(c) for c in command],
+                  "collect_to": str(collect_to) if collect_to else "",
+                  "status": "made"})
+    return jdir
+
+
+def record(jdir, update=None):
+    f = Path(jdir) / "job.json"
+    data = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    if update:
+        data.update(update)
+        f.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8")
+    return data
+
+
+def find_job(root, jid):
+    d = jobs_dir(root)
+    hits = [x for x in sorted(d.iterdir()) if x.name.startswith(jid)] \
+        if d.is_dir() and jid else []
+    if not hits and jid == "last" and d.is_dir():
+        started = [x for x in d.iterdir() if record(x).get("status")
+                   not in (None, "made")]
+        hits = sorted(started, key=lambda x: record(x).get("started", ""))[-1:]
+    if len(hits) != 1:
+        fail("no job %s" % jid if not hits else
+             "%s names %d jobs; give more of its id" % (jid, len(hits)))
+    return hits[0]
+
+
+def _fill(template, jdir, cfg, rec):
+    return template.format(job=shlex.quote(str(jdir)), id=rec["id"],
+                           name=shlex.quote(rec["name"]),
+                           workdir=cfg.get("workdir", "tawjih-jobs"))
+
+
+def _remote(cfg, rec):
+    return "%s/%s" % (cfg.get("workdir", "tawjih-jobs").rstrip("/"),
+                      rec["id"])
+
+
+def _sh(cmd, capture=True):
+    """Run a shell command line (a runtime's own command)."""
+    r = subprocess.run(cmd, shell=True, capture_output=capture, text=True)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def plan(jdir, name, cfg):
+    """The commands that would start the job, as text."""
+    rec = record(jdir)
+    kind = cfg["kind"]
+    if kind == "local":
+        return ["sh %s" % shlex.quote(str(jdir / "run.sh"))]
+    if kind == "ssh":
+        host, rdir = cfg["host"], _remote(cfg, rec)
+        return ["ssh %s mkdir -p %s" % (host, shlex.quote(rdir)),
+                "scp -r %s/. %s:%s/" % (shlex.quote(str(jdir)), host,
+                                        shlex.quote(rdir)),
+                "ssh %s 'cd %s && nohup sh run.sh > /dev/null 2>&1 &'" % (
+                    host, rdir)]
+    return [_fill(cfg["submit"], jdir, cfg, rec)]
+
+
+def submit(root, jdir, name, cfg, wait=True):
+    """Start the job on its runtime. Local jobs run here and are waited for
+    (unless wait is False); others are started and checked with status."""
+    rec = record(jdir)
+    kind = cfg["kind"]
+    if kind == "local":
+        record(jdir, {"status": "running", "started":
+                      time.strftime("%Y-%m-%d %H:%M:%S")})
+        if wait:           # here, without sh, so it works on Windows too
+            with open(jdir / "log.txt", "w", encoding="utf-8") as log:
+                try:
+                    code = subprocess.run(rec["command"], cwd=jdir,
+                                          stdout=log,
+                                          stderr=subprocess.STDOUT
+                                          ).returncode
+                except OSError as e:
+                    log.write("cannot start %s: %s\n" % (rec["command"][0],
+                                                         e))
+                    code = 127
+            (jdir / "exit").write_text("%d\n" % code)
+            record(jdir, {"status": "done" if code == 0 else "failed",
+                          "exit": code})
+            if code:
+                print((jdir / "log.txt").read_text(encoding="utf-8",
+                                                   errors="replace")[-2000:],
+                      file=sys.stderr)
+            return code
+        subprocess.Popen(["sh", str(jdir / "run.sh")],
+                         start_new_session=True)
+        return 0
+    for line in plan(jdir, name, cfg):
+        code, out = _sh(line)
+        if code != 0:
+            record(jdir, {"status": "failed to start"})
+            fail("could not start the job on %s: %s\n%s" % (name, line,
+                                                           out.strip()))
+    record(jdir, {"status": "submitted", "started":
+                  time.strftime("%Y-%m-%d %H:%M:%S")})
+    return 0
+
+
+def status(jdir, cfg):
+    rec = record(jdir)
+    kind = cfg["kind"]
+    if kind == "local":
+        e = jdir / "exit"
+        if e.is_file():
+            code = int(e.read_text().strip() or 1)
+            return "done" if code == 0 else "failed (exit %d)" % code
+        return "running" if (jdir / "pid").is_file() else rec.get(
+            "status", "made")
+    if kind == "ssh":
+        rdir = _remote(cfg, rec)
+        code, out = _sh("ssh %s 'cat %s/exit 2>/dev/null || (test -f %s/pid "
+                        "&& kill -0 $(cat %s/pid) 2>/dev/null && echo "
+                        "running) || echo unknown'" % (cfg["host"], rdir,
+                                                       rdir, rdir))
+        out = out.strip().splitlines()[-1] if out.strip() else "unknown"
+        return "done" if out == "0" else "running" if out == "running" else \
+            "failed (exit %s)" % out if out.isdigit() else out
+    if not cfg.get("status"):
+        return "unknown (the runtime has no status command)"
+    code, out = _sh(_fill(cfg["status"], jdir, cfg, rec))
+    last = (out.strip().splitlines() or ["unknown"])[-1].strip()
+    if code != 0:
+        return "running or unknown (%s)" % last[:80]
+    return "done" if last == "0" else "failed (exit %s)" % last \
+        if last.isdigit() else last
+
+
+def logs(jdir, cfg):
+    rec = record(jdir)
+    kind = cfg["kind"]
+    if kind == "local":
+        f = jdir / "log.txt"
+        return f.read_text(encoding="utf-8", errors="replace") \
+            if f.is_file() else ""
+    if kind == "ssh":
+        return _sh("ssh %s cat %s/log.txt" % (cfg["host"],
+                                              _remote(cfg, rec)))[1]
+    if not cfg.get("logs"):
+        return "(the runtime has no logs command)"
+    return _sh(_fill(cfg["logs"], jdir, cfg, rec))[1]
+
+
+def cancel(jdir, cfg):
+    rec = record(jdir)
+    kind = cfg["kind"]
+    if kind == "local":
+        pid = jdir / "pid"
+        if pid.is_file():
+            try:
+                os.kill(int(pid.read_text().strip()), 15)
+            except (OSError, ValueError):
+                pass
+    elif kind == "ssh":
+        rdir = _remote(cfg, rec)
+        _sh("ssh %s 'kill $(cat %s/pid)'" % (cfg["host"], rdir))
+    elif cfg.get("cancel"):
+        _sh(_fill(cfg["cancel"], jdir, cfg, rec))
+    else:
+        fail("the runtime has no cancel command")
+    record(jdir, {"status": "cancelled"})
+
+
+def collect(jdir, cfg):
+    """Bring out/ back into the job folder, then to where the job's results
+    belong (collect_to). Returns that place."""
+    rec = record(jdir)
+    kind = cfg["kind"]
+    if kind == "ssh":
+        code, out = _sh("scp -r %s:%s/out/. %s/" % (
+            cfg["host"], _remote(cfg, rec), shlex.quote(str(jdir / "out"))))
+        if code != 0:
+            fail("could not collect: %s" % out.strip())
+        _sh("scp %s:%s/log.txt %s" % (cfg["host"], _remote(cfg, rec),
+                                      shlex.quote(str(jdir / "log.txt"))))
+    elif kind == "command":
+        if not cfg.get("collect"):
+            fail("the runtime has no collect command")
+        code, out = _sh(_fill(cfg["collect"], jdir, cfg, rec))
+        if code != 0:
+            fail("could not collect: %s" % out.strip())
+    target = rec.get("collect_to")
+    if target:
+        target = Path(target)
+        target.mkdir(parents=True, exist_ok=True)
+        for f in (jdir / "out").iterdir():
+            dest = target / f.name
+            if f.is_dir():
+                shutil.copytree(f, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy(f, dest)
+    record(jdir, {"status": "collected", "collected":
+                  time.strftime("%Y-%m-%d %H:%M:%S")})
+    return target or jdir / "out"
+
+
+PROBE = r"""
+import importlib, json, os, platform, shutil, sys
+out = {"python": sys.version.split()[0], "system": platform.platform(),
+       "cpus": os.cpu_count(), "modules": {}}
+for m in ("torch", "transformers", "peft", "trl", "datasets"):
+    try:
+        out["modules"][m] = getattr(importlib.import_module(m),
+                                    "__version__", "installed")
+    except Exception:
+        out["modules"][m] = None
+try:
+    import torch
+    out["gpus"] = [torch.cuda.get_device_name(i)
+                   for i in range(torch.cuda.device_count())]
+    out["mps"] = bool(getattr(torch.backends, "mps", None)
+                      and torch.backends.mps.is_available())
+except Exception:
+    out["gpus"], out["mps"] = [], False
+du = shutil.disk_usage(".")
+out["free_gb"] = round(du.free / 1e9, 1)
+print(json.dumps(out))
+"""
+
+
+def check(name, cfg):
+    """What the runtime has: Python, libraries, GPUs, free disk."""
+    kind = cfg["kind"]
+    py = cfg.get("python") or (sys.executable if kind == "local"
+                               else "python3")
+    if kind == "local":
+        r = subprocess.run([py, "-c", PROBE], capture_output=True,
+                           text=True, timeout=300)
+        out = r.stdout
+    elif kind == "ssh":
+        r = subprocess.run(["ssh", cfg["host"], py, "-"], input=PROBE,
+                           capture_output=True, text=True, timeout=300)
+        out = r.stdout
+    else:
+        if not cfg.get("check"):
+            return None
+        out = _sh(_fill(cfg["check"], ".", cfg, {"id": "check",
+                                                 "name": name}))[1]
+    try:
+        return json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        fail("%s did not answer the check (%s)" % (name, out.strip()[:300]))
