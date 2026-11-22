@@ -434,6 +434,7 @@ def cmd_train(a):
     if getattr(a, "runtime", None):
         # a job folder with relative paths, to run here or elsewhere
         job_cfg = dict(cfg, dataset="data/" + ds.name, output_dir="out",
+                       base_model=job_base(a, a.base_model),
                        eval="data/eval-" + Path(a.eval).name if a.eval
                        else "")
         files = {"data/" + ds.name: ds}
@@ -450,7 +451,10 @@ def cmd_train(a):
         return job(a, "train " + a.name, prog, ["train.py",
                                                  "train_config.json"],
                    files, texts, adir, {"kind": "train",
-                                        "adapter": a.name})
+                                        "adapter": a.name,
+                                        "path": rel(a, adir),
+                                        "base": a.base_model,
+                                        "rank": cfg["lora_r"]})
     code = run_or_plan(a, cmd, "train")
     reg = load_registry(a)
     entry = reg["adapters"].get(a.name, {})
@@ -520,8 +524,8 @@ def cmd_merge(a):
     if getattr(a, "runtime", None):
         files = {"adapter/" + f.name: f for f in Path(path).iterdir()
                  if f.is_file()}
-        return job(a, "merge " + a.name, None, ["merge.py", base, "adapter",
-                                                 "out"], files,
+        return job(a, "merge " + a.name, None, [
+            "merge.py", job_base(a, base), "adapter", "out"], files,
                    {"merge.py": MERGE_SCRIPT}, out,
                    {"kind": "merge", "adapter": a.name})
     code = run_or_plan(a, [a.python, sdir / "merge.py", base, path, out],
@@ -900,6 +904,20 @@ def lora_lineage(a, reg):
 
 # ---------------------------------------------------------------------- cli
 # ------------------------------------------------------------------ runtime
+def job_base(a, base):
+    """A job runs inside its own folder, so a model folder given by a
+    relative path is made absolute. On another computer the folder must be
+    there under the same path, or use a Hugging Face model id."""
+    if not base or not Path(base).exists():
+        return base
+    _, cfg = runtimes.get(a.runtime)
+    if not runtimes.is_local(cfg):
+        print("note: %s is a folder on this computer; it is not sent with "
+              "the job, so it must exist on %s under the same path (or give "
+              "a Hugging Face model id)" % (base, a.runtime))
+    return str(Path(base).resolve())
+
+
 def job(a, what, prog, args, files, texts, collect_to, extra):
     """Make a job folder and, with --run, start it on --runtime."""
     name, cfg = runtimes.get(a.runtime)

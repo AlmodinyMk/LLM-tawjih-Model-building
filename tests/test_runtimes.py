@@ -116,6 +116,28 @@ class Runtimes(Bridge):
         self.assertTrue(reg["adapters"]["a1"]["trained"])
         self.assertIn("collected", self.cli("runtime", "jobs")[1])
 
+    def test_local_folder_model_and_merge_needs(self):
+        base = self.root / "mybase"
+        base.mkdir()
+        old = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, old)
+        code, out, err = self.nb("--python", str(self.py), "train", "a4",
+                                 "--base-model", "mybase", "--dataset",
+                                 str(self.ds / "sft_train.jsonl"),
+                                 "--runtime", "local", "--run")
+        self.assertEqual(code, 0, err + out)
+        job = next((self.root / "models" / "jobs").iterdir())
+        cfg = json.loads((job / "train_config.json").read_text())
+        self.assertEqual(cfg["base_model"], str(base.resolve()))
+        entry = json.loads((self.root / "models" / "registry.json")
+                           .read_text())["adapters"]["a4"]
+        self.assertEqual(entry["path"], "models/adapters/a4")
+        self.assertEqual(entry["base"], "mybase")
+        code, out, err = self.nb("merge", "a4", "--runtime", "local")
+        self.assertEqual(code, 0, err + out)
+        self.assertIn(str(base.resolve()), out)
+
     def test_train_on_a_remote_service(self):
         self.add_cloud()
         args = ["train", "a2", "--base-model", "tiny", "--dataset",

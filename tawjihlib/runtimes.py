@@ -421,6 +421,9 @@ def finish(root, jdir, cfg):
         entry = reg.setdefault("adapters", {}).setdefault(rec["adapter"], {})
         if rec["kind"] == "train":
             entry["trained"] = True
+            for key in ("path", "base", "rank"):    # what merge needs
+                if rec.get(key) is not None:
+                    entry[key] = rec[key]
         else:
             try:
                 entry["merged"] = Path(rec["collect_to"]).resolve(
