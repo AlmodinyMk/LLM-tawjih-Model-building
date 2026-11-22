@@ -1,4 +1,4 @@
-# Tawjih specification (0.14.0)
+# Tawjih specification (0.15.0)
 
 This is the contract the program and the tests follow.
 
@@ -202,7 +202,16 @@ order; they are saved with the path and belong to that file in that path
 only, and the same setting given twice differently is an error. A path whose
 statements hold settings or `CALL` but no connecting word is a sequence.
 Statements are separated by `,`, `/`, `؛` or `،`; the Arabic tatweel (ـ) is
-ignored in words. `PARALLEL` [توازي، بالتوازي] and `CACHE` [مخزن] are
+ignored in words. A statement `ITERATE n [UNTIL [NOT] word | key = value]`
+[كرر، حتى، ليس] (n from 1 to 50, at most once in a path, never in a path
+that is CALLed) makes the whole path run up to n times: round 1 on the
+request, each later round with the previous round's result in place of the
+request for the files nothing feeds (the original request is still given
+to every model call); it stops when the result meets the condition, as
+for `IF`, and fails after round n if it never does; without `UNTIL` it
+runs exactly n rounds. Each round is a run of its own, with its own log
+and record. `ITERATE` inside another statement is an error naming the
+comma. `PARALLEL` [توازي، بالتوازي] and `CACHE` [مخزن] are
 reserved and refused with the reason. An alias cannot be one of these
 words.
 A file listed without any connecting word in a file that has none is the
@@ -214,7 +223,13 @@ promises in a `json(...)` contract, since it will be looked for in the text.
 
 ## Production
 
-1. Files run one at a time, each after every file that feeds it.
+1. Files run one at a time, each after every file that feeds it. With
+   `--max-workers N` (1 by default, at most 32), the files whose feeders
+   have all finished (done, skipped or failed) run at the same time, up to
+   N, in threads; a file whose step runs code (with `--allow-code`, its
+   fallback included) or asks for approval on the terminal runs alone
+   first. The log lists the steps in the plan's order. Outputs, the
+   choices of `AMONG` and the skipping rule are the same as one at a time.
 2. A file nothing feeds receives the original request. A file fed by one
    active connection receives that output. Fed by several, it receives them
    together, each under a `## from: <title> [id]` line.
@@ -245,7 +260,10 @@ promises in a `json(...)` contract, since it will be looked for in the text.
    several are joined, each under its title.
 9. A failing step stops the production. A step that produces no output is
    a failing step. When a kept model answer may be the cause, the error
-   names the step to ask again with `--resume --redo`.
+   names the step to ask again with `--resume --redo`. With `--on-failure
+   continue`, a step that fails and has no fallback is recorded as failed,
+   passes nothing on (the files that need it are skipped), and the run goes
+   on; the record's `status` is `partial` and `failed_steps` lists them.
 
 ## Answer cache
 
@@ -714,6 +732,72 @@ command line, `allow_code` and `sandbox` both equal to `--allow-code`.
 Each call appends `{time, tool, args, status}` to
 `history/mcp-YYYYMMDD.jsonl`, with `title`, `text`, `input`,
 `statements`, `why` and `query` replaced by `<N characters>`.
+
+## Architectures
+
+An architecture is a node tagged `architecture` whose machine face's
+instructions hold a JSON object, the specification:
+
+| Key | Value |
+|---|---|
+| `schema` | 1 |
+| `family` | `decoder` |
+| `layers`, `hidden`, `heads`, `kv_heads`, `ffn_hidden`, `vocab`, `context` | whole numbers above 0 |
+| `ffn` | `swiglu`, `gelu` or `relu` |
+| `norm` | `rmsnorm` or `layernorm` |
+| `positions` | `rope` (with `rope_theta` above 0), `learned` or `none` |
+| `tie_embeddings`, `bias` | true or false |
+| `moe` | null, or `{"experts": E, "top_k": K}` with 2 ≤ E and 1 ≤ K ≤ E |
+| `dropout` | from 0 up to, not including, 1 |
+| `name`, `notes`, `derived_from` | optional; `derived_from` is the id of the source |
+
+Any other key is an error. `hidden` must divide by `heads`; `kv_heads` must
+divide `heads` (equal: MHA, 1: MQA, else GQA); with `rope` the head size
+`hidden / heads` must be even. Parameters, with h = hidden, d = h / heads,
+k = kv_heads · d, f = ffn_hidden, b = 1 with bias else 0:
+
+- embedding: vocab · h, plus context · h with learned positions;
+- attention per layer: 2h² + 2hk + b(2h + 2k);
+- MLP per layer: 3hf + b(2f + h) for swiglu, 2hf + b(f + h) otherwise; with
+  `moe`, E times that plus h · E for the router (per token: K times plus
+  the router);
+- norms: h each for rmsnorm, 2h for layernorm; two per layer and one final;
+- head: vocab · h unless `tie_embeddings`.
+
+`arch derive` and `arch mutate --yes` make the new node a child of the
+source (its level plus one, at most 6) with a `derived-from` link.
+`arch export` maps rmsnorm + swiglu + rope to a Llama configuration
+(Mixtral with `moe`, which allows no bias), and layernorm + gelu + learned
+positions with bias, tied embeddings and MHA to GPT-2; any other
+combination is refused. `arch build` writes a job (see Runtimes) whose
+`out/validation.json` holds the parameters counted by the library, the
+logits' shape and the loss for two random sequences, and whether the count
+matches; it is kept in `models/architectures/ID/`.
+
+## Runtimes
+
+Runtimes are read from `$TAWJIH_RUNTIMES`, else
+`$XDG_CONFIG_HOME/tawjih/runtimes.json`, `%APPDATA%\tawjih\runtimes.json`
+on Windows, or `~/.config/tawjih/runtimes.json`, never from a project:
+`{"default": NAME, "runtimes": {NAME: {"kind": ..., ...}}}`. `local` exists
+without an entry. Kinds: `local`; `ssh` with `host` (user@machine),
+optional `python` and `workdir` (default `tawjih-jobs`); `command` with
+`submit` and optional `status`, `logs`, `cancel`, `collect`, `check`
+command lines, in which `{job}` is the job folder (quoted), `{id}` its id,
+`{name}` its name and `{workdir}` the setting. A setting that looks like a
+key or password is refused.
+
+A job is `models/jobs/ID/` in the project: `run.sh` (it changes to its own
+folder, writes `pid`, runs the command with output to `log.txt`, then
+writes its exit status to `exit`), the files the command needs at relative
+paths, `out/` for its results, and `job.json` (id, name, runtime, command,
+where results go, status). A local job runs here and is waited for; an ssh
+job is copied with scp to `workdir/ID` and started with nohup; a command
+job runs `submit`. A status of `0` is done and another number failed.
+`collect` brings `out/` back (scp, or the `collect` command) and copies it
+to where the job's results go. Starting a job whose runtime is not this
+computer needs `--yes`, and is refused when the project's policy has
+`allow_network` other than true.
 
 ## Program layout
 

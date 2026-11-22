@@ -111,6 +111,21 @@ CARDS = [
         ("redact", "privacy", "redact --init",
          "redact.txt hides names and numbers before a model sees them."),
     ]),
+    ("Architectures and jobs", False, [
+        ("arch", "design", "arch create TITLE --preset tiny",
+         "A model architecture as a three-faced file: hypothesis, spec, "
+         "papers."),
+        ("arch build", "verify", "arch build REF --run",
+         "Built with transformers; parameters checked against the count."),
+        ("runtime", "jobs", "runtime add NAME --kind ssh --host H",
+         "Run long jobs here, on another computer, or on a service."),
+        ("show --type", "faces", "show REF --type machine",
+         "One face of a file: human, machine or science."),
+        ("--max-workers", "speed", "run NAME --max-workers 4",
+         "Steps whose inputs are ready run at the same time."),
+        ("ITERATE", "rounds", "path NAME 1 TO 2, ITERATE 3 UNTIL ok",
+         "The whole path again on its result, until it is good."),
+    ]),
 ]
 
 TOPICS = {
@@ -132,9 +147,11 @@ TOPICS = {
          "runs without a model; ollama, openai and anthropic call one."),
     ]),
     "files": ("Files and trees", [
-        ("Three sides", "Every file has a human side, a machine side "
-         "(instructions and code) and a reading side, plus examples. "
-         "tree marks them H I C R; a dot is an empty side."),
+        ("Three faces", "Every file is a folder files/CODE/ with three "
+         "faces under one code, number and title: human.md, machine.md "
+         "(instructions, code, examples) and science.md (the reading "
+         "side). tree marks them H I C R; a dot is an empty side.\n"
+         "tawjih show 1.1 --type machine"),
         ("Codes and numbers", "The code never changes; the number changes "
          "when files move. Paths and links store codes, so moving a file "
          "breaks nothing. alias gives a file a name of your own."),
@@ -186,6 +203,20 @@ TOPICS = {
          "tawjih.py mcp --allow-run     runs paths (sends data, costs)"),
         ("Approval", "--human-approval always asks you before every "
          "change and run; approve ID --yes answers from the terminal."),
+    ]),
+    "arch": ("The architecture lab", [
+        ("A design is a file", "tawjih arch create \"Apex 001\" --preset "
+         "tiny\nThe human face holds the hypothesis and decisions, the "
+         "science face the papers, the machine face the JSON "
+         "specification: layers, hidden, heads, kv_heads, ffn, norm, "
+         "positions, vocab, context, moe."),
+        ("Lineage and variants", "tawjih arch derive 1 \"Apex 002\" --set "
+         "kv_heads=1\ntawjih arch mutate 1 --count 6 --yes\nA derived "
+         "design is a child of its source, so the tree is its history."),
+        ("Check and build", "tawjih arch validate 1\ntawjih arch build 1 "
+         "--run\nParameter counts are exact; build makes the model with "
+         "transformers, runs it forward and backward, and checks the "
+         "count. arch rank compares them."),
     ]),
     "training": ("Training (plugin)", [
         ("From files to data", "python plugins/neural_bridge.py compile "

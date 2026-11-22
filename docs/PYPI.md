@@ -29,6 +29,14 @@ tawjih tree
 - Named providers (`providers.json`): Ollama, any OpenAI-compatible server,
   Anthropic, with retries, backoff and fallback chains; keys stay in
   environment variables.
+- Each file is a folder of three faces under one code, number and title:
+  human, machine and science (`show REF --type machine`).
+- Steps at the same time (`--max-workers`), going on past a failed branch,
+  and `ITERATE` to run a whole path again on its result.
+- An architecture lab (`tawjih arch`): model architectures as files, exact
+  parameter counts, variants, a Hugging Face configuration, and a build
+  check with transformers; runtimes (`tawjih runtime`) for long jobs here,
+  over ssh, or on a service you drive.
 - A home screen in the terminal (`tawjih` alone): the project at a glance,
   the commands as cards, and `tawjih home TOPIC` explanations.
 - A project policy that can only restrict: no code, local providers only,

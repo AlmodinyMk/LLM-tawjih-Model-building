@@ -66,13 +66,13 @@
 </head>
 <body>
 <div class="page">
-  <h1>Tawjih — how the program is built <span>machine command directing · version 0.14.0</span></h1>
+  <h1>Tawjih — how the program is built <span>machine command directing · version 0.15.0</span></h1>
   <div class="sub">Knowledge lives in trees of three-sided files; machine language is built from it; paths connect files and run them step by step; evaluation, governance and an optional training bridge keep it honest.</div>
 
   <div class="layer ui">
     <div class="tag">Interfaces <small>all work on the same project</small></div>
     <div class="row" style="grid-template-columns: 1.15fr 1.45fr 0.95fr 1.15fr;">
-      <div class="box"><b>Terminal program <span class="en">tawjih.py</span></b>with the package <span class="en">tawjihlib/</span> · Linux and Windows · standard library only<div class="m">86 commands · a home screen with the sprout logo (<span class="en">home</span>)</div></div>
+      <div class="box"><b>Terminal program <span class="en">tawjih.py</span></b>with the package <span class="en">tawjihlib/</span> · Linux and Windows · standard library only<div class="m">89 commands · a home screen with the sprout logo (<span class="en">home</span>)</div></div>
       <div class="box"><b>Four Linux windows <span class="en">linux/tawjih_desk.py</span></b>Books and research · Human concept · Machine language · Search and schedule<div class="m">a side conversation with the AI that cannot change the project · GTK or Tkinter · dark and light themes</div></div>
       <div class="box"><b>Editors</b><span class="en">open --editor vscode</span><div class="m">machine language as <span class="en">instructions.md</span> + <span class="en">code.py</span></div></div>
       <div class="box"><b>AI assistants and programs</b><span class="en">mcp</span> · tools for MCP clients, read / write / run levels, a person approves · <span class="en">serve</span> · HTTP with a token<div class="m"><span class="en">schedule</span> · <span class="en">trigger</span> from cron or Task Scheduler</div></div>
@@ -98,7 +98,7 @@
     </div>
 
     <div class="col" style="background:#f7f8fa;">
-      <div class="tag">The three-sided file <small style="font-weight:400;color:var(--muted)">(and an optional fifth side)</small></div>
+      <div class="tag">The three-faced file <small style="font-weight:400;color:var(--muted)">(a folder <span class="en">files/ID/</span>: head.json, human.md, machine.md, science.md)</small></div>
       <div class="file">
         <div class="title">File: a topic</div>
         <div class="hdr"><span class="en">id</span> stable · number such as <span class="en">1.1.1.1.2</span> · <span class="en">aliases</span><br>
@@ -107,8 +107,8 @@
         <div class="sides">
           <div class="side s-h"><b>Human concept</b>the subject explained in human language</div>
           <div class="side s-m"><b>Machine language</b>instructions for the model<br>+ Python code</div>
-          <div class="side s-r"><b>Reading</b>passages from books and papers, with their source</div>
-          <div class="side s-e"><b>Examples</b>questions with answers and wrong answers, for evaluation and training</div>
+          <div class="side s-r"><b>Science (reading)</b>passages from books and papers, with their source</div>
+          <div class="side s-e"><b>Examples</b> (in the machine face) questions with answers and wrong answers, for evaluation and training</div>
         </div>
         <div class="rule">At run time only machine language is sent. The other sides are for building, evaluating and training.</div>
       </div>
@@ -136,7 +136,7 @@
   <div class="layer net">
     <div class="tag">The network <small>the path language, drawing it, generating it</small></div>
     <div class="row" style="grid-template-columns: 1.5fr 1fr 1fr;">
-      <div class="box"><b>Path language</b>connecting words between files, and per-step settings, in Arabic too<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">ELSE</span><span class="chip k">AMONG</span><span class="chip k">BY</span><span class="chip k">THROUGH</span><span class="chip k">LINK</span><span class="chip k">CALL</span><span class="chip">EACH</span><span class="chip">APPROVE</span><span class="chip">USING</span><span class="chip">RETRY</span><span class="chip">UNTIL</span><span class="chip">PICK</span></div></div>
+      <div class="box"><b>Path language</b>connecting words between files, and per-step settings, in Arabic too<div class="chips"><span class="chip k">TO</span><span class="chip k">AND</span><span class="chip k">IF</span><span class="chip k">ELSE</span><span class="chip k">AMONG</span><span class="chip k">BY</span><span class="chip k">ITERATE</span><span class="chip k">THROUGH</span><span class="chip k">LINK</span><span class="chip k">CALL</span><span class="chip">EACH</span><span class="chip">APPROVE</span><span class="chip">USING</span><span class="chip">RETRY</span><span class="chip">UNTIL</span><span class="chip">PICK</span></div></div>
       <div class="box"><b>Drawing <span class="en">graph</span></b>the trees or a path, as <span class="en">Markdown</span>, <span class="en">Mermaid</span> or <span class="en">Graphviz</span><div class="m">handoffs between trees are thick · stale files are marked</div></div>
       <div class="box"><b>Generating <span class="en">generate</span></b>by contracts with no model, or from a goal a model proposes<div class="m">a proposal to review, then <span class="en">--accept</span></div></div>
     </div>
@@ -153,7 +153,7 @@
   </div>
 
   <div class="layer train">
-    <div class="tag">Training bridge <span class="en" style="font-weight:400">plugins/neural_bridge.py</span> <small>optional · the heavy work is done by PyTorch and llama.cpp · a plan unless --run</small></div>
+    <div class="tag">Models: training bridge <span class="en" style="font-weight:400">plugins/neural_bridge.py</span>, architecture lab <span class="en" style="font-weight:400">arch</span>, runtimes <span class="en" style="font-weight:400">runtime</span> <small>the heavy work is done by PyTorch, transformers and llama.cpp · a plan unless --run · jobs here, over ssh, or on a service</small></div>
     <div class="row" style="grid-template-columns: 1fr;">
       <div class="box flow"><span class="en">compile</span> examples → SFT / eval / DPO data &nbsp;→&nbsp; <span class="en">train</span> LoRA or QLoRA (torch · unsloth · axolotl) &nbsp;→&nbsp; <span class="en">merge</span> &nbsp;→&nbsp; <span class="en">convert</span> to GGUF &nbsp;→&nbsp; <span class="en">quantize</span><br><span class="en">lora bind</span> a branch to an adapter (by id, inherited) &nbsp;→&nbsp; <span class="en">lora apply</span> writes each step's <span class="en">model:</span> &nbsp;→&nbsp; <span class="en">lora serve</span> (vLLM, Ollama) &nbsp;·&nbsp; <span class="en">fuse</span> &nbsp;·&nbsp; <span class="en">lineage</span> adapter → data → files</div>
     </div>
@@ -162,7 +162,7 @@
   <div class="layer data">
     <div class="tag">The project on disk <small>plain text files</small></div>
     <div class="row" style="grid-template-columns: repeat(8, 1fr);">
-      <div class="box"><b class="en">files/</b>one file per topic</div>
+      <div class="box"><b class="en">files/</b>a folder per file: its three faces</div>
       <div class="box"><b class="en">paths/</b>paths, cases, baselines</div>
       <div class="box"><b class="en">library/</b>books and filter reports</div>
       <div class="box"><b class="en">cache/</b>kept model answers</div>

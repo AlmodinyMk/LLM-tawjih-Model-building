@@ -12,7 +12,7 @@ Runs on your computer with Ollama, or with any OpenAI-compatible or
 Anthropic provider. Python, standard library only; Linux and Windows.
 [العربية](README.ar.md)
 
-> **Status: 0.14.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.15.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -115,6 +115,8 @@ published here yet.
 [MCP server](#ai-assistants-the-mcp-server) ·
 [Governance](#governance-locks-reviews-releases-schedules) ·
 [Training](#training-adapters-the-neural-bridge) ·
+[Architecture lab](#the-architecture-lab) ·
+[Runtimes](#runtimes-where-jobs-run) ·
 [Linux windows](#desktop-windows-for-linux-users) ·
 [Limitations](#limitations) ·
 [What is verified](#what-is-and-is-not-verified) ·
@@ -198,6 +200,7 @@ Two phases are kept apart on purpose:
 | `B USING model` | B uses that model in this path (`--model` still wins) |
 | `B RETRY 3 UNTIL word` | B is run again, told why, until its output meets the word (as for `IF`), at most 3 more times; `UNTIL NOT word` for the opposite. `RETRY n` alone sets the retries for a broken contract. `UNTIL key = value` waits for that value in a JSON output |
 | `A PICK key TO B` | only the value of `key` in A's JSON output is passed on |
+| `..., ITERATE 5 UNTIL status = pass` | a statement of its own: the whole path runs again on its own result, at most 5 rounds, until the result meets the condition (a word, `NOT` word, or `key = value`, as for `IF`). Without `UNTIL`, exactly 5 rounds |
 
 `EACH` and `APPROVE` come before a file; `USING`, `RETRY`, `UNTIL` and
 `PICK` after it, and belong to that file in that path only. Statements chain
@@ -205,8 +208,10 @@ Two phases are kept apart on purpose:
 PowerShell). Arabic words work too: إلى، مرر، و، إذا، ليس، وإلا، بين، عبر،
 ارتبط، لكل، اعتمد، نفذ، بواسطة، أعد، حتى، انتق، حسب; and `؛` or `،` separate
 statements. Files written with no connecting word are a plain sequence.
-`PARALLEL` and `CACHE` are refused with a reason: branches joined by `AND`
-are already independent, and every answer is already kept for `--resume`.
+`ITERATE` (كرر) starts a statement of its own. `PARALLEL` and `CACHE` are
+refused with a reason: branches joined by `AND` are independent, and run
+at the same time with `--max-workers N`; every answer is already kept for
+`--resume`.
 
 ```
 produce review 1.1 TO 1.2 IF error / 1.1 TO 1.3 IF NOT error / 1.2 AND 1.3 TO 2.1
@@ -225,6 +230,25 @@ kept and `cache --clear` empties it. `--model NAME` chooses the model for
 one command.
 `produce` will not start if a step has an empty machine side, or has code
 and `--allow-code` is missing.
+
+**At the same time.** `run` and `produce` take `--max-workers N`: steps
+whose inputs are ready run at the same time, up to N, so the four branches
+of `A TO B AND C AND D AND E` wait for one model call instead of four.
+Steps that run code, or that ask a person on the terminal, still run one by
+one, and the log keeps the plan's order. The default is 1: one step after
+another, as before.
+
+**When a branch fails.** By default the first failure stops the run.
+`--on-failure continue` leaves a failed step out (when it has no
+`fallback:` file), skips the steps that needed its output, finishes the
+rest, and marks the record `partial` with the failed steps.
+
+**Again and again.** `ITERATE n UNTIL cond` in a path, or `--iterate N
+--until COND` on the command line, runs the whole path up to n times, each
+round on the result of the round before (the original request stays in
+every prompt), and stops when the result meets the condition; if it never
+does, the command fails after the last round. `EACH` (items of a list) and
+`RETRY ... UNTIL` (one step tried again) keep their meanings.
 
 ## Contracts, models and staleness
 
@@ -355,7 +379,7 @@ because terminals do not lay out right-to-left text reliably.
 | `cache [--clear]` | show or empty the kept model answers |
 | `produce NAME [WORDS ...] [--plan] --input TEXT [--backend B] [--allow-code] [--code-timeout S]` | cross-tree production: select, order, validate, run, save, document |
 | `path NAME [WORDS ...]` | define a path without running it, or show a saved one |
-| `run NAME --input TEXT [--backend B] [--allow-code]` | run a saved path |
+| `run NAME --input TEXT [--backend B] [--allow-code] [--max-workers N] [--on-failure continue] [--iterate N --until C]` | run a saved path; steps at the same time, going on past a failed branch, and rounds (see [Cross-tree production](#cross-tree-production)) |
 | `edit REF --side S --ask TEXT [--source FILE] [--backend B]` | have a model rewrite one side; shows a diff and asks before saving |
 | `deposit FILE [--part N\|TITLE]` / `library` | add a book (text, Markdown, LaTeX, HTML, XML/PreTeXt) to the library / list books |
 | `confirm REF ...` | record that a machine side still fits its human and reading sides (clears the stale mark) |
@@ -367,6 +391,8 @@ because terminals do not lay out right-to-left text reliably.
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
 | `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code] [--human-approval always\|run\|never]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
 | `provider list\|add\|policy\|rm\|default\|fallback\|test [NAME] ...` | named providers, retries and fallback chains; see [AI providers](#ai-providers) |
+| `runtime list\|add\|rm\|default\|check\|jobs\|status\|logs\|cancel\|collect` | where long jobs run, and the project's jobs; see [Runtimes](#runtimes-where-jobs-run) |
+| `arch create\|derive\|list\|show\|validate\|set\|diff\|components\|mutate\|export\|build\|rank` | language-model architectures as three-faced files; see [The architecture lab](#the-architecture-lab) |
 | `policy show\|set\|reset` | the project's own limits, which only restrict; see [The project's policy](#the-projects-policy) |
 | `approve [ID ...] [--yes \| --no]` | requests from the assistant waiting for a person: list, read, run or decline |
 | `do STATEMENTS [--file F] [--run] [--yes]` | management statements in English or Arabic, translated into commands (see [Management statements](#management-statements-do)) |
@@ -681,7 +707,12 @@ $B merge algebra --run                   # adapter merged into the base
 $B --llama-cpp ~/llama.cpp convert algebra --run      # merged model to GGUF
 $B --llama-cpp ~/llama.cpp quantize models/gguf/algebra-f16.gguf --type Q4_K_M --run
 $B --llama-cpp ~/llama.cpp convert algebra --lora --run   # a GGUF adapter
+$B train algebra ... --runtime gpu --run --yes   # as a job on another computer
 ```
+
+`train` and `merge` take `--runtime NAME`: the work becomes a job folder
+that runs here or elsewhere and is collected back with `tawjih runtime
+collect` (see [Runtimes](#runtimes-where-jobs-run)).
 
 | Command | Does |
 |---|---|
@@ -712,6 +743,85 @@ commands and the registry without any training library; the generated
 Unsloth, axolotl, vLLM, Ollama adapters and llama.cpp. The training
 libraries change their arguments often; the scripts pass only the ones the
 installed TRL knows, and say what they left out.
+
+## The architecture lab
+
+An architecture of a language model is an ordinary three-faced file, tagged
+`architecture`: the **human** face holds the hypothesis, the design
+decisions and the known limitations; the **science** face the papers it
+rests on; the **machine** face the specification, as JSON. An architecture
+derived from another is its child in the tree and links to it
+(`derived-from`), so the tree is its lineage, and locks, reviews, releases
+and `trace` work on it as on any file.
+
+```
+tawjih arch create "Apex 001" --preset tiny          # tiny, small, llama-7b-like, gpt2-like, moe-small
+tawjih arch derive 1 "Apex 002" --set kv_heads=1 --set layers=6
+tawjih arch show 1.1                                 # parameters, memory, KV cache
+tawjih arch diff 1 1.1
+tawjih arch mutate 1 --count 6 [--yes]               # one change each, as derived architectures
+tawjih arch set 1 ffn_hidden=1024
+tawjih arch export 1 -o hf/                          # a Hugging Face config.json
+tawjih arch build 1 --run [--runtime NAME]           # build it, forward and backward, check the count
+tawjih arch rank --by params|kv|speed
+```
+
+The specification has `layers`, `hidden`, `heads`, `kv_heads` (MHA when it
+equals `heads`, MQA at 1, GQA between), `ffn` (`swiglu`, `gelu`, `relu`)
+with `ffn_hidden`, `norm` (`rmsnorm`, `layernorm`), `positions` (`rope`,
+`learned`, `none`), `vocab`, `context`, `tie_embeddings`, `bias`, `moe`
+(`null` or `{"experts": N, "top_k": K}`) and `dropout`; `arch components`
+lists them. `validate` refuses unknown keys and dimensions that do not fit
+(heads that do not divide the hidden size, kv_heads that do not divide
+heads, an odd head size with rope).
+
+Parameter counts are exact for these formulas: the tests check them
+against Llama-2-7B (6,738,415,616), TinyLlama (1,100,048,384) and GPT-2
+small (124,439,808). Memory, KV cache and FLOPs per token are estimates,
+and say so. Nothing here trains a model or invents one for you: Tawjih
+keeps the designs, their reasons and their lineage, checks them, and hands
+them to an existing library. `export` writes a configuration that Hugging
+Face transformers builds (the Llama family for rmsnorm + swiglu + rope,
+Mixtral with `moe`, GPT-2 for layernorm + gelu + learned positions);
+`build` makes a job that builds the model with transformers, runs it
+forward and backward on random tokens, and checks that its parameters are
+the ones counted. The result is kept in `models/architectures/ID/` and
+shown by `show` and `rank`. Training a built architecture from scratch is
+not part of this; adapters of existing models are trained with the
+[neural bridge](#training-adapters-the-neural-bridge).
+
+## Runtimes: where jobs run
+
+Long jobs (`arch build`, and the bridge's `train` and `merge` with
+`--runtime NAME`) run on a runtime: this computer (`local`, always there),
+another computer over `ssh`, or any service you drive with your own command
+lines (`command`), such as a cloud tool.
+
+```
+tawjih runtime add gpu --kind ssh --host me@gpu-box --python python3
+tawjih runtime add cloud --kind command \
+    --submit "mytool run --dir {job} 'sh run.sh'" \
+    --status "mytool status {id}" --logs "mytool logs {id}" \
+    --collect "mytool copy {id}:out {job}/out"
+tawjih runtime check gpu              # its Python, libraries, GPUs, free disk
+tawjih arch build 1 --runtime gpu --run --yes
+tawjih runtime jobs
+tawjih runtime status last
+tawjih runtime logs last
+tawjih runtime collect last           # results back into the project
+```
+
+A job is a folder `models/jobs/ID/` with `run.sh`, the data it needs and
+relative paths, so it runs the same anywhere; it writes `log.txt`, then
+`exit` with its status, and leaves its results in `out/`. Runtimes are
+kept in your own settings (`~/.config/tawjih/runtimes.json`, or the file
+`TAWJIH_RUNTIMES` names), not in the project: a project copied from
+elsewhere cannot bring commands that would run on your computer. No key or
+password is stored, and a setting that looks like one is refused; ssh uses
+your keys, a command runtime your tools' own sign-in. A job that leaves
+this computer needs `--yes`, since its files are sent and it may cost
+money, and a project policy with `--allow-network false` or `local`
+refuses it.
 
 ## Desktop windows, for Linux users
 
@@ -866,7 +976,8 @@ stage/    proposals waiting for review           (git-ignored)
 requests/ an assistant's requests waiting for approval (git-ignored)
 quarantine/ files repair could not read        (git-ignored)
 mounts.json, schedules.json, seal.json   (optional)
-models/   adapters, merged models, GGUF files, registry.json
+models/   adapters, merged models, GGUF files, registry.json,
+          jobs/ (one folder per job) and architectures/ (build results)
           (neural bridge; git-ignored)
 datasets/ compiled training data (neural bridge; git-ignored)
 ```
@@ -880,9 +991,14 @@ two together when you copy the program.
 
 ## Limitations
 
-- Branches run one after another, not in parallel. There are no loops;
-  FOR EACH (`EACH` or `contract --each`) runs one step over the items of a
-  list, one after another.
+- Branches run at the same time only with `--max-workers`, in threads of
+  one process; steps with code or a question on the terminal run one by
+  one. `ITERATE` repeats a whole path, not a part of one; FOR EACH (`EACH`
+  or `contract --each`) runs one step over the items of a list, one after
+  another.
+- The architecture lab covers decoder-only language models in the
+  families transformers builds from a configuration; anything else is
+  refused rather than half-built. It does not pretrain a model.
   Retries ask the model again when the answer breaks the contract, or, with
   `RETRY n UNTIL word`, while the output does not meet the word; a failed
   production is run again with `--resume`.
@@ -942,9 +1058,14 @@ usage and `stats`, with Docling, Marker and Pandoc replaced by stand-in
 scripts; and since 0.10 every command in
 [Governance](#governance-locks-reviews-releases-schedules), with the sandbox
 tested on Linux only and GnuPG signing not tested; since 0.11 every word of
-the path language, since 0.12 the statements of `do`, and since 0.13 the
-MCP server, also with the official MCP Python SDK as the client. The neural bridge
-has its own section above.
+the path language, since 0.12 the statements of `do`, since 0.13 the
+MCP server, also with the official MCP Python SDK as the client, and since
+0.15 the three face files, steps at the same time (four branches measured
+to overlap), `ITERATE`, the runtimes (a local job, and a command runtime
+driving a stand-in for a remote service), and the architecture lab: `arch
+build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
+(Llama with GQA and MQA, GPT-2, Mixtral), and their parameters matched the
+counts. The neural bridge has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 
@@ -953,8 +1074,9 @@ GitHub Actions workflow that runs at every push. The Linux desktop windows
 were driven by a script on a virtual display; see
 [linux/README.md](linux/README.md).
 
-Not yet verified: real editors and the desktop windows used by a person, and
-real providers. The three network backends, and the retries and fallback
+Not yet verified: real editors and the desktop windows used by a person,
+real providers, an ssh runtime against a real computer, and any cloud
+service. The three network backends, and the retries and fallback
 chains of named providers, were checked only against a local mock server
 that imitates the response formats and the busy statuses.
 
