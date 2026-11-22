@@ -18,7 +18,7 @@ from test_tawjih import Base  # noqa: E402
 EX = "Q: 2x+4=10\nA: x = 3\nE: 3\nBAD: x = 7\nBAD: x = 2\n\nس: 3+4؟\nج: 7\n"
 
 
-class Bridge(Base):
+class BridgeBase(Base):
     def setUp(self):
         super().setUp()
         self.tree()
@@ -54,7 +54,19 @@ class Bridge(Base):
         reg["adapters"][name]["rank"] = rank
         (self.root / "models" / "registry.json").write_text(json.dumps(reg))
         return d
+    def llama_dir(self):
+        d = self.root / "llama"
+        (d / "build" / "bin").mkdir(parents=True)
+        (d / "convert_hf_to_gguf.py").write_text(
+            "import sys\nout = sys.argv[sys.argv.index('--outfile') + 1]\n"
+            "open(out, 'w').write('gguf')\n")
+        q = d / "build" / "bin" / "llama-quantize"
+        q.write_text("#!/bin/sh\necho \"$@\" > \"$2\"\n")
+        q.chmod(0o755)
+        return d
 
+
+class Bridge(BridgeBase):
     # ------------------------------------------------------------ compile
     def test_compile_splits_rules_and_preference_pairs(self):
         self.compile()
@@ -136,17 +148,6 @@ class Bridge(Base):
         self.assertIn("SFT configs only", err)
 
     # ----------------------------------------------- convert and quantize
-    def llama_dir(self):
-        d = self.root / "llama"
-        (d / "build" / "bin").mkdir(parents=True)
-        (d / "convert_hf_to_gguf.py").write_text(
-            "import sys\nout = sys.argv[sys.argv.index('--outfile') + 1]\n"
-            "open(out, 'w').write('gguf')\n")
-        q = d / "build" / "bin" / "llama-quantize"
-        q.write_text("#!/bin/sh\necho \"$@\" > \"$2\"\n")
-        q.chmod(0o755)
-        return d
-
     def test_convert_runs_llama_cpp_script(self):
         d = self.llama_dir()
         model = self.root / "merged"
@@ -306,7 +307,7 @@ class Bridge(Base):
                 "merge.py", "exec")
 
 
-class PeftMethods(Bridge):
+class PeftMethods(BridgeBase):
     """--peft: the configuration each method gets, the checks before
     training, and which commands each kind of adapter can go through."""
 
@@ -426,6 +427,203 @@ class PeftMethods(Bridge):
         code, _, err = self.nb("--llama-cpp", str(lc), "convert", "dora",
                                "--lora")
         self.assertIn("LoRA adapters only", err)
+
+
+STUB_HUB = """# a stand-in for huggingface_hub: records the calls
+import json, os
+LOG = os.environ["HUB_LOG"]
+def get_token():
+    return os.environ.get("HF_TOKEN")
+class HfApi:
+    def __init__(self, endpoint=None):
+        self.endpoint = endpoint
+    def _log(self, name, **kw):
+        with open(LOG, "a") as f:
+            f.write(json.dumps([name, kw], default=str) + "\\n")
+    def create_repo(self, repo_id, private=None, repo_type=None,
+                    exist_ok=False):
+        self._log("create_repo", repo_id=repo_id, private=private,
+                  repo_type=repo_type, exist_ok=exist_ok,
+                  endpoint=self.endpoint)
+        return "https://hub/" + repo_id
+    def upload_folder(self, repo_id, folder_path, repo_type=None,
+                      commit_message=None, allow_patterns=None,
+                      ignore_patterns=None):
+        self._log("upload_folder", repo_id=repo_id, folder_path=folder_path,
+                  repo_type=repo_type, allow=allow_patterns,
+                  ignore=ignore_patterns)
+        return "commit"
+    def upload_file(self, path_or_fileobj, path_in_repo, repo_id,
+                    repo_type=None, commit_message=None):
+        self._log("upload_file", repo_id=repo_id, path=path_in_repo,
+                  text=path_or_fileobj.decode("utf-8"))
+"""
+
+
+class Hub(BridgeBase):
+    """setup, push, pipeline and lora serve --serverless, with a stand-in
+    for huggingface_hub that records its calls."""
+
+    def setUp(self):
+        super().setUp()
+        stub = self.root / "stub"
+        stub.mkdir()
+        (stub / "huggingface_hub.py").write_text(STUB_HUB)
+        self.log = self.root / "hub.jsonl"
+        old = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(old)))
+        os.environ.update(PYTHONPATH=str(stub), HUB_LOG=str(self.log),
+                          HF_TOKEN="hf_x")
+        self.compile()
+        self.adir = self.root / "models" / "adapters" / "alg"
+        self.assertEqual(self.nb("train", "alg", "--base-model",
+                                 "Org/Base-1B", "--dataset", str(
+                                     self.ds / "sft_train.jsonl"),
+                                 "--peft", "dora")[0], 0)
+        for name in ("adapter_config.json", "adapter_model.safetensors",
+                     "training_args.bin"):
+            (self.adir / name).write_text("{}")
+        (self.adir / "checkpoint-10").mkdir()
+        (self.adir / "checkpoint-10" / "x.bin").write_text("x")
+
+    def calls(self):
+        return [json.loads(x) for x in self.log.read_text().splitlines()] \
+            if self.log.is_file() else []
+
+    def test_setup(self):
+        code, out, _ = self.nb("setup", "--for", "train,qlora", "--for",
+                               "push")
+        self.assertEqual(code, 0)
+        self.assertIn("pip install --upgrade torch transformers peft trl "
+                      "datasets accelerate bitsandbytes huggingface_hub", out)
+        self.assertIn("plan only", out)
+        self.assertIn("vLLM runs on Linux", self.nb("setup", "--for",
+                                                    "serve")[1])
+        self.assertIn("setup --for takes", self.nb("setup", "--for",
+                                                   "nope")[2])
+
+    def test_push_an_adapter(self):
+        code, out, err = self.nb("push", "alg", "--repo", "me/alg")
+        self.assertEqual(code, 0, err)
+        self.assertIn("(private", out)
+        self.assertIn("adapter_model.safetensors", out)
+        self.assertNotIn("checkpoint", out)
+        self.assertNotIn("training_args", out)
+        self.assertEqual(self.calls(), [])
+        code, _, err = self.nb("push", "alg", "--repo", "me/alg", "--run")
+        self.assertIn("--yes", err)
+        self.assertIn("OWNER/NAME", self.nb("push", "alg", "--repo",
+                                            "bad repo", "--run", "--yes")[2])
+        code, out, err = self.nb("push", "alg", "--repo", "me/alg", "--run",
+                                 "--yes")
+        self.assertEqual(code, 0, err + out)
+        calls = self.calls()
+        self.assertEqual([c[0] for c in calls], ["create_repo",
+                                                 "upload_folder",
+                                                 "upload_file"])
+        self.assertEqual((calls[0][1]["private"], calls[0][1]["repo_type"]),
+                         (True, "model"))
+        self.assertIn("checkpoint-*", calls[1][1]["ignore"])
+        card = calls[2][1]["text"]
+        self.assertIn("base_model: Org/Base-1B", card)
+        self.assertIn("library_name: peft", card)
+        self.assertIn("DoRA", card)
+        self.assertIn('PeftModel.from_pretrained(base, "me/alg")', card)
+        reg = json.loads((self.root / "models" / "registry.json")
+                         .read_text())
+        self.assertEqual(reg["adapters"]["alg"]["hub"], {"adapter":
+                                                         "me/alg"})
+
+    def test_push_merged_dataset_policy_token(self):
+        self.assertIn("no merged model", self.nb(
+            "push", "alg", "--what", "merged", "--repo", "me/m")[2])
+        code, out, err = self.nb("push", "--dataset", str(self.ds),
+                                 "--repo", "me/data", "--public", "--run",
+                                 "--yes")
+        self.assertEqual(code, 0, err)
+        create, upload = self.calls()
+        self.assertEqual((create[1]["private"], create[1]["repo_type"]),
+                         (False, "dataset"))
+        self.assertEqual(upload[1]["allow"], ["*.jsonl"])
+        (self.root / "tawjih.policy.json").write_text(
+            '{"allow_network": "local"}')
+        self.assertIn("policy", self.nb("push", "alg", "--repo", "me/a",
+                                        "--run", "--yes")[2])
+        (self.root / "tawjih.policy.json").unlink()
+        del os.environ["HF_TOKEN"]
+        code, out, err = self.nb("push", "alg", "--repo", "me/a", "--run",
+                                 "--yes")
+        self.assertNotEqual(code, 0)
+
+    def test_a_local_base_stays_here(self):
+        card = nb.model_card("x", {"base_model": str(self.root / "mybase"),
+                                   "peft": "lora"}, "adapter")
+        self.assertNotIn(str(self.root), card)
+        self.assertNotIn("base_model:", card)
+        self.assertIn("a local model", card)
+
+    def test_pipeline_plan_here(self):
+        code, out, err = self.nb("pipeline", "p1", "--base-model", "Org/B",
+                                 "--data-dir", str(self.ds), "--push",
+                                 "both", "--repo", "me/p1")
+        self.assertEqual(code, 0, err)
+        for word in ("== 1. compile", "== 2. train", "== 3. merge",
+                     "== 4. push", "adapter to me/p1",
+                     "merged to me/p1-merged"):
+            self.assertIn(word, out)
+        self.assertIn("--yes", self.nb("pipeline", "p1", "--base-model",
+                                       "Org/B", "--push", "adapter",
+                                       "--repo", "me/p1", "--run")[2])
+        self.assertIn("--repo", self.nb("pipeline", "p1", "--base-model",
+                                        "Org/B", "--push", "adapter")[2])
+        self.assertIn("nothing to merge", self.nb(
+            "pipeline", "p1", "--base-model", "Org/B", "--peft", "prompt",
+            "--merge")[2])
+
+    def test_vllm_ranks(self):
+        self.assertEqual([nb.vllm_rank(r) for r in (4, 8, 12, 24, 300)],
+                         [8, 8, 16, 32, 320])
+
+    def test_serverless(self):
+        self.fake_adapter("plain", rank=24, base="Org/Base-1B")
+        (self.root / "ad" / "plain" / "adapter_model.safetensors"
+         ).write_text("w")
+        out_dir = self.root / "srv"
+        code, out, err = self.nb("lora", "serve", "--serverless",
+                                 "--base-model", "Org/Base-1B", "--out-dir",
+                                 str(out_dir), "--weights", "volume",
+                                 "--sleep", "--max-num-seqs", "48")
+        self.assertEqual(code, 0, err)
+        start = (out_dir / "start.sh").read_text()
+        for word in ("VLLM_CACHE_ROOT=/cache/vllm", "HF_HUB_OFFLINE=1",
+                     "VLLM_SERVER_DEV_MODE=1", "--served-model-name "
+                     "Org/Base-1B", "--max-num-seqs 48",
+                     "[1, 2, 4, 8, 16, 32, 48]",
+                     "--safetensors-load-strategy prefetch",
+                     "--enable-sleep-mode", "--max-lora-rank 32",
+                     "alg=/models/adapters/alg",
+                     "plain=/models/adapters/plain"):
+            self.assertIn(word, start)
+        self.assertTrue((out_dir / "adapters" / "plain" /
+                         "adapter_model.safetensors").is_file())
+        for name in ("Dockerfile", "warmup.sh", "README.md"):
+            self.assertTrue((out_dir / name).is_file())
+        code, out, err = self.nb("lora", "serve", "--serverless",
+                                 "--base-model", "Org/Base-1B", "--out-dir",
+                                 str(out_dir), "--eager", "--weights",
+                                 "stream")
+        start = (out_dir / "start.sh").read_text()
+        self.assertIn("--enforce-eager", start)
+        self.assertNotIn("cudagraph", start)
+        self.assertIn("runai_streamer", start)
+        self.assertIn("vllm[runai]", (out_dir / "Dockerfile").read_text())
+        code, out, err = self.nb("lora", "serve", "--serverless",
+                                 "--base-model", "Org/Base-1B", "--out-dir",
+                                 str(out_dir))
+        docker = (out_dir / "Dockerfile").read_text()
+        self.assertIn("hf download Org/Base-1B --local-dir /models/base",
+                      docker)
+        self.assertIn("FROM vllm/vllm-openai:v0.32.0", docker)
 
 
 if __name__ == "__main__":

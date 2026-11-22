@@ -248,6 +248,10 @@ TOPICS = {
          "data."),
         ("Adapters", "train, merge, convert, quantize, and lora add, bind, "
          "route, fuse, serve. Each prints its plan; --run carries it out."),
+        ("To the Hub", "pipeline NAME --base-model M --push both --repo "
+         "you/NAME --run --yes\nsetup brings the libraries (here or on "
+         "--runtime gpu); push uploads to a private repository with a model "
+         "card; lora serve --serverless sets vLLM up for cold starts."),
         ("PEFT methods", "train NAME --peft dora --base-model M --run\n"
          "lora, dora, rslora, pissa, olora, loha, lokr, ia3, vera, oft, "
          "boft, fourierft, hra, randlora, ln, prompt, ptuning; --target "

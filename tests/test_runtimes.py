@@ -167,6 +167,28 @@ class Runtimes(Bridge):
         self.assertEqual(cfg["dataset"], "data/sft_train.jsonl")
         self.assertEqual(cfg["output_dir"], "out")
 
+    def test_pipeline_as_one_job(self):
+        self.add_cloud()
+        args = ["pipeline", "pp", "--base-model", "Org/Tiny", "--data-dir",
+                str(self.ds), "--runtime", "cloud"]
+        code, out, err = self.nb(*args)
+        self.assertEqual(code, 0, err)
+        self.assertIn('"$PY" train.py train_config.json', out)
+        code, out, err = self.nb(*args, "--run", "--yes")
+        self.assertEqual(code, 0, err + out)
+        self.assertIn(": done", self.cli("runtime", "status", "last")[1])
+        self.assertEqual(self.cli("runtime", "collect", "last")[0], 0)
+        entry = json.loads((self.root / "models" / "registry.json")
+                           .read_text())["adapters"]["pp"]
+        self.assertTrue(entry["trained"])
+        self.assertEqual((entry["base"], entry["peft"]), ("Org/Tiny",
+                                                          "lora"))
+        self.assertTrue((self.root / "models" / "adapters" / "pp" /
+                         "adapter_config.json").is_file())
+        job = next(d for d in self.cloud.iterdir()
+                   if (d / "pipeline.sh").is_file())
+        self.assertIn("set -e", (job / "pipeline.sh").read_text())
+
     def test_policy_keeps_jobs_here(self):
         self.add_cloud()
         (self.root / "tawjih.policy.json").write_text(

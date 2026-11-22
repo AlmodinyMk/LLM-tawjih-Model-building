@@ -446,14 +446,15 @@ def finish(root, jdir, cfg):
     where = collect(jdir, cfg)
     rec = record(jdir)
     print("results of job %s in %s" % (jdir.name, where))
-    if rec.get("kind") in ("train", "merge") and rec.get("adapter"):
+    if rec.get("kind") in ("train", "merge", "pipeline") and \
+            rec.get("adapter"):
         f = Path(root) / "models" / "registry.json"
         reg = json.loads(f.read_text(encoding="utf-8")) if f.is_file() \
             else {"adapters": {}, "bindings": {}}
         entry = reg.setdefault("adapters", {}).setdefault(rec["adapter"], {})
-        if rec["kind"] == "train":
+        if rec["kind"] in ("train", "pipeline"):
             entry["trained"] = True
-            for key in ("path", "base", "rank", "peft"):    # what merge needs
+            for key in ("path", "base", "rank", "peft", "merged", "hub"):
                 if rec.get(key) is not None:
                     entry[key] = rec[key]
         else:

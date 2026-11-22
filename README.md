@@ -788,12 +788,16 @@ collect` (see [Runtimes](#runtimes-where-jobs-run)).
 | `env` | the versions of torch, transformers, peft, trl, datasets, bitsandbytes, unsloth and axolotl in the training Python, its GPU, and where llama.cpp's tools are |
 | `train NAME` | writes `models/adapters/NAME/` with `train_config.json`, the dataset's manifest, and `train.py` (engine `torch`: transformers + PEFT + TRL, any of the [PEFT methods](#peft-methods), QLoRA through bitsandbytes; engine `unsloth`) or `axolotl.yml` (SFT on chat data only). SFT takes chat or prompt/completion rows, DPO takes prompt/chosen/rejected rows; the data is checked first |
 | `merge NAME` | the adapter merged into its base in 16-bit (PEFT `merge_and_unload`), for conversion |
+| `setup [--for train,qlora,push,serve,stream,unsloth,axolotl]` | installs with pip what that work needs into the training Python (`--python`), or on a runtime as a job (`--runtime`); then shows what that Python has. Tawjih brings the libraries to the Python that works, and takes none into itself |
+| `push NAME --repo OWNER/NAME [--what adapter\|merged] [--public]` / `push --dataset FOLDER --repo ...` | uploads to the Hugging Face Hub with its own `huggingface_hub` library: a private repository unless `--public`, without training leftovers (checkpoints, scripts, local paths), and a model card made from the training record (method, rank, rows, the dataset's SHA-256, never the project's file names or a local folder). The token is `HF_TOKEN` or the one `hf auth login` saved; needs `--run --yes`; obeys the policy |
+| `pipeline NAME --base-model M [--merge] [--push adapter\|merged\|both --repo R] [--runtime NAME]` | compile, train, merge and push in one go. Here: one after another. On a runtime: one job that does them all there (the adapter comes back; a merged model stays there unless pushed or `--fetch-merged`). With `both`, the merged model goes to `R-merged` |
 | `convert SOURCE [--lora]` | a merged model to GGUF, or an adapter to a GGUF adapter (`convert_lora_to_gguf.py`) |
 | `quantize FILE.gguf [--type Q4_K_M]` | with `llama-quantize`, looked for in `--llama-cpp`, its `build/bin`, then PATH |
 | `lora add NAME FOLDER [--served-as M]` / `rm` / `list` | the project's adapters, in `models/registry.json` |
 | `lora bind REF NAME` / `unbind REF` / `route REF` | an adapter for a file and the files under it, kept by stable id: moving files keeps their adapter; `route` shows which adapter a file gets and from where |
 | `lora apply [--yes] [--overwrite]` | writes each step's `model:` line from the bindings: this is what routes a path's steps to adapters. A file's own model is kept unless `--overwrite`; locked files are not changed |
 | `lora serve [--server vllm\|ollama\|llama]` | how to offer the adapters under their names: the `vllm serve ... --enable-lora --lora-modules` command, or one Ollama model per adapter (Modelfiles with `ADAPTER`) |
+| `lora serve --serverless [--weights image\|volume\|stream] [--max-num-seqs N] [--eager] [--sleep]` | a folder `models/serve/BASE/` for vLLM where machines start cold: `start.sh`, a `Dockerfile` that puts the weights in the image, `warmup.sh` that fills the compile cache once, and `README.md` explaining each choice. See [cold starts](#serving-with-vllm-cold-starts) |
 | `lora fuse NEW A:0.7 B:0.3 [--how linear\|cat\|svd\|ties\|...]` | a weighted combination with PEFT's `add_weighted_adapter`; refuses adapters of different bases, and `linear` with different ranks |
 | `lora lineage NAME` | what an adapter was trained on: the dataset, and each source file, marked when it has changed since |
 
@@ -935,6 +939,54 @@ test a trained model on the GPU, serve it there (for example with vLLM,
 8000:localhost:8000 gpu`, and add a provider at
 `http://localhost:8000/v1`; the tunnel ends on this computer, so a policy
 of `"allow_network": "local"` still allows it.
+
+### Hugging Face Hub and the whole pipeline
+
+The bridge brings each library to the Python that does the work, here or on
+a rented GPU, and passes the work from one to the next: `setup` installs
+them, `compile` writes the data, the training libraries train,
+`huggingface_hub` uploads.
+
+```
+python neural_bridge.py setup --for train,push --run          # here
+python neural_bridge.py setup --for train,qlora,push --runtime gpu --run --yes
+python neural_bridge.py pipeline algebra --base-model Qwen/Qwen2.5-1.5B-Instruct \
+    --peft dora --qlora --push both --repo you/algebra --runtime gpu --run --yes
+```
+
+- `push` sends to a **private** repository unless `--public`, never the
+  checkpoints, the scripts or a local path, and writes a model card from
+  the training record: the method, rank, rows and the dataset's SHA-256,
+  not the names of the project's files.
+- The token is `HF_TOKEN`, or the one `hf auth login` saved, on the
+  machine that uploads. On a rented GPU, run `ssh gpu hf auth login` once:
+  no token is sent from here.
+- `push --dataset datasets --repo you/algebra-data` uploads the `.jsonl`
+  files only, as a dataset.
+- `--hub-endpoint URL` uploads to a mirror or your own Hub.
+
+### Serving with vLLM: cold starts
+
+On serverless GPUs a machine starts from nothing at the first request
+after a quiet time: it reads the weights, compiles, captures CUDA graphs.
+`lora serve --serverless` writes a folder that shortens each of these for
+vLLM 0.32 (every flag was checked against its source):
+
+| Choice | What it does |
+|---|---|
+| `--weights image` (default) | the weights inside the Docker image (`hf download` at build time, `HF_HUB_OFFLINE=1`): read from the machine's own disk, nothing downloaded at start |
+| `--weights volume` | the weights on a network volume, read ahead with `--safetensors-load-strategy prefetch` |
+| `--weights stream` | `--load-format runai_streamer` with concurrency 16 (`vllm[runai]`), also from S3 or GCS |
+| `VLLM_CACHE_ROOT` (`--cache-dir`) | on a volume that outlives the machine: `warmup.sh`, run once on the same GPU type, leaves the compiled graphs there, and cold machines load them instead of compiling |
+| `--max-num-seqs N` | CUDA graphs captured only for batch sizes up to N (`-cc '{"cudagraph_capture_sizes": [...]}'`) |
+| `--eager` | `--enforce-eager`: no graphs, no compiling; the fastest start and slower answers |
+| `--sleep` | `--enable-sleep-mode`: the model sleeps and wakes in seconds instead of starting cold; needs `VLLM_SERVER_DEV_MODE=1`, so not on the open internet |
+| `--max-model-len` | no longer than the paths need |
+
+The adapters are copied into the folder and served under their names
+(`--max-lora-rank` rounded up to a value vLLM accepts), so each file's
+`model:` line still picks its adapter. Keeping one machine warm on the
+service is the other remedy, and it costs while idle.
 
 ## Desktop windows, for Linux users
 
@@ -1232,8 +1284,15 @@ GitHub Actions workflow that runs at every push. The Linux desktop windows
 were driven by a script on a virtual display; see
 [linux/README.md](linux/README.md).
 
+`setup` installed `huggingface_hub` into a clean Python; `push` (adapter,
+merged model, dataset) and `pipeline` (here, and as one job over ssh with
+the token saved on the far side) went through the real `huggingface_hub`
+2.4 to a stand-in Hub server; the `--serverless` flags were checked against
+vLLM 0.32's source.
+
 Not yet verified: real editors and the desktop windows used by a person,
-real providers, a real Langfuse server, an ssh runtime against another computer
+real providers, a real Langfuse server, the real Hugging Face Hub (and
+large files, which it sends another way), vLLM serving and a Docker build, an ssh runtime against another computer
 (it was run against an ssh server on this one, on port 2222 through a
 `~/.ssh/config` alias: `train` with DoRA, `merge` and `arch build`, each
 sent, followed and collected), a real GPU, and any cloud
