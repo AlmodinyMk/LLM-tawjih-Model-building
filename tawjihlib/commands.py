@@ -889,12 +889,6 @@ def cmd_generate(a):
         prop.unlink()
         print("accepted: paths/%s.path" % a.name)
         print_plan(st, a.name, plan_steps(st, flow), sys.stdout)
-    if flow.iterate:
-        n_, c_ = flow.iterate
-        print("ITERATE: the whole path up to %d time(s)%s" % (n_, (
-            ", until the result meets %s%s" % ("NOT " if c_[0] else "",
-                                                c_[1])) if c_ else ""),
-              file=sys.stdout)
         return
     allowed = _scope_ids(st, a.scope)
     if not allowed:
