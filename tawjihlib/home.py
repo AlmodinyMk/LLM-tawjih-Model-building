@@ -236,6 +236,11 @@ TOPICS = {
          "data."),
         ("Adapters", "train, merge, convert, quantize, and lora add, bind, "
          "route, fuse, serve. Each prints its plan; --run carries it out."),
+        ("PEFT methods", "train NAME --peft dora --base-model M --run\n"
+         "lora, dora, rslora, pissa, olora, loha, lokr, ia3, vera, oft, "
+         "boft, fourierft, hra, randlora, ln, prompt, ptuning; --target "
+         "chooses the layers and --peft-arg KEY=VALUE passes any other "
+         "argument."),
     ]),
 }
 

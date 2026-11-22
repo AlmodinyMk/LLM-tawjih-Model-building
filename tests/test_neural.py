@@ -306,5 +306,127 @@ class Bridge(Base):
                 "merge.py", "exec")
 
 
+class PeftMethods(Bridge):
+    """--peft: the configuration each method gets, the checks before
+    training, and which commands each kind of adapter can go through."""
+
+    def train(self, *args):
+        return self.nb("train", "x", "--base-model", "tiny", "--dataset",
+                       str(self.ds / "sft_train.jsonl"), "--overwrite",
+                       *args)
+
+    def adapter(self, name, cfg):
+        d = self.root / "ad" / name
+        d.mkdir(parents=True)
+        (d / "adapter_config.json").write_text(json.dumps(cfg))
+        self.assertEqual(self.nb("lora", "add", name, str(d),
+                                 "--base-model", "tiny")[0], 0)
+        return d
+
+    def test_every_method_is_planned(self):
+        self.compile()
+        adir = self.root / "models" / "adapters" / "x"
+        for m in nb.PEFT_METHODS:
+            code, out, err = self.train("--peft", m)
+            self.assertEqual(code, 0, m + err)
+            cfg = json.loads((adir / "train_config.json").read_text())
+            self.assertEqual(cfg["peft"], m)
+            script = (adir / "train.py").read_text()
+            compile(script, "train.py", "exec")
+            self.assertIn('"%s": (' % m, script)
+            self.assertIn("path_initial_model_for_weight_conversion", script)
+        self.assertIn("virtual tokens", out)
+        reg = json.loads((self.root / "models" / "registry.json")
+                         .read_text())
+        self.assertEqual(reg["adapters"]["x"]["peft"], "ptuning")
+
+    def test_options_reach_the_configuration(self):
+        self.compile()
+        code, out, err = self.train(
+            "--peft", "dora", "--target", "q_proj,v_proj", "--peft-arg",
+            "init_lora_weights=gaussian", "--peft-arg", "layers_to_transform"
+            "=[0, 1]", "--peft-arg", "bias=lora_only")
+        self.assertEqual(code, 0, err)
+        cfg = json.loads((self.root / "models" / "adapters" / "x" /
+                          "train_config.json").read_text())
+        self.assertEqual(cfg["target"], "q_proj,v_proj")
+        self.assertEqual(cfg["peft_args"], {
+            "init_lora_weights": "gaussian", "layers_to_transform": [0, 1],
+            "bias": "lora_only"})
+        code, out, err = self.train("--peft", "prompt", "--virtual-tokens",
+                                    "12")
+        self.assertIn("12 virtual tokens", out)
+
+    def test_checks(self):
+        self.compile()
+        for args, word in (
+                (["--peft-arg", "no equals"], "KEY=VALUE"),
+                (["--peft", "hra", "--rank", "7"], "even"),
+                (["--peft", "lora", "--virtual-tokens", "5"], "prompt or"),
+                (["--peft", "prompt", "--target", "mlp"], "no --target"),
+                (["--peft", "loha", "--engine", "unsloth"], "--engine torch"),
+                (["--peft", "ia3", "--engine", "axolotl"], "--engine torch"),
+                (["--peft", "pissa", "--qlora"], "--qlora")):
+            code, _, err = self.train(*args)
+            self.assertNotEqual(code, 0, args)
+            self.assertIn(word, err, args)
+        ds = self.ds / "dpo.jsonl"
+        ds.write_text('{"prompt": "p", "chosen": "a", "rejected": "b"}\n')
+        code, _, err = self.nb("train", "x", "--base-model", "tiny",
+                               "--dataset", str(ds), "--method", "dpo",
+                               "--peft", "olora")
+        self.assertIn("reference model", err)
+        code, out, err = self.train("--peft", "rslora", "--engine",
+                                    "unsloth")
+        self.assertEqual(code, 0, err)
+        code, out, err = self.train("--peft", "dora", "--engine", "axolotl")
+        self.assertEqual(code, 0, err)
+        yml = (self.root / "models" / "adapters" / "x" / "axolotl.yml")
+        self.assertIn("peft_use_dora: true", yml.read_text())
+
+    def test_kind_of_an_adapter(self):
+        d = self.root / "k"
+        d.mkdir()
+        for cfg, kind in (({"peft_type": "LORA"}, "lora"),
+                          ({"peft_type": "LORA", "use_dora": True}, "dora"),
+                          ({"peft_type": "LORA", "use_rslora": True},
+                           "rslora"),
+                          ({"peft_type": "LOHA"}, "loha"),
+                          ({"peft_type": "PROMPT_TUNING"}, "prompt"),
+                          ({"peft_type": "P_TUNING"}, "ptuning"),
+                          ({"peft_type": "NEWONE"}, "newone")):
+            (d / "adapter_config.json").write_text(json.dumps(cfg))
+            self.assertEqual(nb.adapter_kind(d), kind)
+        self.assertEqual(nb.adapter_kind(self.root / "none", {"peft": "vera"}),
+                         "vera")
+
+    def test_what_each_kind_can_go_through(self):
+        self.adapter("plain", {"peft_type": "LORA", "r": 8})
+        self.adapter("pissa", {"peft_type": "LORA", "r": 16})
+        self.adapter("dora", {"peft_type": "LORA", "r": 8, "use_dora": True})
+        self.adapter("loha", {"peft_type": "LOHA", "r": 8})
+        self.adapter("soft", {"peft_type": "PROMPT_TUNING"})
+        out = self.nb("lora", "list")[1]
+        self.assertIn("loha", out)
+        self.assertIn("dora", out)
+        code, _, err = self.nb("merge", "soft")
+        self.assertIn("nothing to merge", err)
+        code, out, err = self.nb("merge", "loha")
+        self.assertEqual(code, 0, err)
+        self.assertIn("fuse combines LoRA", self.nb(
+            "lora", "fuse", "n", "plain:0.5", "loha:0.5")[2])
+        self.assertIn("same rank (8, 16)", self.nb(
+            "lora", "fuse", "n", "plain:0.5", "pissa:0.5")[2])
+        out = self.nb("lora", "serve")[1]
+        self.assertIn("left out: dora, loha, soft", out)
+        self.assertIn("plain=", out)
+        self.assertIn("--max-lora-rank 16", out)
+        lc = self.llama_dir()
+        (lc / "convert_lora_to_gguf.py").write_text("")
+        code, _, err = self.nb("--llama-cpp", str(lc), "convert", "dora",
+                               "--lora")
+        self.assertIn("LoRA adapters only", err)
+
+
 if __name__ == "__main__":
     unittest.main()

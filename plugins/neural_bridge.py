@@ -9,7 +9,10 @@ is given.
 
     compile    the examples of the project as SFT, evaluation and DPO data
     env        which engines the training Python has, and the GPU
-    train      a LoRA / QLoRA adapter (engines: torch, unsloth, axolotl)
+    train      a PEFT adapter: LoRA, QLoRA, DoRA, rsLoRA, PiSSA, OLoRA,
+               LoHa, LoKr, IA3, VeRA, OFT, BOFT, FourierFT, HRA, RandLoRA,
+               LayerNorm tuning, prompt tuning, P-tuning (--peft; engines:
+               torch, unsloth, axolotl)
     merge      an adapter merged into its base model (PyTorch + PEFT)
     convert    a merged model, or an adapter, to GGUF (llama.cpp)
     quantize   a GGUF model to Q4_K_M, Q8_0, ... (llama.cpp)
@@ -208,6 +211,127 @@ def cmd_env(a):
 
 
 # -------------------------------------------------------------------- train
+# PEFT methods: name -> what it is. All train with --engine torch; the
+# ones in PLAIN_LORA save a plain LoRA adapter (served, fused, converted to
+# GGUF); prompt and ptuning add virtual tokens and cannot be merged.
+PEFT_METHODS = {
+    "lora": "LoRA: low-rank matrices beside the weights",
+    "dora": "DoRA: LoRA with the weights split into size and direction",
+    "rslora": "rank-stabilised LoRA: alpha/sqrt(r), for high ranks",
+    "pissa": "PiSSA: LoRA started from the main singular vectors",
+    "olora": "OLoRA: LoRA started from an orthonormal (QR) basis",
+    "loha": "LoHa: a Hadamard product of two low-rank pairs",
+    "lokr": "LoKr: a Kronecker product, very few parameters",
+    "ia3": "IA3: learned vectors that scale activations",
+    "vera": "VeRA: shared random matrices, small trained vectors",
+    "oft": "OFT: an orthogonal rotation of the weights (--rank = block)",
+    "boft": "BOFT: a butterfly orthogonal rotation (--rank = block)",
+    "fourierft": "FourierFT: a few trained frequencies of the change",
+    "hra": "HRA: Householder reflections (--rank even)",
+    "randlora": "RandLoRA: full rank from random bases",
+    "ln": "LayerNorm tuning: only the normalisation layers",
+    "prompt": "prompt tuning: trained virtual tokens before the input",
+    "ptuning": "P-tuning: virtual tokens made by a small encoder",
+}
+PLAIN_LORA = ("lora", "rslora", "pissa", "olora")
+NO_MERGE = ("prompt", "ptuning")
+PEFT_TYPES = {"LOHA": "loha", "LOKR": "lokr", "IA3": "ia3", "VERA": "vera",
+              "OFT": "oft", "BOFT": "boft", "FOURIERFT": "fourierft",
+              "HRA": "hra", "RANDLORA": "randlora", "LN_TUNING": "ln",
+              "PROMPT_TUNING": "prompt", "P_TUNING": "ptuning"}
+
+
+def adapter_rank(path, entry=None):
+    """The rank an adapter really has (a converted PiSSA or OLoRA adapter
+    has twice the rank it was trained with)."""
+    try:
+        cfg = json.loads((Path(path) / "adapter_config.json").read_text(
+            encoding="utf-8"))
+        return int(cfg["r"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return (entry or {}).get("rank")
+
+
+def adapter_kind(path, entry=None):
+    """The PEFT method of an adapter folder, from its adapter_config.json
+    (a converted PiSSA is a plain LoRA); else what the registry says."""
+    f = Path(path) / "adapter_config.json"
+    try:
+        cfg = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return (entry or {}).get("peft", "lora")
+    t = str(cfg.get("peft_type", "LORA")).upper()
+    if t == "LORA":
+        return "dora" if cfg.get("use_dora") else (
+            "rslora" if cfg.get("use_rslora") else "lora")
+    return PEFT_TYPES.get(t, t.lower())
+
+
+PEFT_BUILD = r'''
+# the PEFT method: its configuration from train_config.json, then any
+# --peft-arg; arguments this version of PEFT does not know are left out
+import inspect
+import peft
+METHOD = CFG.get("peft", "lora")
+ATTENTION = ["q_proj", "k_proj", "v_proj", "o_proj", "c_attn",
+             "query_key_value", "Wqkv", "out_proj"]
+MLP = ["gate_proj", "up_proj", "down_proj", "c_fc", "fc1", "fc2", "w1", "w2",
+       "w3", "dense_h_to_4h", "dense_4h_to_h"]
+target = CFG.get("target") or ("default" if METHOD in (
+    "ia3", "vera", "ln", "prompt", "ptuning") else "all-linear")
+target = {"all-linear": "all-linear", "attention": ATTENTION, "mlp": MLP,
+          "default": None}.get(target, [t.strip() for t in target.split(",")
+                                        if t.strip()])
+r, alpha, drop = CFG["lora_r"], CFG["lora_alpha"], CFG["lora_dropout"]
+lora = dict(r=r, lora_alpha=alpha, lora_dropout=drop, target_modules=target)
+hidden = getattr(model.config, "hidden_size", None) or getattr(
+    model.config, "n_embd", None)
+SPEC = {
+    "lora": ("LoraConfig", lora),
+    "dora": ("LoraConfig", dict(lora, use_dora=True)),
+    "rslora": ("LoraConfig", dict(lora, use_rslora=True)),
+    "pissa": ("LoraConfig", dict(lora, init_lora_weights="pissa",
+                                 lora_dropout=0.0)),
+    "olora": ("LoraConfig", dict(lora, init_lora_weights="olora",
+                                 lora_dropout=0.0)),
+    "loha": ("LoHaConfig", dict(r=r, alpha=alpha, module_dropout=drop,
+                                target_modules=target)),
+    "lokr": ("LoKrConfig", dict(r=r, alpha=alpha, module_dropout=drop,
+                                target_modules=target)),
+    "ia3": ("IA3Config", dict(target_modules=target,
+                              feedforward_modules=None if target is None
+                              else [])),
+    "vera": ("VeraConfig", dict(r=r, vera_dropout=drop,
+                                target_modules=target)),
+    "oft": ("OFTConfig", dict(r=0, oft_block_size=r, module_dropout=drop,
+                              target_modules=target)),
+    "boft": ("BOFTConfig", dict(boft_block_size=r, boft_block_num=0,
+                                boft_dropout=drop, target_modules=target)),
+    "fourierft": ("FourierFTConfig", dict(target_modules=target)),
+    "hra": ("HRAConfig", dict(r=r, target_modules=target)),
+    "randlora": ("RandLoraConfig", dict(r=r, randlora_dropout=drop,
+                                        target_modules=target)),
+    "ln": ("LNTuningConfig", dict(target_modules=target)),
+    "prompt": ("PromptTuningConfig", dict(
+        num_virtual_tokens=CFG.get("virtual_tokens", 20))),
+    "ptuning": ("PromptEncoderConfig", dict(
+        num_virtual_tokens=CFG.get("virtual_tokens", 20),
+        encoder_hidden_size=hidden)),
+}
+cls_name, kw = SPEC[METHOD]
+kw = {k: v for k, v in kw.items()
+      if not (k in ("target_modules", "feedforward_modules") and v is None)}
+kw.update(CFG.get("peft_args") or {})
+cls = getattr(peft, cls_name)
+known = set(inspect.signature(cls).parameters)
+left = sorted(k for k in kw if k not in known)
+if left:
+    print("not known to this PEFT, left out:", ", ".join(left))
+PEFT_CONFIG = cls(task_type="CAUSAL_LM",
+                  **{k: v for k, v in kw.items() if k in known})
+print("PEFT method:", METHOD, "(%s)" % cls_name)
+'''
+
 TRAIN_COMMON = r'''
 import dataclasses, json, sys
 CFG = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -249,18 +373,35 @@ kw["processing_class" if "processing_class" in params else "tokenizer"] = tok
 if PEFT_CONFIG is not None:
     kw["peft_config"] = PEFT_CONFIG
 trainer = Trainer(**kw)
+# PiSSA and OLoRA change the base weights when they start: the adapter is
+# saved converted to a plain LoRA (twice the rank) that applies to the
+# original base model, so it can be merged, served and combined like one
+import os, shutil
+init = getattr(PEFT_CONFIG, "init_lora_weights", True)
+convert = isinstance(init, str) and init.split("_")[0] in ("pissa", "olora")
+if convert:
+    first = os.path.join(CFG["output_dir"], "initial-adapter")
+    trainer.model.peft_config["default"].init_lora_weights = True
+    trainer.model.save_pretrained(first)
+    trainer.model.peft_config["default"].init_lora_weights = init
 trainer.train()
-trainer.save_model(CFG["output_dir"])
+if convert:
+    trainer.model.save_pretrained(
+        CFG["output_dir"], path_initial_model_for_weight_conversion=first)
+    shutil.rmtree(first, ignore_errors=True)
+    print("converted to a plain LoRA adapter for the original base model")
+else:
+    trainer.save_model(CFG["output_dir"])
 tok.save_pretrained(CFG["output_dir"])
 print("adapter saved in", CFG["output_dir"])
 '''
 
-TRAIN_TORCH = r'''# written by neural_bridge: LoRA / QLoRA with PyTorch, transformers,
-# PEFT and TRL. Run: python train.py train_config.json
+TRAIN_TORCH = r'''# written by neural_bridge: a PEFT adapter (LoRA, DoRA, LoHa, LoKr,
+# IA3, VeRA, OFT, prompt tuning and others; 4-bit with QLoRA) with PyTorch,
+# transformers, PEFT and TRL. Run: python train.py train_config.json
 import json, sys
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig
 CFG = json.load(open(sys.argv[1], encoding="utf-8"))
 GPU = torch.cuda.is_available()
 BF16 = GPU and torch.cuda.is_bf16_supported()
@@ -282,10 +423,7 @@ model = AutoModelForCausalLM.from_pretrained(
 if CFG["qlora"]:
     from peft import prepare_model_for_kbit_training
     model = prepare_model_for_kbit_training(model)
-PEFT_CONFIG = LoraConfig(r=CFG["lora_r"], lora_alpha=CFG["lora_alpha"],
-                         lora_dropout=CFG["lora_dropout"],
-                         target_modules="all-linear", task_type="CAUSAL_LM")
-''' + TRAIN_COMMON
+''' + PEFT_BUILD + TRAIN_COMMON
 
 TRAIN_UNSLOTH = r'''# written by neural_bridge: LoRA / QLoRA with Unsloth and TRL.
 # Run: python train.py train_config.json
@@ -301,6 +439,7 @@ model, tok = FastLanguageModel.from_pretrained(
 model = FastLanguageModel.get_peft_model(
     model, r=CFG["lora_r"], lora_alpha=CFG["lora_alpha"], lora_dropout=0,
     target_modules=%r, use_gradient_checkpointing="unsloth",
+    use_rslora=CFG.get("peft") == "rslora",
     random_state=CFG["seed"])
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
@@ -342,6 +481,8 @@ def axolotl_config(cfg):
          "adapter": "qlora" if cfg["qlora"] else "lora",
          "lora_r": cfg["lora_r"], "lora_alpha": cfg["lora_alpha"],
          "lora_dropout": cfg["lora_dropout"], "lora_target_linear": True,
+         "peft_use_dora": cfg.get("peft") == "dora",
+         "peft_use_rslora": cfg.get("peft") == "rslora",
          "sequence_len": cfg["max_seq_len"],
          "datasets": [{"path": cfg["dataset"], "ds_type": "json",
                        "type": "chat_template",
@@ -393,6 +534,36 @@ def cmd_train(a):
             fail("the evaluation data is not in the training data's form")
     if a.engine == "unsloth" and not a.qlora:
         print("note: Unsloth is usually used with --qlora")
+    engine_peft = {"unsloth": ("lora", "rslora"),
+                   "axolotl": ("lora", "dora", "rslora")}.get(a.engine)
+    if engine_peft and a.peft not in engine_peft:
+        fail("--engine %s trains %s; --peft %s needs --engine torch" % (
+            a.engine, ", ".join(engine_peft), a.peft))
+    peft_args = {}
+    for item in a.peft_arg or []:
+        key, eq, value = item.partition("=")
+        if not eq or not key.strip().isidentifier():
+            fail("--peft-arg takes KEY=VALUE, not %s" % item)
+        try:
+            peft_args[key.strip()] = json.loads(value)
+        except ValueError:
+            peft_args[key.strip()] = value
+    if a.virtual_tokens and a.peft not in NO_MERGE:
+        fail("--virtual-tokens is for --peft prompt or ptuning")
+    if a.target and a.peft in NO_MERGE:
+        fail("--peft %s adds virtual tokens; it has no --target" % a.peft)
+    if a.peft in ("pissa", "olora") and a.method == "dpo":
+        fail("DPO takes its reference model by switching the adapter off; "
+             "%s changes the base weights, so that reference would be "
+             "wrong. Use lora, dora or rslora for DPO" % a.peft)
+    if a.peft in ("pissa", "olora") and a.qlora:
+        fail("%s starts from the full-precision weights; it is not used "
+             "with --qlora here" % a.peft)
+    if a.qlora and a.peft not in PLAIN_LORA + ("dora",):
+        print("note: 4-bit training with --peft %s depends on PEFT's "
+              "support for it; it was not tried" % a.peft)
+    if a.peft == "hra" and a.rank % 2:
+        fail("HRA needs an even --rank")
     adir = models_dir(a) / "adapters" / a.name
     if (adir / "adapter_config.json").exists() and not a.overwrite:
         fail("adapter %s exists (choose another name or --overwrite)"
@@ -404,7 +575,9 @@ def cmd_train(a):
            "lora_dropout": a.dropout, "learning_rate": a.lr,
            "epochs": a.epochs, "batch_size": a.batch_size,
            "grad_accum": a.grad_accum, "max_seq_len": a.max_seq_len,
-           "beta": a.beta, "seed": a.seed,
+           "beta": a.beta, "seed": a.seed, "peft": a.peft,
+           "target": a.target or "", "peft_args": peft_args,
+           "virtual_tokens": a.virtual_tokens or 20,
            "dataset": str(ds.resolve()),
            "eval": str(Path(a.eval).resolve()) if a.eval else "",
            "dataset_sha256": hashlib.sha256(ds.read_bytes()).hexdigest(),
@@ -428,9 +601,12 @@ def cmd_train(a):
             TRAIN_TORCH if a.engine == "torch" else TRAIN_UNSLOTH,
             encoding="utf-8")
         cmd = [a.python, adir / "train.py", adir / "train_config.json"]
-    print("adapter %s: %s, %s, %s data, r=%d alpha=%d%s" % (
-        a.name, a.engine, a.method.upper(), fmt, cfg["lora_r"],
-        cfg["lora_alpha"], ", 4-bit (QLoRA)" if a.qlora else ""))
+    size = ("%d virtual tokens" % cfg["virtual_tokens"]
+            if a.peft in NO_MERGE else "r=%d alpha=%d" % (
+                cfg["lora_r"], cfg["lora_alpha"]))
+    print("adapter %s: %s, %s %s, %s data, %s%s" % (
+        a.name, a.engine, a.method.upper(), PEFT_METHODS[a.peft].split(":")[0],
+        fmt, size, ", 4-bit (QLoRA)" if a.qlora else ""))
     if getattr(a, "runtime", None):
         # a job folder with relative paths, to run here or elsewhere
         job_cfg = dict(cfg, dataset="data/" + ds.name, output_dir="out",
@@ -454,20 +630,21 @@ def cmd_train(a):
                                         "adapter": a.name,
                                         "path": rel(a, adir),
                                         "base": a.base_model,
-                                        "rank": cfg["lora_r"]})
+                                        "rank": cfg["lora_r"],
+                                        "peft": a.peft})
     code = run_or_plan(a, cmd, "train")
     reg = load_registry(a)
     entry = reg["adapters"].get(a.name, {})
     entry.update(path=rel(a, adir),
                  base=a.base_model, trained=code == 0 and a.run,
-                 rank=cfg["lora_r"])
+                 rank=cfg["lora_r"], peft=a.peft)
     reg["adapters"][a.name] = entry
     save_registry(a, reg)
     return code
 
 
 # ---------------------------------------------------------- merge, convert
-MERGE_SCRIPT = r'''# written by neural_bridge: merge a LoRA adapter into its base model.
+MERGE_SCRIPT = r'''# written by neural_bridge: merge a PEFT adapter into its base model.
 import sys, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
@@ -514,6 +691,10 @@ def adapter_path(a, name):
 
 def cmd_merge(a):
     path, entry = adapter_path(a, a.name)
+    if adapter_kind(path, entry) in NO_MERGE:
+        fail("%s is %s: its virtual tokens go before each input at run time "
+             "and change no weight, so there is nothing to merge; load it "
+             "with PEFT beside its base" % (a.name, adapter_kind(path, entry)))
     base = a.base_model or entry.get("base")
     if not base:
         fail("give --base-model")
@@ -547,6 +728,10 @@ def cmd_convert(a):
              "FOLDER (a clone of llama.cpp)")
     if a.lora:
         path, entry = adapter_path(a, a.source)
+        if adapter_kind(path, entry) not in PLAIN_LORA:
+            fail("llama.cpp converts LoRA adapters only; %s is %s: merge "
+                 "it, then convert the merged model" % (
+                     a.source, adapter_kind(path, entry)))
         base = a.base_model or entry.get("base")
         out = Path(a.out or models_dir(a) / "gguf" / (a.source + ".gguf"))
         cmd = [a.python, script, path, "--outfile", out, "--outtype",
@@ -670,8 +855,9 @@ def cmd_lora(a):
         st = tawjih.Store(a.project)
         for name, e in sorted(reg["adapters"].items()):
             files = [i for i, n in reg["bindings"].items() if n == name]
-            print("%-16s base %-28s %s%s" % (
-                name, e.get("base") or "?", e.get("path"),
+            print("%-16s %-9s base %-28s %s%s" % (
+                name, adapter_kind(abs_path(a, e["path"]), e),
+                e.get("base") or "?", e.get("path"),
                 "  served as %s" % e["served_as"] if e.get("served_as")
                 else ""))
             for i in files:
@@ -780,8 +966,12 @@ def lora_fuse(a, reg):
         except ValueError:
             fail("the weight of %s is not a number" % name)
         path, entry = adapter_path(a, name)
+        if adapter_kind(path, entry) not in PLAIN_LORA:
+            fail("fuse combines LoRA adapters; %s is %s" % (
+                name, adapter_kind(path, entry)))
         parts.append({"name": name, "path": str(path), "weight": weight,
-                      "base": entry.get("base"), "rank": entry.get("rank")})
+                      "base": entry.get("base"),
+                      "rank": adapter_rank(path, entry)})
     bases = {p["base"] for p in parts if p["base"]}
     if len(bases) > 1:
         fail("these adapters were trained on different bases (%s); they "
@@ -825,10 +1015,20 @@ def lora_serve(a, reg):
     for name, e in sorted(reg["adapters"].items()):
         by_base.setdefault(e.get("base") or "?", []).append((name, e))
     if a.server == "vllm":
+        other = [n for n, e in sorted(reg["adapters"].items())
+                 if adapter_kind(abs_path(a, e["path"]), e) not in
+                 PLAIN_LORA]
+        if other:
+            print("left out: %s (vLLM serves LoRA adapters; merge these "
+                  "and serve the merged model)" % ", ".join(other))
+        by_base = {b: [(n, e) for n, e in items if n not in other]
+                   for b, items in by_base.items()}
+        by_base = {b: items for b, items in by_base.items() if items}
         for base, items in by_base.items():
             mods = ["%s=%s" % (served_name(n, e), abs_path(a, e["path"]))
                     for n, e in items]
-            rank = max([e.get("rank") or 16 for _, e in items])
+            rank = max([adapter_rank(abs_path(a, e["path"]), e) or 16
+                        for _, e in items])
             print(show_cmd(["vllm", "serve", base, "--enable-lora",
                             "--max-lora-rank", str(max(rank, 8)),
                             "--max-loras", str(len(items)),
@@ -981,7 +1181,8 @@ def build_parser():
     s = sub.add_parser("env", help="engines and GPU of the training Python")
     s.set_defaults(fn=cmd_env)
 
-    s = sub.add_parser("train", help="train a LoRA / QLoRA adapter")
+    s = sub.add_parser("train", help="train a PEFT adapter: LoRA, QLoRA, "
+                       "DoRA, LoHa, LoKr, IA3, VeRA, OFT, prompt tuning ...")
     s.add_argument("name")
     s.add_argument("--base-model", required=True,
                    help="Hugging Face id or local folder")
@@ -990,6 +1191,17 @@ def build_parser():
     s.add_argument("--method", choices=["sft", "dpo"], default="sft")
     s.add_argument("--engine", choices=ENGINES, default="torch")
     s.add_argument("--qlora", action="store_true", help="4-bit base model")
+    s.add_argument("--peft", choices=list(PEFT_METHODS), default="lora",
+                   help="the PEFT method (default lora): " + "; ".join(
+                       PEFT_METHODS.values()))
+    s.add_argument("--target", metavar="WHERE", help="the layers: "
+                   "all-linear, attention, mlp, default (PEFT's choice for "
+                   "the model) or names separated by commas")
+    s.add_argument("--virtual-tokens", type=int, metavar="N",
+                   help="prompt and ptuning: how many (default 20)")
+    s.add_argument("--peft-arg", action="append", metavar="KEY=VALUE",
+                   help="any argument of the method's PEFT configuration, "
+                   "e.g. init_lora_weights=gaussian (repeatable)")
     s.add_argument("--rank", type=int, default=16)
     s.add_argument("--alpha", type=int, help="default: 2 x rank")
     s.add_argument("--dropout", type=float, default=0.05)

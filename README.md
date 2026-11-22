@@ -743,6 +743,38 @@ $B --llama-cpp ~/llama.cpp convert algebra --lora --run   # a GGUF adapter
 $B train algebra ... --runtime gpu --run --yes   # as a job on another computer
 ```
 
+### PEFT methods
+
+`train --peft METHOD` (engine `torch`) trains any of these PEFT methods,
+not only LoRA. `--rank`, `--alpha` and `--dropout` go to the method's own
+arguments, `--target` chooses the layers (`all-linear`, `attention`,
+`mlp`, `default` for PEFT's choice for the model, or names separated by
+commas), and `--peft-arg KEY=VALUE` passes any other argument of the
+method's PEFT configuration (arguments the installed PEFT does not know
+are left out, and the script says so).
+
+| `--peft` | What it trains | merge | serve, fuse, GGUF |
+|---|---|---|---|
+| `lora` (default) | low-rank matrices beside the weights | yes | yes |
+| `dora` | LoRA with the weights split into size and direction | yes | no |
+| `rslora` | LoRA scaled by alpha/√r, for high ranks | yes | yes |
+| `pissa`, `olora` | LoRA started from the main singular vectors, or an orthonormal basis; saved converted to a plain LoRA of twice the rank | yes | yes |
+| `loha`, `lokr` | Hadamard or Kronecker products of small matrices | yes | no |
+| `ia3` | learned vectors that scale activations | yes | no |
+| `vera` | shared random matrices, small trained vectors | yes | no |
+| `oft`, `boft` | an orthogonal (or butterfly) rotation; `--rank` is the block size | yes | no |
+| `fourierft`, `hra`, `randlora` | a few frequencies; Householder reflections (even `--rank`); full rank from random bases | yes | no |
+| `ln` | only the normalisation layers | yes | no |
+| `prompt`, `ptuning` | `--virtual-tokens N` trained tokens before the input (P-tuning: made by a small encoder) | no: nothing to merge | no |
+
+"serve, fuse, GGUF" means `lora serve` (vLLM), `lora fuse` and `convert
+--lora`, which take LoRA adapters: the others are merged first and their
+merged model served or converted, and these commands say so. `--engine
+unsloth` trains `lora` and `rslora`; `--engine axolotl` trains `lora`,
+`dora` and `rslora`. DPO refuses `pissa` and `olora`, whose changed base
+weights would make the reference model wrong. `lora list` shows each
+adapter's method, read from its `adapter_config.json`.
+
 `train` and `merge` take `--runtime NAME`: the work becomes a job folder
 that runs here or elsewhere and is collected back with `tawjih runtime
 collect` (see [Runtimes](#runtimes-where-jobs-run)).
@@ -751,7 +783,7 @@ collect` (see [Runtimes](#runtimes-where-jobs-run)).
 |---|---|
 | `compile` | through Tawjih's own `dataset`: `sft_train.jsonl` (files of split `train`), `sft_eval.jsonl` (split `eval`), `dpo_train.jsonl` (a pair for each `BAD:` line), each with its manifest; exit status 1 when a question is in both training and evaluation data |
 | `env` | the versions of torch, transformers, peft, trl, datasets, bitsandbytes, unsloth and axolotl in the training Python, its GPU, and where llama.cpp's tools are |
-| `train NAME` | writes `models/adapters/NAME/` with `train_config.json`, the dataset's manifest, and `train.py` (engine `torch`: transformers + PEFT + TRL, QLoRA through bitsandbytes; engine `unsloth`) or `axolotl.yml` (SFT on chat data only). SFT takes chat or prompt/completion rows, DPO takes prompt/chosen/rejected rows; the data is checked first |
+| `train NAME` | writes `models/adapters/NAME/` with `train_config.json`, the dataset's manifest, and `train.py` (engine `torch`: transformers + PEFT + TRL, any of the [PEFT methods](#peft-methods), QLoRA through bitsandbytes; engine `unsloth`) or `axolotl.yml` (SFT on chat data only). SFT takes chat or prompt/completion rows, DPO takes prompt/chosen/rejected rows; the data is checked first |
 | `merge NAME` | the adapter merged into its base in 16-bit (PEFT `merge_and_unload`), for conversion |
 | `convert SOURCE [--lora]` | a merged model to GGUF, or an adapter to a GGUF adapter (`convert_lora_to_gguf.py`) |
 | `quantize FILE.gguf [--type Q4_K_M]` | with `llama-quantize`, looked for in `--llama-cpp`, its `build/bin`, then PATH |
@@ -775,7 +807,12 @@ commands and the registry without any training library; the generated
 (SFT, DPO, merge and fuse). With 0.15 the whole chain was run again on a
 CPU: a tiny Llama built by `arch build`, `compile`, `train --engine torch
 --run` with LoRA, then `merge`, also as jobs with `--runtime local`, and
-the merged model generated text. Not verified: a real model, a GPU, QLoRA,
+the merged model generated text. Each of the 17 `--peft` methods was
+trained through `train --run` with PEFT 0.22 and TRL 1.18 on that model,
+and each but `prompt` and `ptuning` merged; DPO ran with DoRA and PiSSA;
+a converted PiSSA adapter on the original base gave the trained model's
+outputs to within 0.01 (the training had moved them by 3.3). Prefix
+tuning is not offered: it failed with transformers 5.23. Not verified: a real model, a GPU, QLoRA,
 Unsloth, axolotl, vLLM, Ollama adapters and llama.cpp. The training
 libraries change their arguments often; the scripts pass only the ones the
 installed TRL knows, and say what they left out.

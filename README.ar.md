@@ -685,6 +685,35 @@ $B --llama-cpp ~/llama.cpp quantize models/gguf/algebra-f16.gguf --type Q4_K_M -
 $B train algebra ... --runtime gpu --run --yes   # مهمة على حاسوب آخر
 ```
 
+### طرق PEFT
+
+`train --peft METHOD` (بالمحرك `torch`) يدرّب أياً من طرق PEFT هذه، لا LoRA
+وحدها. و`--rank` و`--alpha` و`--dropout` تذهب إلى وسائط الطريقة نفسها، و`--target`
+يختار الطبقات (`all-linear` أو `attention` أو `mlp`، أو `default` لاختيار PEFT
+المناسب للنموذج، أو أسماء تفصلها فواصل)، و`--peft-arg KEY=VALUE` يمرّر أي وسيط آخر
+من إعدادات الطريقة في PEFT (وما لا يعرفه إصدار PEFT المثبت يُترك ويذكره السكربت).
+
+| `--peft` | ما يدرّبه | الدمج | الخدمة والمزج وGGUF |
+|---|---|---|---|
+| `lora` (الافتراضي) | مصفوفات منخفضة الرتبة بجانب الأوزان | نعم | نعم |
+| `dora` | LoRA مع فصل الأوزان إلى حجم واتجاه | نعم | لا |
+| `rslora` | LoRA بمقياس alpha/√r، للرتب العالية | نعم | نعم |
+| `pissa` و`olora` | LoRA يبدأ من المتجهات المفردة الرئيسية، أو من أساس متعامد؛ ويُحفظ محوّلاً إلى LoRA عادي برتبة مضاعفة | نعم | نعم |
+| `loha` و`lokr` | ضرب هادامار أو كرونكر لمصفوفات صغيرة | نعم | لا |
+| `ia3` | متجهات متعلَّمة تضاعف التنشيطات | نعم | لا |
+| `vera` | مصفوفات عشوائية مشتركة ومتجهات صغيرة مدرَّبة | نعم | لا |
+| `oft` و`boft` | دوران متعامد (أو فراشي)؛ و`--rank` هو حجم الكتلة | نعم | لا |
+| `fourierft` و`hra` و`randlora` | ترددات قليلة؛ انعكاسات هاوسهولدر (`--rank` زوجي)؛ رتبة كاملة من أسس عشوائية | نعم | لا |
+| `ln` | طبقات التطبيع وحدها | نعم | لا |
+| `prompt` و`ptuning` | `--virtual-tokens N` رموز مدرَّبة قبل المدخل (وفي P-tuning يصنعها مُرمِّز صغير) | لا: لا شيء يُدمج | لا |
+
+«الخدمة والمزج وGGUF» تعني `lora serve` (vLLM) و`lora fuse` و`convert --lora`،
+وهي تأخذ محوّلات LoRA؛ أما الأخرى فتُدمج أولاً ويُخدم النموذج المدموج أو يُحوَّل،
+وهذه الأوامر تقول ذلك. و`--engine unsloth` يدرّب `lora` و`rslora`، و`--engine
+axolotl` يدرّب `lora` و`dora` و`rslora`. ويرفض DPO طريقتَي `pissa` و`olora` لأن
+تغييرهما لأوزان الأساس يجعل النموذج المرجعي خاطئاً. و`lora list` يعرض طريقة كل
+محوّل مقروءة من `adapter_config.json`.
+
 و`train` و`merge` يقبلان `--runtime NAME`: يصير العمل مجلد مهمة يعمل هنا أو
 في مكان آخر، وتُجمع نتائجه بـ `tawjih runtime collect` (انظر «بيئات التنفيذ»).
 
@@ -692,7 +721,7 @@ $B train algebra ... --runtime gpu --run --yes   # مهمة على حاسوب آ
 |---|---|
 | `compile` | عبر أمر `dataset` في Tawjih نفسه: `sft_train.jsonl` (ملفات split `train`)، و`sft_eval.jsonl` (split `eval`)، و`dpo_train.jsonl` (زوج لكل سطر `BAD:`)، ولكل منها بيان المصدر؛ وحالة خروج 1 إذا وُجد سؤال في بيانات التدريب والتقييم معاً |
 | `env` | إصدارات torch وtransformers وpeft وtrl وdatasets وbitsandbytes وunsloth وaxolotl في بايثون التدريب، وبطاقة الرسومات، ومكان أدوات llama.cpp |
-| `train NAME` | يكتب `models/adapters/NAME/` وفيه `train_config.json` وبيان البيانات و`train.py` (المحرك `torch`: transformers + PEFT + TRL، وQLoRA عبر bitsandbytes؛ أو `unsloth`) أو `axolotl.yml` (SFT على بيانات المحادثة فقط). يأخذ SFT صفوف محادثة أو prompt/completion، ويأخذ DPO صفوف prompt/chosen/rejected، وتُفحص البيانات أولاً |
+| `train NAME` | يكتب `models/adapters/NAME/` وفيه `train_config.json` وبيان البيانات و`train.py` (المحرك `torch`: transformers + PEFT + TRL، وأي طريقة من «طرق PEFT»، وQLoRA عبر bitsandbytes؛ أو `unsloth`) أو `axolotl.yml` (SFT على بيانات المحادثة فقط). يأخذ SFT صفوف محادثة أو prompt/completion، ويأخذ DPO صفوف prompt/chosen/rejected، وتُفحص البيانات أولاً |
 | `merge NAME` | دمج المحوّل في نموذجه الأساسي بدقة 16 بت (`merge_and_unload` في PEFT) تمهيداً للتحويل |
 | `convert SOURCE [--lora]` | نموذج مدمج إلى GGUF، أو محوّل إلى محوّل GGUF (`convert_lora_to_gguf.py`) |
 | `quantize FILE.gguf [--type Q4_K_M]` | بـ `llama-quantize`، ويُبحث عنه في `--llama-cpp` ثم `build/bin` ثم PATH |
@@ -714,7 +743,11 @@ Ollama يفعل `--backend ollama` الشيء نفسه. أما `llama-server` ف
 للتجربة (SFT وDPO والدمج والمزج). ومع 0.15 شُغّلت السلسلة كلها مرة أخرى على المعالج:
 نموذج Llama صغير بناه `arch build`، ثم `compile`، ثم `train --engine torch
 --run` بـ LoRA، ثم `merge`، وكذلك مهاماً بـ `--runtime local`، وولّد النموذج
-المدموج نصاً. لم يتم: نموذج حقيقي، بطاقة رسومات، QLoRA،
+المدموج نصاً. ودُرّبت كل طرق `--peft` السبع عشرة عبر `train --run` بـ PEFT 0.22
+وTRL 1.18 على ذلك النموذج، ودُمجت كلها إلا `prompt` و`ptuning`، وعمل DPO مع DoRA
+وPiSSA، وأعطى محوّل PiSSA المحوَّل على الأساس الأصلي مخرجات النموذج المدرَّب بفرق
+لا يتجاوز 0.01 (وكان التدريب قد حرّكها 3.3). ولا يُعرض prefix tuning لأنه فشل مع
+transformers 5.23. لم يتم: نموذج حقيقي، بطاقة رسومات، QLoRA،
 Unsloth، axolotl، vLLM، محوّلات Ollama، وllama.cpp. ومكتبات التدريب تغيّر
 وسائطها كثيراً، فالسكربتات تمرر فقط ما يعرفه إصدار TRL المثبت، وتذكر ما تركته.
 
