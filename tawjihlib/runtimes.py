@@ -207,6 +207,35 @@ def _sh(cmd, capture=True):
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 
+def _run(argv, cwd=None, stdin=None):
+    """ssh and scp as argument lists, never through this computer's shell
+    (cmd.exe on Windows would take the remote &&, > and $(...) for its
+    own): the remote command reaches the remote shell as written."""
+    try:
+        r = subprocess.run(argv, cwd=cwd, input=stdin, capture_output=True,
+                           text=True, stdin=None if stdin is not None
+                           else subprocess.DEVNULL)
+    except OSError as e:
+        return 127, "cannot run %s: %s" % (argv[0], e)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def _ssh(cfg, command):
+    return _run(["ssh", cfg["host"], command])
+
+
+def _ssh_steps(jdir, cfg, rec):
+    """(argv, folder to run it in) that send the job and start it. scp runs
+    inside the job folder with relative names, so no local path (a drive letter)
+    is ever taken for a host."""
+    host, rdir = cfg["host"], _remote(cfg, rec)
+    names = sorted(x.name for x in Path(jdir).iterdir())
+    return [(["ssh", host, "mkdir -p %s" % shlex.quote(rdir)], None),
+            (["scp", "-r"] + names + ["%s:%s/" % (host, rdir)], str(jdir)),
+            (["ssh", host, "cd %s && nohup sh run.sh > /dev/null 2>&1 &"
+              % shlex.quote(rdir)], None)]
+
+
 def plan(jdir, name, cfg):
     """The commands that would start the job, as text."""
     rec = record(jdir)
@@ -214,12 +243,9 @@ def plan(jdir, name, cfg):
     if kind == "local":
         return ["sh %s" % shlex.quote(str(jdir / "run.sh"))]
     if kind == "ssh":
-        host, rdir = cfg["host"], _remote(cfg, rec)
-        return ["ssh %s mkdir -p %s" % (host, shlex.quote(rdir)),
-                "scp -r %s/. %s:%s/" % (shlex.quote(str(jdir)), host,
-                                        shlex.quote(rdir)),
-                "ssh %s 'cd %s && nohup sh run.sh > /dev/null 2>&1 &'" % (
-                    host, rdir)]
+        return [("(in the job folder) " if cwd else "") + " ".join(
+            shlex.quote(x) for x in argv)
+            for argv, cwd in _ssh_steps(jdir, cfg, rec)]
     return [_fill(cfg["submit"], jdir, cfg, rec)]
 
 
@@ -253,12 +279,17 @@ def submit(root, jdir, name, cfg, wait=True):
         subprocess.Popen(["sh", str(jdir / "run.sh")],
                          start_new_session=True)
         return 0
-    for line in plan(jdir, name, cfg):
-        code, out = _sh(line)
+    if kind == "ssh":
+        steps = [(argv, cwd) for argv, cwd in _ssh_steps(jdir, cfg, rec)]
+    else:
+        steps = [(line, None) for line in plan(jdir, name, cfg)]
+    for cmd, cwd in steps:
+        code, out = _run(cmd, cwd) if isinstance(cmd, list) else _sh(cmd)
         if code != 0:
             record(jdir, {"status": "failed to start"})
-            fail("could not start the job on %s: %s\n%s" % (name, line,
-                                                           out.strip()))
+            fail("could not start the job on %s: %s\n%s" % (
+                name, cmd if isinstance(cmd, str) else " ".join(cmd),
+                out.strip()))
     record(jdir, {"status": "submitted", "started":
                   time.strftime("%Y-%m-%d %H:%M:%S")})
     return 0
@@ -276,10 +307,10 @@ def status(jdir, cfg):
             "status", "made")
     if kind == "ssh":
         rdir = _remote(cfg, rec)
-        code, out = _sh("ssh %s 'cat %s/exit 2>/dev/null || (test -f %s/pid "
-                        "&& kill -0 $(cat %s/pid) 2>/dev/null && echo "
-                        "running) || echo unknown'" % (cfg["host"], rdir,
-                                                       rdir, rdir))
+        q = shlex.quote(rdir)
+        code, out = _ssh(cfg, "cat %s/exit 2>/dev/null || (test -f %s/pid "
+                         "&& kill -0 $(cat %s/pid) 2>/dev/null && echo "
+                         "running) || echo unknown" % (q, q, q))
         out = out.strip().splitlines()[-1] if out.strip() else "unknown"
         return "done" if out == "0" else "running" if out == "running" else \
             "failed (exit %s)" % out if out.isdigit() else out
@@ -301,8 +332,8 @@ def logs(jdir, cfg):
         return f.read_text(encoding="utf-8", errors="replace") \
             if f.is_file() else ""
     if kind == "ssh":
-        return _sh("ssh %s cat %s/log.txt" % (cfg["host"],
-                                              _remote(cfg, rec)))[1]
+        return _ssh(cfg, "cat %s/log.txt" % shlex.quote(
+            _remote(cfg, rec)))[1]
     if not cfg.get("logs"):
         return "(the runtime has no logs command)"
     return _sh(_fill(cfg["logs"], jdir, cfg, rec))[1]
@@ -320,7 +351,7 @@ def cancel(jdir, cfg):
                 pass
     elif kind == "ssh":
         rdir = _remote(cfg, rec)
-        _sh("ssh %s 'kill $(cat %s/pid)'" % (cfg["host"], rdir))
+        _ssh(cfg, "kill $(cat %s/pid)" % shlex.quote(rdir))
     elif cfg.get("cancel"):
         _sh(_fill(cfg["cancel"], jdir, cfg, rec))
     else:
@@ -334,12 +365,13 @@ def collect(jdir, cfg):
     rec = record(jdir)
     kind = cfg["kind"]
     if kind == "ssh":
-        code, out = _sh("scp -r %s:%s/out/. %s/" % (
-            cfg["host"], _remote(cfg, rec), shlex.quote(str(jdir / "out"))))
+        (jdir / "out").mkdir(exist_ok=True)
+        rdir = "%s:%s" % (cfg["host"], _remote(cfg, rec))
+        code, out = _run(["scp", "-r", rdir + "/out/.", "."],
+                         str(jdir / "out"))
         if code != 0:
             fail("could not collect: %s" % out.strip())
-        _sh("scp %s:%s/log.txt %s" % (cfg["host"], _remote(cfg, rec),
-                                      shlex.quote(str(jdir / "log.txt"))))
+        _run(["scp", rdir + "/log.txt", "log.txt"], str(jdir))
     elif kind == "command":
         if not cfg.get("collect"):
             fail("the runtime has no collect command")

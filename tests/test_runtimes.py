@@ -179,5 +179,99 @@ class Runtimes(Bridge):
         shutil.rmtree(self.root / "models" / "jobs", ignore_errors=True)
 
 
+FAKE_SSH = """#!/usr/bin/env python3
+# a stand-in for ssh: records its arguments, then runs the command in a
+# folder that plays the remote computer
+import json, os, subprocess, sys
+log = os.environ["FAKE_LOG"]
+open(log, "a").write(json.dumps(["ssh"] + sys.argv[1:]) + "\\n")
+sys.exit(subprocess.run(["sh", "-c", sys.argv[2]],
+                        cwd=os.environ["FAKE_REMOTE"]).returncode)
+"""
+FAKE_SCP = """#!/usr/bin/env python3
+# a stand-in for scp: host:path is a path in the remote folder
+import json, os, shutil, sys
+open(os.environ["FAKE_LOG"], "a").write(json.dumps(["scp"] + sys.argv[1:])
+                                        + "\\n")
+args = [a for a in sys.argv[1:] if a != "-r"]
+def where(a):
+    return os.path.join(os.environ["FAKE_REMOTE"], a.split(":", 1)[1]) \\
+        if ":" in a else a
+*srcs, dst = [where(a) for a in args]
+for s in srcs:
+    if s.endswith("/."):
+        shutil.copytree(s[:-2], dst, dirs_exist_ok=True)
+    elif os.path.isdir(s):
+        shutil.copytree(s, os.path.join(dst, os.path.basename(s)),
+                        dirs_exist_ok=True)
+    else:
+        shutil.copy(s, dst)
+"""
+
+
+@unittest.skipIf(os.name == "nt", "the stand-ins are scripts")
+class Ssh(Bridge):
+    """The ssh runtime with stand-in ssh and scp: every call is a list of
+    arguments (no local shell), scp works with relative names inside the
+    job folder, and the remote command keeps its && and $(...)."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["TAWJIH_RUNTIMES"] = str(self.root / "rt.json")
+        self.addCleanup(os.environ.pop, "TAWJIH_RUNTIMES", None)
+        bindir = self.root / "bin"
+        bindir.mkdir()
+        for name, text in (("ssh", FAKE_SSH), ("scp", FAKE_SCP)):
+            (bindir / name).write_text(text)
+            (bindir / name).chmod(0o755)
+        self.remote = self.root / "remote"
+        self.remote.mkdir()
+        self.log = self.root / "calls.jsonl"
+        old = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(old)))
+        os.environ.update(PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                          FAKE_REMOTE=str(self.remote),
+                          FAKE_LOG=str(self.log))
+        py = self.root / "fakepy"
+        py.write_text(FAKE_PY)
+        py.chmod(0o755)
+        self.compile()
+        self.assertEqual(self.cli("runtime", "add", "gpu", "--kind", "ssh",
+                                  "--host", "gpu-box", "--python", str(py),
+                                  "--workdir", "jobs")[0], 0)
+
+    def calls(self):
+        return [json.loads(x) for x in self.log.read_text().splitlines()]
+
+    def test_send_follow_collect(self):
+        code, out, err = self.nb("train", "a5", "--base-model", "tiny",
+                                 "--dataset", str(self.ds /
+                                                  "sft_train.jsonl"),
+                                 "--runtime", "gpu", "--run", "--yes")
+        self.assertEqual(code, 0, err + out)
+        import time
+        for _ in range(100):
+            if "done" in self.cli("runtime", "status", "last")[1]:
+                break
+            time.sleep(0.1)
+        self.assertIn(": done", self.cli("runtime", "status", "last")[1])
+        self.assertIn("training with", self.cli("runtime", "logs",
+                                               "last")[1])
+        code, out, err = self.cli("runtime", "collect", "last")
+        self.assertEqual(code, 0, err)
+        adir = self.root / "models" / "adapters" / "a5"
+        self.assertTrue((adir / "adapter_config.json").is_file())
+        calls = self.calls()
+        start = [c for c in calls if c[0] == "ssh" and "nohup" in c[2]][0]
+        self.assertEqual(len(start), 3)          # ssh, host, one command
+        self.assertIn("&& nohup sh run.sh", start[2])
+        status = [c for c in calls if c[0] == "ssh" and "kill -0" in c[2]]
+        self.assertIn("$(cat", status[0][2])
+        for c in calls:
+            if c[0] == "scp":
+                local = [a for a in c[1:] if a != "-r" and ":" not in a]
+                self.assertTrue(all(not os.path.isabs(a) for a in local), c)
+
+
 if __name__ == "__main__":
     unittest.main()
