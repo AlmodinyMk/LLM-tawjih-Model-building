@@ -1,0 +1,29 @@
+{
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": false,
+  "commitType": "docs",
+  "commitConvention": "angular",
+  "contributors": [
+    {
+      "login": "AlmodinyMk",
+      "name": "Mohammed Khalid Almodiny",
+      "avatar_url": "https://avatars.githubusercontent.com/u/209202334?v=4",
+      "profile": "https://github.com/AlmodinyMk",
+      "contributions": [
+        "code",
+        "doc",
+        "ideas",
+        "test"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7,
+  "skipCi": true,
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "projectName": "LLM-tawjih-Model-building",
+  "projectOwner": "AlmodinyMk"
+}
