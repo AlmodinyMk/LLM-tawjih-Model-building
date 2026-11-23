@@ -21,3 +21,7 @@ build/
 dist/
 *.egg-info/
 tawjihlib/SPEC.md
+
+# coverage measurements
+.coverage
+htmlcov/
