@@ -1,0 +1,62 @@
+name: "Test report / تقرير تجربة"
+description: "You tried tawjih with a real model or on another machine. Results of any kind are welcome. / جرّبت توجيه بنموذج حقيقي أو على جهاز آخر. كل النتائج مرحّب بها."
+labels: ["test report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Please report what happened as it happened, failures included. / شكراً لك. اكتب ما حدث كما حدث، والإخفاقات أيضاً.
+        Remove keys, hosts and private text before you paste. / احذف المفاتيح وعناوين الأجهزة والنصوص الخاصة قبل اللصق.
+  - type: dropdown
+    id: area
+    attributes:
+      label: "What did you try? / ماذا جرّبت؟"
+      multiple: true
+      options:
+        - "A real model (produce / eval) / نموذج حقيقي"
+        - "A remote machine over ssh (--runtime) / جهاز بعيد عبر ssh"
+        - "Training bridge on a GPU / جسر التدريب على GPU"
+        - "Other / غير ذلك"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: "tawjih version and system / الإصدار والنظام"
+      placeholder: "0.15.0, Windows 11, Python 3.12"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: "Model and provider / النموذج والمزوّد"
+      placeholder: "qwen2.5:3b on Ollama"
+  - type: input
+    id: remote
+    attributes:
+      label: "Remote machine / الجهاز البعيد"
+      description: "Its system, GPU, and the service if rented. / نظامه ووحدة الرسوم والخدمة إن كان مستأجراً."
+      placeholder: "Ubuntu 22.04, RTX 4090, rented"
+  - type: textarea
+    id: commands
+    attributes:
+      label: "Commands you ran / الأوامر التي شغّلتها"
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: "Results / النتائج"
+      description: "For eval, paste the output of `eval compare` or attach eval.md. / للقياس الصق مخرجات eval compare أو أرفق eval.md."
+    validations:
+      required: true
+  - type: textarea
+    id: broke
+    attributes:
+      label: "What broke or was unclear / ما الذي انكسر أو لم يكن واضحاً"
+  - type: textarea
+    id: opinion
+    attributes:
+      label: "Your expert opinion / رأيك بصفتك خبيراً"
+      description: "Is the idea useful? What would you change first? / هل الفكرة مفيدة؟ ماذا تغيّر أولاً؟"
