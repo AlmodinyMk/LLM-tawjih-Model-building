@@ -18,7 +18,7 @@ from collections.abc import Mapping
 
 from .core import (
     Die, MARK, __version__, _json_in, _validate_contract, condition_holds,
-    conform, die,
+    conform, die, who,
 )
 from .providers import (
     POLICY_FILE, backend_kind, call_model, default_backend, load_policy,
@@ -483,6 +483,19 @@ def _ask_approval(n, when, text, mode):
     return False, None
 
 
+def _noted(p, when, mode, ok, edited=False):
+    """Note an approval on the step's record: when, how (ask: a person on
+    the terminal; auto: --approve auto; deny), the answer, and who answered
+    when a person did."""
+    a = {"when": when, "mode": mode, "approved": bool(ok),
+         "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if mode == "ask":
+        a["by"] = who()
+    if edited:
+        a["edited"] = True
+    p.setdefault("approvals", []).append(a)
+
+
 class _BranchFailed(Exception):
     """A step failed and the run goes on without it (--on-failure
     continue)."""
@@ -581,6 +594,7 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                      or {}).get("model") or os.environ.get("TAWJIH_MODEL", "")
     record = {"tawjih": __version__, "name": name,
               "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+              "by": who(),
               "backend": backend, "allow_code": bool(allow_code),
               "input_chars": len(text), "input": text,
               "input_sha": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
@@ -904,6 +918,7 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
             approve_when = "both" if approve_when == "after" else "before"
         if approve_when in ("before", "both"):
             ok, _ = _ask_approval(n, "before", prev, approve)
+            _noted(p, "before", approve, ok)
             if not ok:
                 fail(p, n, "approval", ValueError(
                     "not approved before the step ran" + (
@@ -951,6 +966,7 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                      sf2.err, outputs)
         if approve_when in ("after", "both"):
             ok, edited = _ask_approval(n, "after", out, approve)
+            _noted(p, "after", approve, ok, edited is not None)
             if not ok:
                 fail(p, n, "approval", ValueError(
                     "the output was not approved" + (
@@ -1100,7 +1116,7 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
 __all__ = [
     'CODE_TIMEOUT', 'CodeTimeout', 'SANDBOX_BOOT', 'SANDBOX_FILE_MB',
     'SANDBOX_LIMITS', 'SANDBOX_MEMORY_MB', 'SandboxError', 'StepFailure',
-    'StepOutputs', '_BranchFailed', '_RoutedLog', '_ask_approval',
+    'StepOutputs', '_BranchFailed', '_RoutedLog', '_ask_approval', '_noted',
     '_exec_limited', '_run_once', '_stamped',
     'build_prompt', 'cache_file', 'choose_among', 'choose_by_key',
     'edge_text',

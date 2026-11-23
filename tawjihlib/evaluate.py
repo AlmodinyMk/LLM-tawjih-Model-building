@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from .core import (
-    Die, Store, __version__, _json_in, _norm_q, die, parse_examples,
+    Die, Store, __version__, _json_in, _norm_q, die, parse_examples, who,
 )
 from .providers import (
     backend_kind, call_model, use_model,
@@ -261,7 +261,7 @@ def cmd_eval(a):
     data = {"tawjih": __version__, "path": a.name,
             "mode": "direct" if flow is None else "path",
             "backend": a.backend, "model": os.environ.get("TAWJIH_MODEL", ""),
-            "judge": a.judge or "", "passed": passed, "total": total,
+            "by": who(), "judge": a.judge or "", "passed": passed, "total": total,
             "skipped": skipped, "cases": results}
     rec.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                    encoding="utf-8")
@@ -759,7 +759,7 @@ def cmd_dataset(a):
     man = Path(a.out).with_name(Path(a.out).name + ".manifest.json")
     man.write_text(json.dumps({
         "tawjih": __version__, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "source": a.source, "split": a.split or "train",
+        "by": who(), "source": a.source, "split": a.split or "train",
         "examples": len(out), "preference_pairs": len(prefs),
         "data_sha256": hashlib.sha256(Path(a.out).read_bytes()).hexdigest(),
         "from": sources}, ensure_ascii=False, indent=2), encoding="utf-8")

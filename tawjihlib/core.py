@@ -365,7 +365,8 @@ class Node:
                  human="", instructions="", code="", reading="", tags=None,
                  retries="", fallback="", approve="", examples="",
                  split="", weight="", examples_sha="", locked="",
-                 aliases=None, each="", reviewed_sha="", reviewed_on=""):
+                 aliases=None, each="", reviewed_sha="", reviewed_on="",
+                 reviewed_by=""):
         self.id, self.title, self.level = id, title, int(level)
         self.parent, self.order = parent, int(order)
         self.links = links or []          # [(target_id, type)]
@@ -388,6 +389,7 @@ class Node:
         self.each = each.strip()              # run once per item of a list
         self.reviewed_sha = reviewed_sha.strip()
         self.reviewed_on = reviewed_on.strip()
+        self.reviewed_by = reviewed_by.strip()  # who, by whoami
         self.mount = ""                       # set for a mounted project's file
 
     def source_digest(self):
@@ -440,7 +442,7 @@ class Node:
             out.append("aliases: " + ", ".join(self.aliases))
         for k in ("retries", "fallback", "approve", "split", "weight",
                   "examples_sha", "each", "locked", "reviewed_sha",
-                  "reviewed_on"):
+                  "reviewed_on", "reviewed_by"):
             if getattr(self, k):
                 out.append("%s: %s" % (k, getattr(self, k)))
         out.append("---")
@@ -454,7 +456,7 @@ class Node:
                  "expects", "produces", "built_sha", "tags", "aliases",
                  "retries", "fallback", "approve", "split", "weight",
                  "examples_sha", "each", "locked", "reviewed_sha",
-                 "reviewed_on")
+                 "reviewed_on", "reviewed_by")
 
     def head(self):
         """The header as a dict for head.json; empty fields left out."""
@@ -590,6 +592,7 @@ class Node:
                     each=meta.get("each", ""),
                     reviewed_sha=meta.get("reviewed_sha", ""),
                     reviewed_on=meta.get("reviewed_on", ""),
+                    reviewed_by=meta.get("reviewed_by", ""),
                     examples="\n".join(sec["examples"]).strip("\n"),
                     **{s: "\n".join(sec[s]).strip("\n") for s in SECTIONS})
 
@@ -1556,7 +1559,83 @@ def flow_condition_notes(store, flow):
     return out
 
 
+# ----------------------------------------------------------------- identity
+RECORD_WHO = ("name", "id", "email", "none")
+
+
+def user_config_dir():
+    """The person's own settings folder (not the project's)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or (
+        os.environ.get("APPDATA") if os.name == "nt" else None) or \
+        str(Path.home() / ".config")
+    return Path(base) / "tawjih"
+
+
+def identity_file():
+    env = os.environ.get("TAWJIH_IDENTITY")
+    return Path(env) if env else user_config_dir() / "identity.json"
+
+
+def load_identity():
+    """The identity set with whoami set: {id, name, email, record}; {} if
+    none is set or the file cannot be read."""
+    f = identity_file()
+    try:
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _git_name():
+    try:
+        r = subprocess.run(["git", "config", "--get", "user.name"],
+                           capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def who():
+    """Who a record notes as having run, approved or reviewed something:
+    the identity set with whoami set, as much of it as its 'record' setting
+    allows (name: id and name; id: the id only; email: id, name and email;
+    none: nothing). Without one, the name from git's user.name, else the
+    system's user name; an email is never taken from anywhere else. None
+    when nothing may be recorded."""
+    me = load_identity()
+    if me:
+        mode = me.get("record", "name")
+        if mode == "none":
+            return None
+        out = {"id": me.get("id", "")}
+        if mode in ("name", "email") and me.get("name"):
+            out["name"] = me["name"]
+        if mode == "email" and me.get("email"):
+            out["email"] = me["email"]
+        return {k: v for k, v in out.items() if v} or None
+    name = _git_name()
+    if name:
+        return {"name": name, "from": "git"}
+    try:
+        import getpass
+        name = getpass.getuser()
+    except (OSError, KeyError, ImportError):
+        name = ""
+    return {"name": name, "from": "system"} if name else None
+
+
+def who_label(by):
+    """A short label for a record's 'by': 'Name (id)', 'Name' or 'id'."""
+    if not isinstance(by, dict):
+        return ""
+    name, uid = by.get("name", ""), by.get("id", "")
+    return "%s (%s)" % (name, uid) if name and uid else name or uid
+
+
 __all__ = [
+    'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
+    'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',
     'SCHEMA_KEYWORDS', 'SCHEMA_TYPES', '_as_keys', '_same', 'load_schema',

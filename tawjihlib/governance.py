@@ -19,7 +19,8 @@ from pathlib import Path
 
 from .core import (
     Die, EXTRA, FlowError, HEAD_FILE, LEVELS, Node, SECTIONS, Store, __version__,
-    _kw, die, parse_examples,
+    _kw, die, identity_file, load_identity, parse_examples, who,
+    who_label,
 )
 from .providers import (
     BACKENDS, DEFAULT_POLICY, POLICY_DEFAULT, POLICY_FILE, POLICY_KEYS,
@@ -132,8 +133,11 @@ def cmd_review(a):
             n = st.nodes[i]
             n.reviewed_sha = n.content_digest()
             n.reviewed_on = time.strftime("%Y-%m-%d")
+            n.reviewed_by = who_label(who())
             st.save(n)
-            print("reviewed  %s [%s] %s" % (st.number(i), i, n.title))
+            print("reviewed  %s [%s] %s%s" % (st.number(i), i, n.title,
+                                              "  by " + n.reviewed_by
+                                              if n.reviewed_by else ""))
         return
     ids = _targets(st, a) if a.refs else st.subtree_ids("")
     never = [i for i in ids if not st.nodes[i].reviewed_sha]
@@ -147,7 +151,9 @@ def cmd_review(a):
                 n = st.nodes[i]
                 print("  %-10s [%s] %s%s" % (
                     st.number(i), i, n.title,
-                    "  (reviewed %s)" % n.reviewed_on if n.reviewed_on else ""))
+                    "  (reviewed %s%s)" % (n.reviewed_on, " by " +
+                                           n.reviewed_by if n.reviewed_by
+                                           else "") if n.reviewed_on else ""))
     if not (never or changed):
         print("every file is reviewed as it is (%d)" % len(ids))
 
@@ -510,6 +516,7 @@ def make_release(st, name, note=""):
     entries = _project_entries(st.root)
     digests = _digest_map(st.root, entries)
     man = {"name": name, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "by": who(),
            "tawjih": __version__, "note": note, "files": digests,
            "digest": _overall(digests)}
     with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
@@ -1295,7 +1302,8 @@ def cmd_schedule(a):
         job = {"path": a.path, "input": a.input or "",
                "input_file": a.input_file or "", "backend": a.backend,
                "model": a.model or "", "allow_code": a.allow_code,
-               "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+               "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+               "by": who()}
         if a.every:
             job.update(kind="every", seconds=_every_seconds(a.every),
                        every=a.every)
@@ -1341,7 +1349,8 @@ def cmd_trigger(a):
                     "seen": _change_digest(st, ids), "input": a.input or "",
                     "input_file": a.input_file or "", "backend": a.backend,
                     "model": a.model or "", "allow_code": a.allow_code,
-                    "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+                    "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "by": who()}
     _sched_save(st.root, jobs)
     print("trigger %s: path %s runs when %s change%s (checked by schedule "
           "--run-due)" % (a.name, a.path, ", ".join(
@@ -1609,7 +1618,67 @@ def _looser(key, old, new):
     order = _STRICT[key]
     return order.index(new) < order.index(old)
 
+# ----------------------------------------------------------------- whoami
+def cmd_whoami(a):
+    """Who this person is in records: an id, a name and an email kept in
+    the person's own settings, not in the project. Records note as much of
+    it as --record allows: name (the id and name, the default), id (the id
+    only), email (also the email) or none (nothing)."""
+    f = identity_file()
+    me = load_identity()
+    if a.action == "set":
+        if not (me or a.name or a.id or a.record):
+            die("give at least --name NAME (and --email E, --id ID if you "
+                "like), or --record none to note no one")
+        for k in ("name", "email", "id"):
+            v = getattr(a, k)
+            if v is None:
+                continue
+            v = v.strip()
+            if k == "email" and v and not re.fullmatch(
+                    r"[^@\s]+@[^@\s]+\.[^@\s]+", v):
+                die("%s does not look like an email address" % v)
+            if k == "id" and v and not re.fullmatch(r"[\w.\-:]{1,64}", v):
+                die("an id is letters, digits and . - _ : (an ORCID such "
+                    "as 0000-0002-1825-0097 fits)")
+            if k == "name" and len(v) > 100:
+                die("a name of at most 100 characters")
+            me[k] = v
+        if a.record:
+            me["record"] = a.record
+        me.setdefault("record", "name")
+        if not me.get("id"):
+            me["id"] = "u-" + os.urandom(4).hex()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(me, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8")
+    elif a.action == "clear":
+        if f.is_file():
+            f.unlink()
+        print("identity cleared; records now note %s" % (
+            who_label(who()) or "no one"))
+        return 0
+    by = who()
+    if a.json:
+        print(json.dumps({"identity": me, "file": str(f), "records": by},
+                         ensure_ascii=False, indent=2))
+        return 0
+    if me:
+        print("id      %s" % me.get("id", ""))
+        print("name    %s" % (me.get("name") or "-"))
+        print("email   %s" % (me.get("email") or "-"))
+        print("record  %s" % me.get("record", "name"))
+        print("file    %s" % f)
+    else:
+        print("no identity set (tawjih whoami set --name NAME [--email E] "
+              "[--id ID])")
+    print("records note: %s" % (json.dumps(by, ensure_ascii=False)
+                                if by else "nothing"))
+    return 0
+
+
 __all__ = [
+    'cmd_whoami',
     '_looser', '_provider_line', '_save_providers', 'cmd_policy', 'cmd_provider',
     'INHERITABLE', 'RELEASE_EXTRA', 'RELEASE_KEEP', '_change_digest',
     '_digest_map', '_due', '_every_seconds', '_formatted', '_overall',

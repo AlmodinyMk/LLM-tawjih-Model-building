@@ -32,7 +32,7 @@ TEMPLATES = ("submit", "status", "logs", "cancel", "collect", "check")
 LOCAL = {"kind": "local"}
 
 
-from .core import Die, die
+from .core import Die, die, user_config_dir, who
 from .providers import load_policy
 
 
@@ -48,10 +48,7 @@ def runtimes_file():
     env = os.environ.get("TAWJIH_RUNTIMES")
     if env:
         return Path(env)
-    base = os.environ.get("XDG_CONFIG_HOME") or (
-        os.environ.get("APPDATA") if os.name == "nt" else None) or \
-        str(Path.home() / ".config")
-    return Path(base) / "tawjih" / "runtimes.json"
+    return user_config_dir() / "runtimes.json"
 
 
 def load():
@@ -159,6 +156,7 @@ def make_job(root, name, runtime, command, files=None, texts=None,
         encoding="utf-8")
     record(jdir, {"id": jid, "name": name, "runtime": runtime,
                   "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "by": who(),
                   "command": [str(c) for c in command],
                   "collect_to": str(collect_to) if collect_to else "",
                   "status": "made"})

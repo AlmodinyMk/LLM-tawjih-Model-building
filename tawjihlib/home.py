@@ -110,6 +110,8 @@ CARDS = [
          "Let an AI assistant read, stage changes or run paths."),
         ("redact", "privacy", "redact --init",
          "redact.txt hides names and numbers before a model sees them."),
+        ("whoami", "identity", "whoami set --name NAME",
+         "Your id and name in records: who ran, approved, reviewed."),
     ]),
     ("Architectures and jobs", False, [
         ("arch", "design", "arch create TITLE --preset tiny",

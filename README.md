@@ -432,6 +432,7 @@ Arabic titles show as the terminal lays them out.
 | `arch create\|derive\|list\|show\|validate\|set\|diff\|components\|mutate\|export\|build\|rank` | language-model architectures as three-faced files; see [The architecture lab](#the-architecture-lab) |
 | `policy show\|set\|reset` | the project's own limits, which only restrict; see [The project's policy](#the-projects-policy) |
 | `approve [ID ...] [--yes \| --no]` | requests from the assistant waiting for a person: list, read, run or decline |
+| `whoami [set --name N [--email E] [--id ID] [--record name\|id\|email\|none] \| clear]` | who you are in records: runs, approvals, reviews, evaluations and jobs note it; see [Who did it](#who-did-it-whoami) |
 | `do STATEMENTS [--file F] [--run] [--yes]` | management statements in English or Arabic, translated into commands (see [Management statements](#management-statements-do)) |
 | `lock`, `alias`, `review`, `stage`, `mount`, `sandbox`, `trace`, `release`, `snapshot`, `seal`, `verify`, `inherit`, `template`, `scaffold`, `gc`, `compact`, `format`, `archive`, `glossary`, `doctor`, `repair`, `schedule`, `trigger`, `pause`, `resume`, `cancel` | see [Governance](#governance-locks-reviews-releases-schedules) (0.10) |
 
@@ -699,7 +700,7 @@ Since 0.10 a project can be guarded and kept over time.
 |---|---|
 | `lock REF... [--branch]` (`freeze`) / `unlock` | a locked file's sides, title, contracts and links cannot change, and it cannot be removed or archived, until it is unlocked; moving it stays possible |
 | `alias REF NAME...` / `unalias` / `alias` | other names for a file, usable wherever a REF is asked for (`show quad`, `path p quad TO ...`) |
-| `review [REF...] [--branch]` / `review --ok REF...` | files a person has never reviewed, or that changed after their review; `--ok` records the review (a digest of the content and the date) |
+| `review [REF...] [--branch]` / `review --ok REF...` | files a person has never reviewed, or that changed after their review; `--ok` records the review (a digest of the content, the date and who, from `whoami`) |
 | `edit ... --stage` / `stage [REF] [--show \| --apply \| --drop]` | a model's proposal is kept in `stage/` instead of being saved; `--apply` saves it as `edit` would, unless the side changed meanwhile |
 | `mount FOLDER [--name N]` / `unmount N` | the files of another project, read-only, usable in this project's paths; their trees are numbered after this project's own. A mount used by a path cannot be removed |
 | `sandbox REF --input TEXT [--memory MB]` | run one file's code side in the sandbox (see [Code steps](#code-steps)) |
@@ -722,6 +723,33 @@ Since 0.10 a project can be guarded and kept over time.
 | `trigger NAME --path P --on-change REF,REF` | a path run when those files change |
 | `pause` / `resume` / `cancel NAME` | stop, restart or remove a schedule or trigger |
 | `schedule --run-due` | runs what is due. Tawjih is not a service: call this from cron or the Windows Task Scheduler every few minutes (`schedule` prints the line). Scheduled runs deny approval steps |
+
+### Who did it: `whoami`
+
+Records say who ran, approved and reviewed. Set your identity once; it is
+kept in your own settings (beside your runtimes), not in the project:
+
+```
+tawjih whoami set --name "Mohammed" --email m@example.com
+tawjih whoami                      # what is set, and what records note
+tawjih whoami set --id 0000-0002-1825-0097   # an ORCID, or any id you use
+tawjih whoami set --record id      # records note only the id
+```
+
+Without `--id`, one is made for you (`u-` and eight hex digits) and kept.
+What records note follows `--record`: `name` (the id and the name, the
+default), `id` (the id only), `email` (also the email) or `none` (nothing).
+The email is never written anywhere else, and never sent with a trace.
+
+The run record has `by`; each approval in it has when, how (`ask`, `auto`
+or `deny`), the answer, and `by` when a person answered on the terminal;
+`review --ok` writes `reviewed_by` into the file; evaluations, dataset
+manifests, releases, schedules, runtime jobs and decided assistant requests
+(`decided_by`) note it too. With `--trace`, the id (or the name) becomes the
+trace's user in Langfuse. Without an identity, records take the name from
+git's `user.name`, else the computer's user name; `whoami set --record none`
+keeps names out. Records of runs can be committed with the project, so
+choose what they note before you share it.
 
 ## Training adapters: the neural bridge
 

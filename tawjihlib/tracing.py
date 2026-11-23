@@ -157,6 +157,9 @@ class Tracer:
                "langfuse.release": "tawjih " + __version__,
                "langfuse.trace.metadata.path": self.name,
                "langfuse.trace.metadata.backend": rec.get("backend", "")}
+        by = rec.get("by") or {}
+        if by.get("id") or by.get("name"):     # never an email
+            out["langfuse.user.id"] = by.get("id") or by["name"]
         return out
 
     def spans(self, result=None, error=None):

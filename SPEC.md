@@ -50,6 +50,7 @@ aliases: quad, q      optional, other names usable as REF
 each: yes             optional, FOR EACH: yes or the key of a list
 reviewed_sha: ...     optional, written by review --ok
 reviewed_on: date     optional, written by review --ok
+reviewed_by: N (id)   optional, written by review --ok (see Identity)
 ---
 === human ===         the expressive human concept
 === instructions ===  machine side, part 1: text addressed to the model
@@ -328,7 +329,10 @@ it as `paths/NAME.path`, refusing to replace an existing path without
 - `history/production-<name>-<time>.json`: the operation itself: trees,
   connections, handoffs, each step's id, number, tree, machine digest,
   status and the files it received from, the model, the backend, the
-  input and its digest, and where the log and result are.
+  input and its digest, and where the log and result are; `by`, who ran
+  it (see Identity), and per step `approvals`: `when` (before, after),
+  `mode` (ask, auto, deny), `approved`, `at`, `edited` when a person typed
+  a replacement, and `by` when the mode was ask.
 - `cache/<hash>.json`: one kept model answer, with its prompt.
 - `runs/eval-<name>-<time>.json`: an evaluation, case by case.
 - `state.json`: the digests used by `sync` and `status`.
@@ -336,6 +340,24 @@ it as `paths/NAME.path`, refusing to replace an existing path without
 - `history/<id>-<time>.md`: the previous version of a file, saved whenever
   a command or the Linux windows change it (see Versions).
 - `paths/<name>.proposed`: a path proposed by `generate`, until accepted.
+
+## Identity
+
+`whoami set` keeps `{id, name, email, record}` in `identity.json` in the
+person's settings folder (`$XDG_CONFIG_HOME/tawjih`, `%APPDATA%\tawjih` on
+Windows, else `~/.config/tawjih`; `TAWJIH_IDENTITY` names another file),
+never in the project. `id` is the one given (letters, digits, `. - _ :`,
+up to 64) or `u-` and eight random hex digits, kept across changes.
+
+Records note `by`: with `record` `name`, `{id, name}`; `id`, `{id}`;
+`email`, `{id, name, email}`; `none`, nothing (`null`). Without an
+identity, `{name, from: "git"}` from `git config user.name`, else
+`{name, from: "system"}`; an email is never taken from git or the system.
+`by` is in run records, evaluation records, dataset manifests, release
+manifests, schedules and triggers, runtime `job.json`, and as
+`decided_by` in decided assistant requests. `reviewed_by` in a file's
+header is `name (id)`, `name` or `id`. A trace's
+`langfuse.user.id` is `by.id`, else `by.name`, and never the email.
 
 ## Failures, approval, redaction and usage
 

@@ -13,7 +13,8 @@ import time
 from pathlib import Path
 
 from .core import (
-    Die, die, DESCRIPTION, EXTRA, SECTIONS, SPLITS, __version__,
+    Die, die, DESCRIPTION, EXTRA, RECORD_WHO, SECTIONS, SPLITS, __version__,
+    who,
 )
 from .providers import (
     POLICY_FILE, backend_kind, default_backend, load_policy,
@@ -50,6 +51,7 @@ from .governance import (
     cmd_sandbox, cmd_scaffold, cmd_schedule, cmd_seal, cmd_snapshot,
     cmd_stage, cmd_template, cmd_trace, cmd_trigger, cmd_unalias,
     cmd_unlock, cmd_unmount, cmd_verify, cmd_provider, cmd_policy,
+    cmd_whoami,
 )
 from .script import (
     translate_script,
@@ -225,6 +227,7 @@ def cmd_approve(a):
             print("run it with: approve %s --yes   (or decline: --no)" % rid)
             continue
         r.setdefault("decided", time.strftime("%Y-%m-%d %H:%M:%S"))
+        r["decided_by"] = who()
         f.write_text(json.dumps(r, ensure_ascii=False, indent=2),
                      encoding="utf-8")
         print("-> %s" % r["status"])
@@ -244,6 +247,24 @@ def build_parser():
     s.add_argument("topic", nargs="?", metavar="TOPIC",
                    help="one of: " + ", ".join(TOPICS))
     s.set_defaults(fn=cmd_home)
+
+    s = sub.add_parser("whoami", aliases=["identity", "هويتي"],
+                       help="who you are in records: an id, a name and an "
+                       "email in your own settings; runs, approvals, "
+                       "reviews and jobs note it")
+    s.add_argument("action", nargs="?", default="show",
+                   choices=["show", "set", "clear"])
+    s.add_argument("--name", help="set: your name")
+    s.add_argument("--email", help="set: your email (kept in your settings; "
+                   "in records only with --record email)")
+    s.add_argument("--id", help="set: your id, such as an ORCID (default: "
+                   "one made for you, u-XXXXXXXX)")
+    s.add_argument("--record", choices=RECORD_WHO,
+                   help="set: what records note: name (id and name, the "
+                   "default), id, email (also the email), none")
+    s.add_argument("--json", action="store_true",
+                   help="show: as JSON")
+    s.set_defaults(fn=cmd_whoami)
 
     s = sub.add_parser("top", aliases=["monitor", "مراقبة"],
                        help="a live board of runs on paths and files beside "
