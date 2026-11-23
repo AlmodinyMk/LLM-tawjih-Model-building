@@ -1,4 +1,7 @@
 <img src="docs/images/logo.png" alt="Tawjih logo: a sprout drawn in pixels" width="120" align="right">
+<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
+[![All Contributors](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)](#contributors-)
+<!-- ALL-CONTRIBUTORS-BADGE:END -->
 
 # tawjih — توجيه أوامر الآلة
 
@@ -1309,3 +1312,25 @@ International](LICENSE) (CC BY-NC-SA 4.0): you may use, share and adapt this
 work for noncommercial purposes, provided you give credit and release your
 adaptations under the same license. Commercial use needs separate permission
 from the copyright holder.
+
+## Contributors ✨
+
+Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/en/reference/emoji-key/)):
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/AlmodinyMk"><img src="https://avatars.githubusercontent.com/u/209202334?v=4&size=100" width="100px" height="100px" alt="Mohammed Khalid Almodiny"/><br /><sub><b>Mohammed Khalid Almodiny</b></sub></a><br /><a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Code">💻</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Documentation">📖</a> <a href="#ideas-AlmodinyMk" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Tests">⚠️</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
+This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
