@@ -424,7 +424,7 @@ Arabic titles show as the terminal lays them out.
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
 | `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code] [--human-approval always\|run\|never]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
-| `provider list\|add\|policy\|rm\|default\|fallback\|test [NAME] ...` | named providers, retries and fallback chains; see [AI providers](#ai-providers) |
+| `provider list\|add\|set\|policy\|rm\|default\|fallback\|test [NAME] ...` | named providers (`set` changes one that exists), retries and fallback chains; see [AI providers](#ai-providers) |
 | `runtime list\|add\|rm\|default\|check\|jobs\|status\|logs\|cancel\|collect` | where long jobs run, and the project's jobs; see [Runtimes](#runtimes-where-jobs-run) |
 | `arch create\|derive\|list\|show\|validate\|set\|diff\|components\|mutate\|export\|build\|rank` | language-model architectures as three-faced files; see [The architecture lab](#the-architecture-lab) |
 | `policy show\|set\|reset` | the project's own limits, which only restrict; see [The project's policy](#the-projects-policy) |
