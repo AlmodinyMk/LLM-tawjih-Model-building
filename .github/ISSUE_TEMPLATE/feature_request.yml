@@ -1,0 +1,18 @@
+name: "Feature request / طلب ميزة"
+description: "A clear change you want in tawjih. / تغيير واضح تريده في توجيه."
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: "The problem / المشكلة"
+      description: "What you are trying to do, and what stops you. / ما الذي تحاول فعله وما الذي يمنعك."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "Proposal / الاقتراح"
+      description: "For the path language, write an example path. / للغة المسارات اكتب مثال مسار."
+    validations:
+      required: true

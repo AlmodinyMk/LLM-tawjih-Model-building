@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "Question / سؤال"
+    url: https://github.com/AlmodinyMk/LLM-tawjih-Model-building/discussions/categories/q-a
+    about: "How do I…? Ask in Discussions, not in Issues. / للأسئلة: اسأل في النقاشات لا في المشكلات."
+  - name: "Show and tell / أمثلة المجتمع"
+    url: https://github.com/AlmodinyMk/LLM-tawjih-Model-building/discussions/categories/show-and-tell
+    about: "Share a path or project you built with tawjih. / شارك مساراً أو مشروعاً بنيته بتوجيه."
+  - name: "Idea / فكرة"
+    url: https://github.com/AlmodinyMk/LLM-tawjih-Model-building/discussions/categories/ideas
+    about: "Ideas that are not yet a clear request. / فكرة لم تصبح طلباً واضحاً بعد."
+  - name: "Security problem / مشكلة أمنية"
+    url: https://github.com/AlmodinyMk/LLM-tawjih-Model-building/security/policy
+    about: "Do not report security problems in public. See SECURITY.md. / لا تبلّغ عن المشكلات الأمنية علناً."

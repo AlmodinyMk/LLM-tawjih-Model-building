@@ -1,0 +1,38 @@
+name: "Bug report / بلاغ عن خطأ"
+description: "Something in tawjih does not work as documented. / شيء في توجيه لا يعمل كما هو موثّق."
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: "tawjih version / الإصدار"
+      description: "pip show tawjih, or the commit"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: "System and Python / النظام وبايثون"
+      placeholder: "Windows 11, Python 3.12"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps / الخطوات"
+      description: "The commands you ran, and the path if there is one. / الأوامر التي شغّلتها، والمسار إن وُجد."
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected and actual / المتوقع والفعلي"
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: "Output / المخرجات"
+      description: "Remove keys and private text first. / احذف المفاتيح والنصوص الخاصة أولاً."
+      render: text
