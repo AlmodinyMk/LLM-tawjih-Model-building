@@ -1151,4 +1151,26 @@ Copyright (c) 2026 Mohammed Khalid Almodiny
 غير تجارية، بشرط ذكر صاحب العمل ونشر تعديلاتك بالرخصة نفسها. الاستعمال
 التجاري يحتاج إذناً مستقلاً من صاحب الحقوق.
 
+## المساهمون ✨
+
+شكراً لهؤلاء ([معنى الرموز](https://allcontributors.org/en/reference/emoji-key/)):
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/AlmodinyMk"><img src="https://avatars.githubusercontent.com/u/209202334?v=4&size=100" width="100px" height="100px" alt="Mohammed Khalid Almodiny"/><br /><sub><b>Mohammed Khalid Almodiny</b></sub></a><br /><a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Code">💻</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Documentation">📖</a> <a href="#ideas-AlmodinyMk" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Tests">⚠️</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
+يتبع هذا المشروع مواصفة [all-contributors](https://github.com/all-contributors/all-contributors)، وكل مساهمة مرحّب بها.
+
 </div>
