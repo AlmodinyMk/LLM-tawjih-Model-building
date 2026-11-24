@@ -19,8 +19,8 @@ from pathlib import Path
 
 from .core import (
     Die, EXTRA, FlowError, HEAD_FILE, LEVELS, Node, SECTIONS, Store, __version__,
-    _kw, die, first_identity, identity_file, load_identity, parse_examples,
-    who,
+    RECORD_WHO, _git_name, _kw, die, first_identity, identity_file,
+    load_identity, parse_examples, who,
     who_label,
 )
 from .providers import (
@@ -1620,6 +1620,86 @@ def _looser(key, old, new):
     return order.index(new) < order.index(old)
 
 # ----------------------------------------------------------------- whoami
+def _identity_field(k, v):
+    """A checked value for an identity field, or the reason it is refused."""
+    v = (v or "").strip()
+    if k == "email" and v and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",
+                                               v):
+        return None, "%s does not look like an email address" % v
+    if k == "id" and v and not re.fullmatch(r"[\w.\-:]{1,64}", v):
+        return None, ("an id is letters, digits and . - _ : (an ORCID such "
+                      "as 0000-0002-1825-0097 fits)")
+    if k == "name" and len(v) > 100:
+        return None, "a name of at most 100 characters"
+    return v, None
+
+
+def _save_identity(me):
+    me.setdefault("record", "name")
+    if not me.get("id"):
+        me["id"] = "u-" + os.urandom(4).hex()
+    me.setdefault("created", time.strftime("%Y-%m-%d %H:%M:%S"))
+    f = identity_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(me, ensure_ascii=False, indent=2) + "\n",
+                 encoding="utf-8")
+    try:
+        os.chmod(f, 0o600)
+    except OSError:
+        pass
+    return me
+
+
+def setup_identity(ask=input, out=None):
+    """The questions asked before a person's first use on a terminal: name
+    (required; git's user.name is offered), email and id (optional), and
+    what records note. Returns the identity saved."""
+    out = out or sys.stderr
+    me = load_identity()
+    offer = me.get("name") or _git_name()
+    print("\nWelcome to Tawjih. Before you start, who are you?\n"
+          "Your answers stay on this computer, in %s, never in a project.\n"
+          "Records of runs, approvals and reviews note your id and name.\n"
+          % identity_file(), file=out)
+
+    def question(prompt, k, required=False, default=""):
+        while True:
+            out.flush()
+            v = ask(prompt + (" [%s]" % default if default else "") + ": ")
+            v = v.strip() or default
+            if required and not v:
+                print("  a name is needed", file=out)
+                continue
+            v, why = _identity_field(k, v)
+            if why:
+                print("  " + why, file=out)
+                continue
+            return v
+
+    me["name"] = question("Name", "name", True, offer)
+    email = question("Email (optional, Enter to skip)", "email", False,
+                     me.get("email", ""))
+    if email:
+        me["email"] = email
+    pid = question("Id (optional, such as an ORCID; Enter for one made "
+                   "for you)", "id", False, me.get("id", ""))
+    if pid:
+        me["id"] = pid
+    while True:
+        rec = ask("What should records note: name (id and name), id, "
+                  "email, none [%s]: " % me.get("record", "name")).strip() \
+            or me.get("record", "name")
+        if rec in RECORD_WHO:
+            me["record"] = rec
+            break
+        print("  one of: " + ", ".join(RECORD_WHO), file=out)
+    me.pop("from", None)
+    me = _save_identity(me)
+    print("\nYour id is %s. Change any of this with `tawjih whoami setup` "
+          "or `tawjih whoami set`.\n" % me["id"], file=out)
+    return me
+
+
 def cmd_whoami(a):
     """Who this person is in records: an id, a name and an email kept in
     the person's own settings, not in the project. Records note as much of
@@ -1627,7 +1707,12 @@ def cmd_whoami(a):
     only), email (also the email) or none (nothing)."""
     f = identity_file()
     me = load_identity()
-    if a.action == "set":
+    if a.action == "setup":
+        try:
+            me = setup_identity()
+        except (EOFError, KeyboardInterrupt):
+            die("nothing was changed")
+    elif a.action == "set":
         if not (me or a.name or a.id or a.record):
             die("give at least --name NAME (and --email E, --id ID if you "
                 "like), or --record none to note no one")
@@ -1635,24 +1720,14 @@ def cmd_whoami(a):
             v = getattr(a, k)
             if v is None:
                 continue
-            v = v.strip()
-            if k == "email" and v and not re.fullmatch(
-                    r"[^@\s]+@[^@\s]+\.[^@\s]+", v):
-                die("%s does not look like an email address" % v)
-            if k == "id" and v and not re.fullmatch(r"[\w.\-:]{1,64}", v):
-                die("an id is letters, digits and . - _ : (an ORCID such "
-                    "as 0000-0002-1825-0097 fits)")
-            if k == "name" and len(v) > 100:
-                die("a name of at most 100 characters")
+            v, why = _identity_field(k, v)
+            if why:
+                die(why)
             me[k] = v
         if a.record:
             me["record"] = a.record
-        me.setdefault("record", "name")
-        if not me.get("id"):
-            me["id"] = "u-" + os.urandom(4).hex()
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(me, ensure_ascii=False, indent=2) + "\n",
-                     encoding="utf-8")
+        me.pop("from", None)
+        _save_identity(me)
     elif a.action == "clear":
         if f.is_file():
             f.unlink()
@@ -1682,7 +1757,7 @@ def cmd_whoami(a):
 
 
 __all__ = [
-    'cmd_whoami',
+    'cmd_whoami', 'setup_identity',
     '_looser', '_provider_line', '_save_providers', 'cmd_policy', 'cmd_provider',
     'INHERITABLE', 'RELEASE_EXTRA', 'RELEASE_KEEP', '_change_digest',
     '_digest_map', '_due', '_every_seconds', '_formatted', '_overall',

@@ -11,9 +11,13 @@ Python 3.11 or later, standard library only, Linux and Windows.
 **Experimental:** the test suite passes, but no real AI provider has been
 used with it yet.
 
+The first command on a terminal asks who you are (your name, and if you
+like an email or an ORCID); runs, approvals and reviews are recorded under
+that permanent id. It stays on your computer.
+
 ```
 pip install tawjih
-tawjih                 # the home screen
+tawjih                 # who you are (the first time), then the home screen
 tawjih home start      # your first project, step by step
 tawjih init
 tawjih new "Mathematics"

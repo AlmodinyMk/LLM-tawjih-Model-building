@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use Tawjih, please cite the working paper below."
 title: "Tawjih: machine command directing (توجيه أوامر الآلة)"
 type: software
-version: 0.15.0
-date-released: 2026-11-22
+version: 0.16.0
+date-released: 2026-11-24
 authors:
   - family-names: Almodiny
     given-names: Mohammed Khalid

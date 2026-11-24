@@ -32,6 +32,7 @@ CHOICES = {"family": ("decoder",), "ffn": ("swiglu", "gelu", "relu"),
            "positions": ("rope", "learned", "none")}
 INTS = ("layers", "hidden", "heads", "kv_heads", "ffn_hidden", "vocab",
         "context")
+ROUTER_LOSS = 0.001        # transformers' default weight for Mixtral
 DEFAULT = {"schema": 1, "family": "decoder", "layers": 12, "hidden": 768,
            "heads": 12, "kv_heads": 4, "ffn": "swiglu", "ffn_hidden": 2048,
            "norm": "rmsnorm", "positions": "rope", "rope_theta": 10000,
@@ -105,14 +106,27 @@ def problems(spec):
                    "1 for MQA, a divisor for GQA" % (kv, heads))
     moe = spec.get("moe")
     if moe is not None:
-        if not isinstance(moe, dict) or set(moe) - {"experts", "top_k"}:
-            out.append('moe must be null or {"experts": N, "top_k": K}')
+        if not isinstance(moe, dict) or \
+                set(moe) - {"experts", "top_k", "router_loss",
+                            "router_jitter"}:
+            out.append('moe must be null or {"experts": N, "top_k": K} '
+                       '(and "router_loss": C, "router_jitter": J)')
         else:
             e, k = moe.get("experts"), moe.get("top_k")
             if not (isinstance(e, int) and isinstance(k, int)
                     and 1 <= k <= e and e >= 2):
                 out.append("moe needs experts of 2 or more and top_k from 1 "
                            "to experts")
+            c = moe.get("router_loss", ROUTER_LOSS)
+            if isinstance(c, bool) or not isinstance(c, (int, float)) or \
+                    not 0 <= c <= 1:
+                out.append("moe router_loss is the weight of the load "
+                           "balancing loss, from 0 (off) to 1")
+            j = moe.get("router_jitter", 0)
+            if isinstance(j, bool) or not isinstance(j, (int, float)) or \
+                    not 0 <= j < 1:
+                out.append("moe router_jitter is the noise on the router's "
+                           "input in training, from 0 (none) to below 1")
     if spec["positions"] == "rope":
         t = spec.get("rope_theta")
         if not isinstance(t, (int, float)) or t <= 0:
@@ -199,10 +213,17 @@ def hf_config(spec):
         if moe:
             if bias:
                 die("Mixtral (MoE) has no bias; set bias to false")
+            # the router's load-balancing loss is added to the training
+            # loss only when the router's logits are returned: without it
+            # a router may send every token to the same few experts
+            c = moe.get("router_loss", ROUTER_LOSS)
             cfg.update(model_type="mixtral",
                        architectures=["MixtralForCausalLM"],
                        num_local_experts=moe["experts"],
-                       num_experts_per_tok=moe["top_k"])
+                       num_experts_per_tok=moe["top_k"],
+                       output_router_logits=bool(c),
+                       router_aux_loss_coef=c,
+                       router_jitter_noise=moe.get("router_jitter", 0))
         else:
             cfg.update(model_type="llama",
                        architectures=["LlamaForCausalLM"],
@@ -225,6 +246,21 @@ def hf_config(spec):
         "layernorm + gelu + learned positions (GPT-2)")
 
 
+def expert_load_line(load):
+    """How evenly a built MoE spread its tokens over the experts: per
+    layer, the shares of the busiest and the quietest expert against the
+    even share, and experts that got no token."""
+    parts = []
+    for n, shares in enumerate(load, 1):
+        idle = sum(1 for x in shares if x == 0)
+        parts.append("layer %d %.0f%%-%.0f%%%s" % (
+            n, 100 * min(shares), 100 * max(shares),
+            ", %d idle" % idle if idle else ""))
+    even = 100.0 / len(load[0]) if load and load[0] else 0
+    return ("experts on random tokens (an untrained router; even share "
+            "%.0f%%): %s" % (even, "; ".join(parts)))
+
+
 BUILD_SCRIPT = r'''# written by Tawjih: build the architecture and test it on random tokens.
 import json, sys, time
 import torch
@@ -242,6 +278,16 @@ length = min(64, expected["context"])
 x = torch.randint(0, expected["vocab"], (2, length))
 t0 = time.time()
 out = model(input_ids=x, labels=x)
+aux = getattr(out, "aux_loss", None)
+load = None
+if getattr(out, "router_logits", None):
+    # the share of tokens each expert received, per layer (top_k choices)
+    k, e = raw["num_experts_per_tok"], raw["num_local_experts"]
+    load = []
+    for layer in out.router_logits:
+        picked = layer.topk(k, dim=-1).indices.flatten()
+        counts = torch.bincount(picked, minlength=e).float()
+        load.append([round(float(c), 4) for c in counts / counts.sum()])
 out.loss.backward()
 seconds = time.time() - t0
 grads = sum(1 for p in model.parameters() if p.grad is not None)
@@ -251,12 +297,18 @@ report = {"parameters": n, "expected_parameters": expected["total"],
           "loss": float(out.loss), "loss_is_finite": bool(torch.isfinite(
               out.loss)), "tensors_with_gradients": grads,
           "forward_backward_seconds": round(seconds, 3),
+          "router_loss": None if aux is None else float(aux),
+          "router_loss_in_training": aux is not None and
+          raw.get("router_aux_loss_coef", 0) > 0,
+          "expert_load": load,
           "device": "cpu", "torch": torch.__version__,
           "transformers": transformers.__version__}
 json.dump(report, open("out/validation.json", "w"), indent=2)
 print(json.dumps(report, indent=2))
 ok = report["parameters_match"] and report["loss_is_finite"] and \
-    report["logits_shape"] == [2, length, expected["vocab"]]
+    report["logits_shape"] == [2, length, expected["vocab"]] and \
+    (not raw.get("output_router_logits") or (
+        aux is not None and bool(torch.isfinite(aux))))
 sys.exit(0 if ok else 1)
 '''
 
@@ -313,8 +365,11 @@ def _summary(st, n, spec):
           "%s %d%s" % (spec["family"], spec["layers"], spec["hidden"],
                        spec["heads"], attention_kind(spec), spec["kv_heads"],
                        spec["ffn"], spec["ffn_hidden"],
-                       ", MoE %d experts, top %d" % (moe["experts"],
-                                                     moe["top_k"])
+                       ", MoE %d experts, top %d, router loss %g%s" % (
+                           moe["experts"], moe["top_k"],
+                           moe.get("router_loss", ROUTER_LOSS),
+                           ", jitter %g" % moe["router_jitter"]
+                           if moe.get("router_jitter") else "")
                        if moe else ""))
     print("  %s, %s positions, vocab %d, context %d%s%s" % (
         spec["norm"], spec["positions"], spec["vocab"], spec["context"],
@@ -411,7 +466,11 @@ def cmd_arch(a):
             print("%-10s %s" % (k, ", ".join(v)))
         print("%-10s MHA (kv_heads = heads), GQA (a divisor), MQA (1)"
               % "attention")
-        print("%-10s null, or {\"experts\": N, \"top_k\": K}" % "moe")
+        print("%-10s null, or {\"experts\": N, \"top_k\": K, "
+              "\"router_loss\": C, \"router_jitter\": J} (C: the "
+              "load-balancing loss's weight, default %g, 0 for none; J: "
+              "noise on the router's input in training, default 0)"
+              % ("moe", ROUTER_LOSS))
         print("presets    %s" % ", ".join(PRESETS))
         return 0
     if act == "create":
@@ -605,6 +664,13 @@ def cmd_arch(a):
                   else "counted %d" % m["expected_parameters"],
                   m["logits_shape"], m["loss"],
                   m["forward_backward_seconds"]))
+        if m.get("router_loss") is not None:
+            print("router load-balancing loss %.3f, %s" % (
+                m["router_loss"], "added to the training loss" if
+                m.get("router_loss_in_training") else "not used in training "
+                "(router_loss 0)"))
+        if m.get("expert_load"):
+            print(expert_load_line(m["expert_load"]))
         return code
     if act == "rank":
         rows = []

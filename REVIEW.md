@@ -2,7 +2,7 @@
 
 **Repository:** `AlmodinyMk/LLM-tawjih-Model-building`  
 **Package:** `tawjih` (PyPI)  
-**Current Version:** `v0.15.0` (Pre-1.0 Experimental)  
+**Current Version:** `v0.16.0` (Pre-1.0 Experimental)  
 **Specification:** [`SPEC.md`](./SPEC.md)  
 
 ---
@@ -17,7 +17,7 @@ Before freezing the specification for **`v1.0.0`** and submitting the software f
 
 ## 2. System Context & Current Verification Status
 
-To ensure transparent evaluation, reviewers should note the exact boundaries of what has and has not been verified in `v0.15.0`:
+To ensure transparent evaluation, reviewers should note the exact boundaries of what has and has not been verified in `v0.16.0`:
 
 * **Verified:**
   * Core file model, tree hierarchy (up to 6 levels), SHA-256 machine-side digesting, and staleness detection.
