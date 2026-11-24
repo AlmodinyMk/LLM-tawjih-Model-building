@@ -317,7 +317,8 @@ def cmd_trace(a):
     st = Store(a.project)
     if a.cost:
         a.days = None
-        return cmd_stats(a)
+        cmd_stats(a)
+        return 0
     if a.impact:
         nid = st.resolve(a.impact)
         n = st.nodes[nid]
