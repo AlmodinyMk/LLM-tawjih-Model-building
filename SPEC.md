@@ -1,4 +1,4 @@
-# Tawjih specification (0.15.0)
+# Tawjih specification (0.16.0)
 
 This is the contract the program and the tests follow.
 
@@ -347,7 +347,14 @@ The first time a record needs one, `first_identity` writes
 `{id, name, record: "name", from, created}` (from: `git` when the name is
 `git config user.name`, else `system`, the computer's user name; no email),
 creating the file exclusively and with mode 600, and says the id once on
-standard error. `whoami` with no action does the same. `whoami set` keeps
+standard error. `whoami` with no action does the same. Before that, when a
+command other than `whoami` or `mcp` starts with no identity file and both
+standard input and standard error are terminals (and `TAWJIH_NO_SETUP` is
+not set), `setup_identity` asks: the name (required; `git config
+user.name` offered), the email and the id (optional, checked as by `whoami
+set`) and `record`; the answers are saved before the command runs, and
+end-of-input or an interrupt stops the command. `whoami setup` asks
+again. `whoami set` keeps
 `{id, name, email, record}` in `identity.json` in the
 person's settings folder (`$XDG_CONFIG_HOME/tawjih`, `%APPDATA%\tawjih` on
 Windows, else `~/.config/tawjih`; `TAWJIH_IDENTITY` names another file),

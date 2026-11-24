@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .core import (
     Die, die, DESCRIPTION, EXTRA, RECORD_WHO, SECTIONS, SPLITS, __version__,
+    load_identity,
     who,
 )
 from .providers import (
@@ -51,7 +52,7 @@ from .governance import (
     cmd_sandbox, cmd_scaffold, cmd_schedule, cmd_seal, cmd_snapshot,
     cmd_stage, cmd_template, cmd_trace, cmd_trigger, cmd_unalias,
     cmd_unlock, cmd_unmount, cmd_verify, cmd_provider, cmd_policy,
-    cmd_whoami,
+    cmd_whoami, setup_identity,
 )
 from .script import (
     translate_script,
@@ -73,6 +74,7 @@ def main():
         except Exception:
             pass
     a = build_parser().parse_args()
+    first_use(a)
     resolve_backend(a)
     try:
         rc = a.fn(a)
@@ -84,6 +86,34 @@ def main():
         sys.exit(0)
     if isinstance(rc, int) and rc:
         sys.exit(rc)
+
+
+NO_FIRST_USE = ("whoami", "mcp")
+
+
+def _interactive():
+    try:
+        return sys.stdin.isatty() and sys.stderr.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def first_use(a):
+    """Before a person's first use on a terminal, their identity: the
+    questions of setup_identity. Where no one can answer (a script, a
+    schedule, an assistant through mcp), the identity is made from git or
+    the system the first time a record needs one (first_identity)."""
+    if load_identity() or not _interactive() or \
+            os.environ.get("TAWJIH_NO_SETUP"):
+        return
+    cmd = getattr(a, "cmd", None) or ""
+    if getattr(a, "fn", None) in (cmd_whoami, cmd_mcp) or cmd in NO_FIRST_USE:
+        return
+    try:
+        setup_identity()
+    except (EOFError, KeyboardInterrupt):
+        die("Tawjih needs your name first; run `tawjih whoami setup` when "
+            "you are ready")
 
 
 def resolve_backend(a):
@@ -256,7 +286,8 @@ def build_parser():
                        "email in your own settings; runs, approvals, "
                        "reviews and jobs note it")
     s.add_argument("action", nargs="?", default="show",
-                   choices=["show", "set", "clear"])
+                   choices=["show", "setup", "set", "clear"],
+                   help="setup asks the questions of the first use again")
     s.add_argument("--name", help="set: your name")
     s.add_argument("--email", help="set: your email (kept in your settings; "
                    "in records only with --record email)")

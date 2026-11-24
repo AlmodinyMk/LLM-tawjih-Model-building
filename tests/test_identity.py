@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_tawjih import Base  # noqa: E402
+from test_tawjih import Base, tawjih  # noqa: E402
 from tawjihlib import core  # noqa: E402
 
 
@@ -128,6 +128,60 @@ class Identity(Base):
     def test_opt_out(self):
         self.assertEqual(self.cli("whoami", "set", "--record", "none")[0], 0)
         self.assertIsNone(core.who())
+
+    def test_setup_questions(self):
+        import io
+        answers = iter(["", "not-an-email", "m@example.com", "bad id",
+                        "0000-0002-1825-0097", "maybe", "email"])
+        out = io.StringIO()
+        from tawjihlib import governance
+        with mock.patch.object(governance, "_git_name",
+                               return_value="Git Name"):
+            me = tawjih.setup_identity(ask=lambda q: next(answers), out=out)
+        self.assertEqual((me["name"], me["email"], me["id"], me["record"]),
+                         ("Git Name", "m@example.com", "0000-0002-1825-0097",
+                          "email"))
+        self.assertIn("does not look like an email", out.getvalue())
+        self.assertIn("an id is letters", out.getvalue())
+        self.assertIn("one of: name, id, email, none", out.getvalue())
+        saved = json.loads(self.idfile.read_text(encoding="utf-8"))
+        self.assertEqual(saved["id"], "0000-0002-1825-0097")
+        # a name is required when git has none
+        answers = iter(["", "Someone", "", "", ""])
+        self.idfile.unlink()
+        with mock.patch.object(governance, "_git_name", return_value=""):
+            me = tawjih.setup_identity(ask=lambda q: next(answers),
+                                       out=io.StringIO())
+        self.assertEqual(me["name"], "Someone")
+        self.assertRegex(me["id"], r"^u-[0-9a-f]{8}$")
+
+    def test_first_use_asks_on_a_terminal_only(self):
+        from tawjihlib import cli
+        self.tree()
+        asked = []
+
+        def fake_setup():
+            asked.append(1)
+            return {}
+        with mock.patch.object(cli, "setup_identity", fake_setup):
+            ns = tawjih.build_parser().parse_args(["-p", self.dir, "trees"])
+            with mock.patch.object(cli, "_interactive", return_value=False):
+                cli.first_use(ns)
+            self.assertEqual(asked, [])           # a script is not asked
+            with mock.patch.object(cli, "_interactive", return_value=True):
+                cli.first_use(ns)
+            self.assertEqual(asked, [1])          # a person on a terminal is
+            for argv in (["whoami"], ["mcp"]):    # never these
+                ns = tawjih.build_parser().parse_args(["-p", self.dir] + argv)
+                with mock.patch.object(cli, "_interactive",
+                                       return_value=True):
+                    cli.first_use(ns)
+            self.assertEqual(asked, [1])
+            self.cli("whoami", "set", "--name", "N")
+            ns = tawjih.build_parser().parse_args(["-p", self.dir, "trees"])
+            with mock.patch.object(cli, "_interactive", return_value=True):
+                cli.first_use(ns)
+            self.assertEqual(asked, [1])          # only before the first use
 
     def test_runs_and_approvals_note_who(self):
         self.cli("whoami", "set", "--name", "Reviewer", "--id", "u-r")

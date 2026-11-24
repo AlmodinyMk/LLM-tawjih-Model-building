@@ -15,7 +15,7 @@ Runs on your computer with Ollama, or with any OpenAI-compatible or
 Anthropic provider. Python, standard library only; Linux and Windows.
 [العربية](README.ar.md)
 
-> **Status: 0.15.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.16.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -750,12 +750,17 @@ Since 0.10 a project can be guarded and kept over time.
 Records say who ran, approved and reviewed. Everyone who uses Tawjih gets
 an identity with a permanent id the first time a record needs one: an id
 such as `u-3f9a1c07`, and the name from git's `user.name` (else the
-computer's user name), said once on the terminal. It is kept in your own
-settings (beside your runtimes), not in the project, and you can change it:
+computer's user name). On a terminal, the first command asks for it before
+it runs: your name (required), and if you like an email, an id of your own
+such as an ORCID, and what records note. Where no one can answer (a
+script, a schedule, an assistant through `mcp`), it is made from git or the
+computer and said once. It is kept in your own settings (beside your
+runtimes), not in the project, and you can change it:
 
 ```
 tawjih whoami set --name "Mohammed" --email m@example.com
 tawjih whoami                      # what is set, and what records note
+tawjih whoami setup                # the first-use questions again
 tawjih whoami set --id 0000-0002-1825-0097   # an ORCID, or any id you use
 tawjih whoami set --record id      # records note only the id
 ```
@@ -1331,7 +1336,10 @@ to overlap), `ITERATE`, the runtimes (a local job, and a command runtime
 driving a stand-in for a remote service), and the architecture lab: `arch
 build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
 (Llama with GQA and MQA, GPT-2, Mixtral), and their parameters matched the
-counts; traces (`--trace`): checked against the OpenTelemetry payload of Langfuse's own Python SDK 5.2 (same path, headers and attribute names) and parsed by a real OpenTelemetry Collector 0.115, with Langfuse itself replaced by a stand-in server; and `top`, its frames drawn at several sizes with and without
+counts; since 0.16 durable MCP runs (a client killed mid-run and a fresh one
+picking the run up, against a stand-in model held on a signal), `eval
+--repeat`, identities (the first-use questions answered in a
+pseudo-terminal), and fuzz targets run with Atheris; traces (`--trace`): checked against the OpenTelemetry payload of Langfuse's own Python SDK 5.2 (same path, headers and attribute names) and parsed by a real OpenTelemetry Collector 0.115, with Langfuse itself replaced by a stand-in server; and `top`, its frames drawn at several sizes with and without
 colour, and its keys driven in a pseudo-terminal on Linux. The neural
 bridge has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
