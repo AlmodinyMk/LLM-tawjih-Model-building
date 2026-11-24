@@ -2,14 +2,23 @@
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for a security problem. Use GitHub's
-private reporting instead: the **Security** tab of this repository, then
-**Report a vulnerability**. Describe what is affected, how to reproduce it,
-and the version (`tawjih --version`).
+Please do not open a public issue for a security problem. Report a
+vulnerability privately through GitHub:
+https://github.com/AlmodinyMk/LLM-tawjih-Model-building/security/advisories/new
+(or the **Security** tab of this repository, then **Report a
+vulnerability**). Describe what is affected, how to reproduce it, and the
+version (`tawjih --version`). Only you and the maintainer see the report.
 
-You should receive an answer within two weeks. Fixes are released as a new
-version on GitHub and PyPI, with the problem described in the release notes
-once a fix is available.
+## What happens next
+
+- You receive an answer within 14 days, saying whether the report is
+  accepted as a vulnerability.
+- An accepted vulnerability is fixed in a new version on GitHub and PyPI,
+  aimed for within 90 days of the report.
+- Disclosure is coordinated: the vulnerability is disclosed in a GitHub
+  security advisory and the release notes once a fix is available, or after
+  90 days if no fix is ready, unless we agree otherwise. You are credited
+  in the advisory unless you ask not to be.
 
 ## Supported versions
 

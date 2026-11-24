@@ -1,0 +1,7 @@
+# The tools that build and check the package in publish.yml. Pinned with
+# hashes in build-requirements.txt; to update, change a version here and run
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras --no-header \
+#     -o .github/build-requirements.txt .github/build-requirements.in
+build==1.6.1
+twine==7.0.0
+setuptools==84.2.1

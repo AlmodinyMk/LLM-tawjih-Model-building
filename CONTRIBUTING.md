@@ -79,6 +79,10 @@ tawjih uses Python’s built-in unittest framework. Run all tests with verbose o
 
 python -m unittest discover -s tests -v
 
+The tests include fuzz targets (fuzz/targets.py) run with random inputs;
+set TAWJIH_FUZZ_RUNS for more. On pull requests, ClusterFuzzLite also
+fuzzes them with Atheris, and CodeQL analyses the code.
+
 
 On Linux systems, you can also test the desktop interface (linux/tawjih_desk.py) or run virtual display tests:
 
