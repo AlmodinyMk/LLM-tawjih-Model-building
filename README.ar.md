@@ -833,8 +833,16 @@ tawjih arch rank --by params|kv|speed
 وMQA عند 1، وGQA بينهما) و`ffn` (`swiglu` أو `gelu` أو `relu`) مع
 `ffn_hidden`، و`norm` (`rmsnorm` أو `layernorm`) و`positions` (`rope` أو
 `learned` أو `none`) و`vocab` و`context` و`tie_embeddings` و`bias` و`moe`
-(`null` أو `{"experts": N, "top_k": K}`) و`dropout`، ويعرضها `arch
-components`. و`validate` يرفض المفاتيح غير المعروفة والأبعاد غير المتوافقة.
+(`null` أو `{"experts": N, "top_k": K}` ومعها اختيارياً `"router_loss"`
+و`"router_jitter"`)
+و`dropout`، ويعرضها `arch components`. و`router_loss` وزن خسارة الموازنة في
+الموجّه (الافتراضي 0.001 كما في Mixtral، و0 يوقفها). بدونها قد يرسل الموجّه
+كل الرموز إلى الخبراء أنفسهم؛ والإعداد المُصدَّر يضيفها إلى خسارة التدريب
+(`output_router_logits`)، وهو ما تتركه transformers مطفأً إن لم يُطلب، و`build`
+يتحقق من حسابها. و`router_jitter` (من 0 إلى ما دون 1، والافتراضي 0) يضيف ضجيجاً
+إلى مدخل الموجّه أثناء التدريب. ولنموذج MoE يعرض `build` أيضاً كيف وزّع الموجّه
+غير المدرّب رموزاً عشوائية على الخبراء في كل طبقة، والخبراء الذين لم يصلهم شيء؛
+ويعرض `show` إعدادات MoE. و`validate` يرفض المفاتيح غير المعروفة والأبعاد غير المتوافقة.
 
 عدد المعاملات دقيق لهذه الصيغ، والاختبارات تقارنه بـ Llama-2-7B
 (6,738,415,616) وTinyLlama (1,100,048,384) وGPT-2 الصغير (124,439,808). أما

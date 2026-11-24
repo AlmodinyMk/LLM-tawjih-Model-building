@@ -912,8 +912,18 @@ The specification has `layers`, `hidden`, `heads`, `kv_heads` (MHA when it
 equals `heads`, MQA at 1, GQA between), `ffn` (`swiglu`, `gelu`, `relu`)
 with `ffn_hidden`, `norm` (`rmsnorm`, `layernorm`), `positions` (`rope`,
 `learned`, `none`), `vocab`, `context`, `tie_embeddings`, `bias`, `moe`
-(`null` or `{"experts": N, "top_k": K}`) and `dropout`; `arch components`
-lists them. `validate` refuses unknown keys and dimensions that do not fit
+(`null` or `{"experts": N, "top_k": K}`, with optional `"router_loss"` and
+`"router_jitter"`)
+and `dropout`; `arch components` lists them. `router_loss` weighs the
+router's load-balancing loss (default 0.001, as in Mixtral; 0 turns it
+off). Without that loss a router can send every token to the same few
+experts; the exported configuration adds it to the training loss
+(`output_router_logits`), which transformers otherwise leaves off, and
+`build` checks it is computed. `router_jitter` (0 to below 1, default 0)
+adds noise to the router's input in training. For a MoE, `build` also
+reports how evenly the untrained router spread random tokens over the
+experts in each layer, and experts that got none; `show` lists the MoE
+settings. `validate` refuses unknown keys and dimensions that do not fit
 (heads that do not divide the hidden size, kv_heads that do not divide
 heads, an odd head size with rope).
 

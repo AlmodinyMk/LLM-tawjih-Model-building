@@ -62,6 +62,37 @@ class Counts(unittest.TestCase):
         self.assertEqual(arch.hf_config(arch.DEFAULT)["model_type"], "llama")
         self.assertEqual(arch.hf_config(arch.PRESETS["moe-small"])
                          ["model_type"], "mixtral")
+        # the router's load-balancing loss is on by default, and can be
+        # weighted or turned off
+        cfg = arch.hf_config(arch.PRESETS["moe-small"])
+        self.assertEqual((cfg["output_router_logits"],
+                          cfg["router_aux_loss_coef"]), (True, 0.001))
+        spec = dict(arch.PRESETS["moe-small"],
+                    moe={"experts": 8, "top_k": 2, "router_loss": 0})
+        cfg = arch.hf_config(spec)
+        self.assertEqual((cfg["output_router_logits"],
+                          cfg["router_aux_loss_coef"]), (False, 0))
+        for bad in (2, -0.1, True, "0.1"):
+            self.assertTrue(arch.problems(dict(
+                spec, moe={"experts": 8, "top_k": 2, "router_loss": bad})))
+        self.assertFalse(arch.problems(dict(
+            spec, moe={"experts": 8, "top_k": 2, "router_loss": 0.02})))
+        # noise on the router's input in training
+        good = dict(spec, moe={"experts": 8, "top_k": 2,
+                               "router_jitter": 0.01})
+        self.assertFalse(arch.problems(good))
+        self.assertEqual(arch.hf_config(good)["router_jitter_noise"], 0.01)
+        for bad in (1, -0.1, False):
+            self.assertTrue(arch.problems(dict(
+                spec, moe={"experts": 8, "top_k": 2, "router_jitter": bad})))
+        self.assertTrue(arch.problems(dict(
+            spec, moe={"experts": 8, "top_k": 2, "capacity": 1.25})))
+        # how evenly a build spread tokens over experts
+        line = arch.expert_load_line([[0.5, 0.5, 0.0, 0.0],
+                                      [0.25, 0.25, 0.25, 0.25]])
+        self.assertIn("even share 25%", line)
+        self.assertIn("layer 1 0%-50%, 2 idle", line)
+        self.assertIn("layer 2 25%-25%", line)
         self.assertEqual(arch.hf_config(arch.PRESETS["gpt2-like"])
                          ["model_type"], "gpt2")
         import tawjih

@@ -826,7 +826,7 @@ instructions hold a JSON object, the specification:
 | `norm` | `rmsnorm` or `layernorm` |
 | `positions` | `rope` (with `rope_theta` above 0), `learned` or `none` |
 | `tie_embeddings`, `bias` | true or false |
-| `moe` | null, or `{"experts": E, "top_k": K}` with 2 ≤ E and 1 ≤ K ≤ E |
+| `moe` | null, or `{"experts": E, "top_k": K}` with 2 ≤ E and 1 ≤ K ≤ E, and optionally `"router_loss": C`, 0 ≤ C ≤ 1 (default 0.001), and `"router_jitter": J`, 0 ≤ J < 1 (default 0) |
 | `dropout` | from 0 up to, not including, 1 |
 | `name`, `notes`, `derived_from` | optional; `derived_from` is the id of the source |
 
@@ -846,12 +846,18 @@ k = kv_heads · d, f = ffn_hidden, b = 1 with bias else 0:
 `arch derive` and `arch mutate --yes` make the new node a child of the
 source (its level plus one, at most 6) with a `derived-from` link.
 `arch export` maps rmsnorm + swiglu + rope to a Llama configuration
-(Mixtral with `moe`, which allows no bias), and layernorm + gelu + learned
+(Mixtral with `moe`, which allows no bias; `router_aux_loss_coef` is the
+router loss C and `output_router_logits` is true when C > 0, so that the
+load-balancing loss is part of the training loss; `router_jitter_noise` is
+J), and layernorm + gelu + learned
 positions with bias, tied embeddings and MHA to GPT-2; any other
 combination is refused. `arch build` writes a job (see Runtimes) whose
 `out/validation.json` holds the parameters counted by the library, the
-logits' shape and the loss for two random sequences, and whether the count
-matches; it is kept in `models/architectures/ID/`.
+logits' shape and the loss for two random sequences, whether the count
+matches, and for MoE `router_loss` (the load-balancing loss, which must be
+finite when it is used), `router_loss_in_training`, and `expert_load`: per
+layer, the share of the top-K choices each expert received on the random
+sequences; it is kept in `models/architectures/ID/`.
 
 ## Runtimes
 
