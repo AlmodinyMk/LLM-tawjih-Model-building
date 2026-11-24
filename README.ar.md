@@ -1205,7 +1205,7 @@ Copyright (c) 2026 Mohammed Khalid Almodiny
 <table>
   <tbody>
     <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/AlmodinyMk"><img src="https://avatars.githubusercontent.com/u/209202334?v=4&size=100" width="100px" height="100px" alt="Mohammed Khalid Almodiny"/><br /><sub><b>Mohammed Khalid Almodiny</b></sub></a><br /><a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Code">💻</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Documentation">📖</a> <a href="#ideas-AlmodinyMk" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/AlmodinyMk"><img src="https://avatars.githubusercontent.com/u/209202334?v=4&size=100" width="100px" height="100px" alt="Mohammed Khalid Almodiny"/><br /><sub><b>Mohammed Khalid Almodiny</b></sub></a><br /><a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Code">💻</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Documentation">📖</a> <a href="#ideas-AlmodinyMk" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/AlmodinyMk/LLM-tawjih-Model-building/commits?author=AlmodinyMk" title="Tests">⚠️</a> <a href="#maintenance-AlmodinyMk" title="Maintenance">🚧</a></td>
     </tr>
   </tbody>
 </table>
