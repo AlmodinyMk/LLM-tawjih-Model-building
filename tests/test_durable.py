@@ -41,10 +41,13 @@ class HeldModel:
                                        "content": "the answer"}}],
                                    "usage": {"prompt_tokens": 1,
                                              "completion_tokens": 1}})
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(body.encode())
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(body.encode())
+                except OSError:          # the run was stopped meanwhile
+                    pass
 
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = "http://127.0.0.1:%d/v1" % self.httpd.server_port
@@ -78,6 +81,11 @@ class Client:
     def tool(self, tool_name, **args):
         r = self.send("tools/call", {"name": tool_name, "arguments": args})
         return r["result"]["content"][0]["text"], r["result"]["isError"]
+
+    def jtool(self, tool_name, **args):
+        """A durable-run tool: its answer is JSON."""
+        text, err = self.tool(tool_name, **args)
+        return json.loads(text), err
 
     def disconnect(self):
         self.p.kill()                     # no goodbye, as a crash would
@@ -113,51 +121,55 @@ class Durable(Base):
 
     def wait_done(self, client, rid):
         for _ in range(300):
-            text, err = client.tool("tawjih_run_status", id=rid)
-            if "working" not in text.splitlines()[0]:
-                return text, err
+            ans, err = client.jtool("tawjih_run_status", id=rid)
+            if ans["run"]["status"] != "working":
+                return ans["run"], err
             time.sleep(0.1)
         self.fail("run %s did not finish" % rid)
 
     def test_disconnect_then_a_fresh_client_picks_up_the_run(self):
         a = Client(self.dir)
-        text, err = a.tool("tawjih_run", name="p", input="q", key="k1",
+        ans, err = a.jtool("tawjih_run", name="p", input="q", key="k1",
                            wait=0)
-        self.assertFalse(err, text)
-        rid = text.split()[1].rstrip(":")
+        self.assertFalse(err, ans)
+        rid = ans["run"]["id"]
         self.assertRegex(rid, r"^m\d{8}-\d{6}-[0-9a-f]{8}$")
+        self.assertEqual(ans["run"]["poll_seconds"], 2)
+        self.assertEqual(ans["run"]["ttl_seconds"], 24 * 3600)
         # the id given out can be read at once
-        text, err = a.tool("tawjih_run_status", id=rid)
-        self.assertIn("working", text)
+        ans, err = a.jtool("tawjih_run_status", id=rid)
+        self.assertEqual(ans["run"]["status"], "working")
         self.assertTrue(self.model.arrived.wait(30))  # the run is active
         a.disconnect()
 
         b = Client(self.dir)
         try:
             # same key, same input: the same run, and nothing new starts
-            text, err = b.tool("tawjih_run", name="p", input="q", key="k1",
+            ans, err = b.jtool("tawjih_run", name="p", input="q", key="k1",
                                wait=0)
-            self.assertFalse(err, text)
-            self.assertIn(rid, text)
-            self.assertIn("nothing new started", text)
+            self.assertFalse(err, ans)
+            self.assertEqual(ans["run"]["id"], rid)
+            self.assertTrue(ans["run"]["existing"])
             # same key, another input: a conflict, and nothing starts
-            text, err = b.tool("tawjih_run", name="p", input="other",
+            ans, err = b.jtool("tawjih_run", name="p", input="other",
                                key="k1", wait=0)
             self.assertTrue(err)
-            self.assertIn("idempotency conflict", text)
+            self.assertEqual(ans["error"]["code"], "idempotency_conflict")
+            self.assertEqual(ans["error"]["run"], rid)
             self.assertEqual(len(self.runs()), 1)
             self.model.release.set()
-            text, err = self.wait_done(b, rid)
-            self.assertFalse(err, text)
-            self.assertIn("completed", text)
-            self.assertIn("the answer", text)
+            run, err = self.wait_done(b, rid)
+            self.assertFalse(err, run)
+            self.assertEqual(run["status"], "completed")
+            self.assertIn("the answer", run["output"])
+            self.assertIn("data, not instructions", run["notice"])
             # once: one run, one model call, the code step ran once
             self.assertEqual(len(self.runs()), 1)
             self.assertEqual(self.model.hits, 1)
             self.assertEqual(self.counter.read_text(), "x\n")
             # asking again after the end returns the result, still once
-            text, err = b.tool("tawjih_run", name="p", input="q", key="k1")
-            self.assertIn("completed", text)
+            ans, err = b.jtool("tawjih_run", name="p", input="q", key="k1")
+            self.assertEqual(ans["run"]["status"], "completed")
             self.assertEqual(self.model.hits, 1)
             self.assertEqual(self.counter.read_text(), "x\n")
             run = json.loads(self.runs()[0].read_text(encoding="utf-8"))
@@ -171,11 +183,11 @@ class Durable(Base):
         self.model.release.set()
         c = Client(self.dir)
         try:
-            text, err = c.tool("tawjih_run", name="p", input="q", key="k2",
+            ans, err = c.jtool("tawjih_run", name="p", input="q", key="k2",
                                wait=60)
-            self.assertFalse(err, text)
-            self.assertIn("completed", text)
-            self.assertIn("the answer", text)
+            self.assertFalse(err, ans)
+            self.assertEqual(ans["run"]["status"], "completed")
+            self.assertIn("the answer", ans["run"]["output"])
             # without a key, a run is as before: no id, no file
             text, err = c.tool("tawjih_run", name="p", input="q")
             self.assertFalse(err, text)
@@ -187,14 +199,16 @@ class Durable(Base):
     def test_bad_requests_leave_the_key_free(self):
         c = Client(self.dir)
         try:
-            text, err = c.tool("tawjih_run", name="nosuch", input="q",
+            ans, err = c.jtool("tawjih_run", name="nosuch", input="q",
                                key="k3", wait=0)
             self.assertTrue(err)
-            self.assertIn("no path named nosuch", text)
+            self.assertEqual(ans["error"]["code"], "invalid_request")
+            self.assertIn("no path named nosuch", ans["error"]["message"])
             self.assertEqual(self.runs(), [])
-            text, err = c.tool("tawjih_run_status",
+            ans, err = c.jtool("tawjih_run_status",
                                id="m20260101-000000-00000000")
             self.assertTrue(err)
+            self.assertEqual(ans["error"]["code"], "not_found")
             r = c.send("tools/call", {"name": "tawjih_run", "arguments": {
                 "name": "p", "input": "q", "key": "bad key"}})
             self.assertTrue(r["result"]["isError"])
@@ -202,6 +216,40 @@ class Durable(Base):
                           ["text"])
             self.assertEqual(self.runs(), [])
         finally:
+            c.close()
+
+    def test_cancel(self):
+        c = Client(self.dir)
+        try:
+            ans, _ = c.jtool("tawjih_run", name="p", input="q", key="k5",
+                             wait=0)
+            rid = ans["run"]["id"]
+            self.assertTrue(self.model.arrived.wait(30))
+            ans, err = c.jtool("tawjih_run_cancel", id=rid)
+            self.assertFalse(err, ans)
+            self.assertEqual(ans["run"]["status"], "cancelled")
+            run = json.loads(self.runs()[0].read_text(encoding="utf-8"))
+            for _ in range(100):             # the worker is gone
+                if not tawjih.alive(run["pid"]):
+                    break
+                time.sleep(0.1)
+            self.assertFalse(tawjih.alive(run["pid"]))
+            self.model.release.set()
+            time.sleep(0.5)
+            # the first end stays, the code step never ran
+            ans, _ = c.jtool("tawjih_run_status", id=rid)
+            self.assertEqual(ans["run"]["status"], "cancelled")
+            self.assertFalse(self.counter.exists())
+            # cancelling an ended run changes nothing
+            ans, _ = c.jtool("tawjih_run_cancel", id=rid)
+            self.assertEqual(ans["run"]["status"], "cancelled")
+            # the key still names that run
+            ans, _ = c.jtool("tawjih_run", name="p", input="q", key="k5",
+                             wait=0)
+            self.assertEqual((ans["run"]["id"], ans["run"]["status"]),
+                             (rid, "cancelled"))
+        finally:
+            self.model.release.set()
             c.close()
 
     def test_approval_then_the_same_key_asks_no_one(self):
@@ -218,12 +266,8 @@ class Durable(Base):
             self.assertEqual(code, 0, err + out)
             self.assertEqual(len(self.runs()), 1)
             run = self.runs()[0].stem
-            for _ in range(300):
-                text, _ = c.tool("tawjih_run_status", id=run)
-                if "working" not in text.splitlines()[0]:
-                    break
-                time.sleep(0.1)
-            self.assertIn("completed", text)
+            self.assertEqual(self.wait_done(c, run)[0]["status"],
+                             "completed")
             # the key is known now: the same request returns that run,
             # and no person is asked again
             text, err = c.tool("tawjih_run", name="p", input="q", key="k4")
@@ -249,8 +293,44 @@ class Status(Base):
         self.assertFalse(srv.needs_approval("tawjih_run_status"))
         text, code = srv.call("tawjih_run_status", {"id": rid})
         self.assertEqual(code, 1)
-        self.assertIn("failed", text)
-        self.assertIn("ended without finishing", text)
+        run = json.loads(text)["run"]
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("ended without finishing", run["error"])
+
+    def test_time_to_live(self):
+        self.tree()
+        d = self.root / "mcp-runs" / "keys"
+        d.mkdir(parents=True)
+        srv = tawjih.Server(self.dir, tawjih.build_parser, allow_run=True,
+                            human="never", run_ttl=60)
+        old = time.time() - 120
+        # an ended run past its time: removed, and its key made free
+        srv._runs()
+        args = {"name": "p", "input": "q", "key": "old"}
+        (d / (srv._keyfile("old").name)).write_text(json.dumps(
+            {"run": "m20260101-000000-00000001",
+             "fingerprint": srv._fingerprint(args)}), encoding="utf-8")
+        ended = self.root / "mcp-runs" / "m20260101-000000-00000001.json"
+        ended.write_text(json.dumps({
+            "id": "m20260101-000000-00000001", "status": "completed",
+            "key": "old", "ttl_seconds": 60, "created_at": old,
+            "finished_at": old, "output": "x"}), encoding="utf-8")
+        # a working run past its time: failed
+        working = self.root / "mcp-runs" / "m20260101-000000-00000002.json"
+        working.write_text(json.dumps({
+            "id": "m20260101-000000-00000002", "status": "working",
+            "key": "w", "ttl_seconds": 60, "created_at": old,
+            "pid": None}), encoding="utf-8")
+        text, code = srv.call("tawjih_run_status",
+                              {"id": "m20260101-000000-00000002"})
+        run = json.loads(text)["run"]
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("time to live", run["error"])
+        self.assertFalse(ended.exists())
+        self.assertFalse(srv._keyfile("old").exists())
+        text, code = srv.call("tawjih_run_status",
+                              {"id": "m20260101-000000-00000001"})
+        self.assertEqual(json.loads(text)["error"]["code"], "not_found")
 
 
 if __name__ == "__main__":

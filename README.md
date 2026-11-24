@@ -629,7 +629,7 @@ or, in a client's configuration file:
 |---|---|
 | reading (always) | `tawjih_tree`, `tawjih_show`, `tawjih_search`, `tawjih_paths`, `tawjih_plan`, `tawjih_check`, `tawjih_status`, `tawjih_impact`, `tawjih_staged`, `tawjih_language` |
 | `--allow-write` | `tawjih_new`, `tawjih_contract`, `tawjih_link`, `tawjih_move`, `tawjih_define_path` (replaces a path only with `replace=true`), and `tawjih_propose`: the new text of a side, kept in `stage/` until a person runs `stage --show` and `stage --apply` |
-| `--allow-run` | `tawjih_run` and `tawjih_eval`, with the provider and model given at start (`--backend`, `--model`); code steps only with `--allow-code`, and then always in the sandbox. `tawjih_run_status` reads a durable run |
+| `--allow-run` | `tawjih_run` and `tawjih_eval`, with the provider and model given at start (`--backend`, `--model`); code steps only with `--allow-code`, and then always in the sandbox. `tawjih_run_status` reads a durable run and `tawjih_run_cancel` stops one |
 
 **Durable runs.** `tawjih_run` with a `key` (an idempotency key the
 assistant chooses) makes the run durable. It runs in a process of its own,
@@ -640,9 +640,16 @@ The answer comes within `wait` seconds (default 30), or as the id. The same
 key with the same path, input, provider and model returns the same run and
 starts nothing, even from a new connection and without asking a person
 again; the same key with anything else is an idempotency conflict and
-starts nothing. Without a key, `tawjih_run` works as before: it answers
-when the run ends. The answer cache does not do this: it keeps model
-answers, but cannot tell whether a code step has already run.
+starts nothing. `tawjih_run_cancel` stops a run that is still working;
+an ended run stays as it ended. A run expires after `--run-ttl` hours
+(default 24): a working one is stopped and marked failed, an ended one is
+removed and its key can be used again. These tools answer in JSON:
+`{"run": {"id", "status", "output", "expires", "poll_seconds", ...}}`, or
+`{"error": {"code", "message"}}` with the codes `idempotency_conflict`,
+`invalid_request` and `not_found`. Without a key, `tawjih_run` works as
+before: it answers when the run ends. The answer cache does not do this:
+it keeps model answers, but cannot tell whether a code step has already
+run.
 
 **A person approves.** By default (`--human-approval always`) every write
 and every run waits for a person. When the client supports MCP elicitation,

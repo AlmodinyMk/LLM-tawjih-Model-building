@@ -62,6 +62,8 @@ NAME_RE = r"^\w[\w\-]{0,63}$"
 KEY_RE = r"^[\w.:\-]{1,128}$"
 RUN_ID_RE = r"^m\d{8}-\d{6}-[0-9a-f]{8}$"
 RUN_DIR = "mcp-runs"
+RUN_TTL = 24 * 3600         # seconds a durable run is kept (and may run)
+POLL_SECONDS = 2
 
 INSTRUCTIONS = (
     "Tawjih keeps knowledge in trees of files with sides: human (the "
@@ -218,10 +220,16 @@ TOOLS = [
                          "description": "with key: seconds to wait for the "
                          "result before answering with the run's id"}},
      "required": ["name", "input"]},
+    {"name": "tawjih_run_cancel", "level": "run",
+     "description": "Stop a durable run that is still working. A run that "
+     "has ended is left as it is. Returns the run as it stands.",
+     "schema": {"id": {"type": "string", "pattern": RUN_ID_RE}},
+     "required": ["id"]},
     {"name": "tawjih_run_status", "level": "run", "readonly": True,
      "description": "The state of a durable run (working, completed, "
-     "failed), and its output once it has finished. Reading it never "
-     "starts or changes a run.",
+     "failed, cancelled) as JSON, with its output once it has finished, "
+     "when it expires, and how often to ask while it works. Reading it "
+     "never starts or changes a run.",
      "schema": {"id": {"type": "string", "pattern": RUN_ID_RE}},
      "required": ["id"]},
     {"name": "tawjih_eval", "level": "run",
@@ -295,7 +303,7 @@ def _check_args(tool, args):
 class Server:
     def __init__(self, project, parser_factory, allow_write=False,
                  allow_run=False, allow_code=False, backend="dry",
-                 model="", human="always"):
+                 model="", human="always", run_ttl=RUN_TTL):
         if human not in APPROVAL_MODES:
             raise ValueError("human approval is always, run or never")
         self.project, self.human = project, human
@@ -305,6 +313,7 @@ class Server:
         self.allow = {"read"} | ({"write"} if allow_write else set()) | \
             ({"run"} if allow_run else set())
         self.allow_code, self.backend, self.model = allow_code, backend, model
+        self.run_ttl = int(run_ttl)
         Store(project)                       # fails early if not a project
         self.tools = {t["name"]: t for t in TOOLS if t["level"] in self.allow}
 
@@ -434,6 +443,8 @@ class Server:
             return self._run(self._ns(["path", a["name"]], refs=words))
         if name == "tawjih_run_status":
             return self.run_status(a["id"])
+        if name == "tawjih_run_cancel":
+            return self.run_cancel(a["id"])
         if name == "tawjih_run" and a.get("key"):
             return self.durable_run(a)
         if name == "tawjih_run":
@@ -452,6 +463,8 @@ class Server:
         raise ToolError("not implemented: " + name)
 
     # ------------------------------------------------------- durable runs
+    # Answers are JSON, so that an assistant can read them without parsing
+    # prose: {"run": {...}} or {"error": {"code": ..., "message": ...}}.
     def _runs(self):
         d = Store(self.project).root / RUN_DIR
         (d / "keys").mkdir(parents=True, exist_ok=True)
@@ -465,21 +478,25 @@ class Server:
              bool(self.allow_code)], ensure_ascii=False).encode(
                 "utf-8")).hexdigest()
 
+    def _keyfile(self, key):
+        return self._runs() / "keys" / (
+            hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] + ".json")
+
     def keyed_run(self, a):
         """For a key already used: the existing run (same fingerprint) or a
-        conflict (another one); None for a key never seen."""
-        d = self._runs()
-        kf = d / "keys" / (hashlib.sha256(a["key"].encode("utf-8"))
-                           .hexdigest()[:32] + ".json")
+        conflict (another one); None for a key never seen or expired."""
+        self.expire()
         try:
-            known = json.loads(kf.read_text(encoding="utf-8"))
+            known = json.loads(self._keyfile(a["key"]).read_text(
+                encoding="utf-8"))
         except (OSError, ValueError):
             return None
         if known.get("fingerprint") != self._fingerprint(a):
-            return ("idempotency conflict: the key %s was used for run %s "
-                    "with another path, input, provider or model; nothing "
-                    "was started" % (a["key"], known.get("run"))), 1
-        return self._answer(known["run"], a.get("wait", 30), again=True)
+            return _error_reply(
+                "idempotency_conflict", "the key was used for another path, "
+                "input, provider or model; nothing was started",
+                run=known.get("run"))
+        return self._answer(known["run"], a.get("wait", 30), existing=True)
 
     def durable_run(self, a):
         known = self.keyed_run(a)
@@ -487,12 +504,11 @@ class Server:
             return known
         problem = self.precheck("tawjih_run", a)
         if problem:                  # the key stays free for a good request
-            return problem, 1
+            return _error_reply("invalid_request", problem)
         d = self._runs()
         rid = "m%s-%s" % (time.strftime("%Y%m%d-%H%M%S"),
                           os.urandom(4).hex())
-        kf = d / "keys" / (hashlib.sha256(a["key"].encode("utf-8"))
-                           .hexdigest()[:32] + ".json")
+        kf = self._keyfile(a["key"])
         try:            # one run per key, even with two clients at once
             fd = os.open(str(kf), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         except FileExistsError:
@@ -504,66 +520,131 @@ class Server:
             "id": rid, "status": "working", "path": a["name"],
             "input": a["input"], "key": a["key"], "backend": self.backend,
             "model": self.model or "", "allow_code": bool(self.allow_code),
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"), "pid": None,
-            "output": None, "error": None})
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": time.time(), "ttl_seconds": self.run_ttl,
+            "pid": None, "output": None, "error": None})
         self.__dict__.setdefault("children", []).append(
             _spawn_worker(self.project, rid))
         return self._answer(rid, a.get("wait", 30))
 
-    def _answer(self, rid, wait, again=False):
+    def _answer(self, rid, wait, existing=False):
         end = time.monotonic() + (wait if wait is not None else 30)
         while True:
-            run, text, code = self._status(rid)
+            run = self._load(rid)
             if run is None or run["status"] != "working" or \
                     time.monotonic() >= end:
                 break
             time.sleep(0.1)
-        if again:
-            text = "(this key's run already exists; nothing new started)\n" \
-                + text
-        return text, code
+        return self._reply(rid, run, existing)
 
-    def _status(self, rid):
+    def _load(self, rid):
+        """A run as it stands, after noting a process that ended or never
+        started; None when there is no such run."""
         for p in self.__dict__.get("children", []):
             p.poll()                     # an ended worker is not left a zombie
         f = Store(self.project).root / RUN_DIR / (rid + ".json")
         try:
             run = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return None, "no run %s" % rid, 1
+            return None
         if run["status"] == "working" and not run.get("pid") and \
                 time.time() - f.stat().st_mtime > 120:
-            run.update(status="failed", error="the run's process never "
-                       "started", finished=time.strftime("%Y-%m-%d %H:%M:%S"))
-            _write_run(f, run)
+            run = _finish(f, "failed", error="the run's process never "
+                          "started") or run
         if run["status"] == "working" and run.get("pid") and \
                 not alive(run["pid"]):
             time.sleep(0.2)              # it may have just written its end
+            run = _finish(f, "failed", error="the run's process ended "
+                          "without finishing") or json.loads(
+                              f.read_text(encoding="utf-8"))
+        return run
+
+    def _reply(self, rid, run, existing=False):
+        if run is None:
+            return _error_reply("not_found", "no run %s (it may have "
+                                "expired)" % rid)
+        out = {k: run.get(k) for k in ("id", "status", "path", "key",
+                                       "created", "started", "finished",
+                                       "ttl_seconds")}
+        out["expires"] = _expires(run)
+        if run["status"] == "working":
+            out["poll_seconds"] = POLL_SECONDS
+        if existing:
+            out["existing"] = True     # nothing new was started
+        if run["status"] == "completed":
+            text = run.get("output") or ""
+            out["notice"] = mark_data(text)[:-len(text) - 1] if text else \
+                DATA_NOTICE
+            out["output"] = text
+        elif run.get("error"):
+            out["error"] = run["error"]
+        code = 1 if run["status"] == "failed" else 0
+        return json.dumps({"run": out}, ensure_ascii=False, indent=1), code
+
+    def run_status(self, rid):
+        self.expire()
+        return self._reply(rid, self._load(rid))
+
+    def run_cancel(self, rid):
+        """Stop a working run. A run that has ended is left as it is; the
+        answer is the run as it stands after the attempt."""
+        f = Store(self.project).root / RUN_DIR / (rid + ".json")
+        run = self._load(rid)
+        if run is None or run["status"] != "working":
+            return self._reply(rid, run)
+        _finish(f, "cancelled", error="cancelled by the assistant")
+        if run.get("pid"):
+            _kill_tree(run["pid"])
+            for p in self.__dict__.get("children", []):
+                if p.pid == run["pid"]:
+                    try:
+                        p.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+        return self._reply(rid, self._load(rid))
+
+    def expire(self):
+        """Runs past their time to live: a working one is stopped and marked
+        failed; an ended one is removed with its key, which becomes free."""
+        d = Store(self.project).root / RUN_DIR
+        if not d.is_dir():
+            return
+        now = time.time()
+        for f in d.glob("m*.json"):
             try:
                 run = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                pass
+                continue
+            ttl = run.get("ttl_seconds")
+            if not ttl:
+                continue
             if run["status"] == "working":
-                run.update(status="failed", error="the run's process ended "
-                           "without finishing", finished=time.strftime(
-                               "%Y-%m-%d %H:%M:%S"))
-                _write_run(f, run)
-        head = "run %s: %s" % (rid, run["status"])
-        if run["status"] == "working":
-            return run, head + " (ask again with tawjih_run_status id=%s)" \
-                % rid, 0
-        if run["status"] == "completed":
-            return run, head + "\n\n" + mark_data(run.get("output") or ""), 0
-        return run, head + "\n\n" + (run.get("error") or ""), 1
-
-    def run_status(self, rid):
-        run, text, code = self._status(rid)
-        return text, code
+                if now - run.get("created_at", now) > ttl:
+                    _finish(f, "failed", error="the run outlived its time "
+                            "to live (%d seconds)" % ttl)
+                    if run.get("pid"):
+                        _kill_tree(run["pid"])
+                continue
+            if now - run.get("finished_at", now) > ttl:
+                kf = d / "keys" / (hashlib.sha256(
+                    run.get("key", "").encode("utf-8")).hexdigest()[:32]
+                    + ".json")
+                try:
+                    if json.loads(kf.read_text(encoding="utf-8")).get(
+                            "run") == run["id"]:
+                        kf.unlink()
+                except (OSError, ValueError):
+                    pass
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
     # ---------------------------------------------------------- approval
     def needs_approval(self, name):
         level = self.tools[name]["level"]
-        if self.human == "never" or name == "tawjih_propose" or \
+        if self.human == "never" or name in ("tawjih_propose",
+                                             "tawjih_run_cancel") or \
                 self.tools[name].get("readonly"):
             return False            # a proposal is reviewed when applied
         return level == "run" or (level == "write" and self.human == "always")
@@ -843,12 +924,56 @@ def _spawn_worker(project, rid):
                              os.path.abspath(project), rid], **kw)
 
 
+def _finish(f, status, **fields):
+    """End a working run, unless it has already ended: returns the run as
+    written, or None when it had ended (the first end stays)."""
+    try:
+        run = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if run.get("status") != "working":
+        return None
+    run.update(fields, status=status, finished=time.strftime(
+        "%Y-%m-%d %H:%M:%S"), finished_at=time.time())
+    _write_run(f, run)
+    return run
+
+
+def _expires(run):
+    ttl = run.get("ttl_seconds")
+    if not ttl:
+        return None
+    base = run.get("finished_at") if run.get("status") != "working" \
+        else run.get("created_at")
+    return time.strftime("%Y-%m-%d %H:%M:%S",
+                         time.localtime((base or time.time()) + ttl))
+
+
+def _kill_tree(pid):
+    """Stop a worker and what it started (a sandboxed code step)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        else:
+            import signal
+            os.killpg(int(pid), signal.SIGTERM)  # its own session's group
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+
+def _error_reply(code, message, **extra):
+    return json.dumps({"error": dict({"code": code, "message": message},
+                                     **extra)}, ensure_ascii=False), 1
+
+
 def run_worker(project, rid, parser_factory):
-    """Runs one durable run, once, and writes how it ended."""
+    """Runs one durable run, once, and writes how it ended (unless it was
+    cancelled or expired meanwhile: the first end stays)."""
     f = Store(project).root / RUN_DIR / (rid + ".json")
     run = json.loads(f.read_text(encoding="utf-8"))
     if run["status"] != "working" or run.get("pid"):
-        return                          # already taken: never twice
+        return                          # already taken, or cancelled
     run.update(pid=os.getpid(), started=time.strftime("%Y-%m-%d %H:%M:%S"))
     _write_run(f, run)
     srv = Server(project, parser_factory, allow_run=True,
@@ -859,14 +984,10 @@ def run_worker(project, rid, parser_factory):
                                              "input": run["input"]})
     except Exception as e:                       # noqa: BLE001
         text, code = "%s: %s" % (type(e).__name__, e), 1
-    run.update(status="completed" if code == 0 else "failed",
-               finished=time.strftime("%Y-%m-%d %H:%M:%S"))
     if code == 0:
-        run["output"] = text
+        _finish(f, "completed", output=text)
     else:
-        run["error"] = text
-    _write_run(f, run)
-
+        _finish(f, "failed", error=text)
 
 def serve_stdio(server, stdin=None, stdout=None):
     """Read one JSON message per line; write one per line. While a person
@@ -937,6 +1058,7 @@ def serve_stdio(server, stdin=None, stdout=None):
 
 __all__ = [
     'APPROVAL_MODES', 'DATA_NOTICE', 'INJECTION_RE', 'INSTRUCTIONS',
-    'KEY_RE', 'MAX_OUT', 'MAX_TEXT', 'RUN_DIR', 'RUN_ID_RE', 'PROTOCOLS', 'Server', 'TOOLS', 'ToolError',
+    'KEY_RE', 'MAX_OUT', 'MAX_TEXT', 'POLL_SECONDS', 'RUN_DIR', 'RUN_ID_RE',
+    'RUN_TTL', 'PROTOCOLS', 'Server', 'TOOLS', 'ToolError',
     'language_text', 'mark_data', 'run_worker', 'serve_stdio',
 ]

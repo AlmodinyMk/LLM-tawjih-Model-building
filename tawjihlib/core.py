@@ -1582,7 +1582,11 @@ def alive(pid):
         return True
     except (OSError, ValueError):
         return False
-    return True
+    try:                        # an ended child not yet reaped is not alive
+        with open("/proc/%d/stat" % int(pid)) as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
 
 
 # ----------------------------------------------------------------- identity

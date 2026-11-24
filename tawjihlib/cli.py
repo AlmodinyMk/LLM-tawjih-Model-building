@@ -163,8 +163,11 @@ def cmd_mcp(a):
     if rank.index(a.human_approval) < rank.index(least):
         die("the project's policy (%s) asks for --human-approval %s at "
             "least" % (POLICY_FILE, least))
+    if a.run_ttl <= 0:
+        die("--run-ttl takes a number of hours above 0")
     server = Server(a.project, build_parser, a.allow_write, a.allow_run,
-                    a.allow_code, a.backend, a.model or "", a.human_approval)
+                    a.allow_code, a.backend, a.model or "", a.human_approval,
+                    run_ttl=int(a.run_ttl * 3600))
     if a.human_approval != "always" and (a.allow_write or a.allow_run):
         print("warning: %s without a person's approval: text in the "
               "project's files could lead the assistant to act on it" % (
@@ -1089,6 +1092,9 @@ def build_parser():
     s.add_argument("--human-approval", choices=APPROVAL_MODES,
                    default="always", help="what a person approves: always "
                    "(writes and runs, the default), run (runs only), never")
+    s.add_argument("--run-ttl", type=float, default=24, metavar="HOURS",
+                   help="how long a durable run may work, and how long it "
+                   "is kept once ended, before it expires (default 24)")
     s.set_defaults(fn=cmd_mcp)
 
     s = sub.add_parser("approve", help="requests from an AI assistant "

@@ -579,7 +579,7 @@ claude mcp add tawjih -- python /path/to/tawjih.py -p /path/to/project mcp --all
 |---|---|
 | القراءة (دائماً) | `tawjih_tree` و`tawjih_show` و`tawjih_search` و`tawjih_paths` و`tawjih_plan` و`tawjih_check` و`tawjih_status` و`tawjih_impact` و`tawjih_staged` و`tawjih_language` |
 | `--allow-write` | `tawjih_new` و`tawjih_contract` و`tawjih_link` و`tawjih_move` و`tawjih_define_path` (لا يستبدل مساراً موجوداً إلا مع `replace=true`)، و`tawjih_propose`: النص الجديد لوجه ملف، يبقى في `stage/` حتى يراجعه إنسان بـ `stage --show` ويطبّقه بـ `stage --apply` |
-| `--allow-run` | `tawjih_run` و`tawjih_eval`، بالمزوّد والنموذج المحددين عند التشغيل (`--backend` و`--model`)؛ وخطوات الكود فقط مع `--allow-code`، وعندها في العزل دائماً. و`tawjih_run_status` يقرأ التشغيل الدائم |
+| `--allow-run` | `tawjih_run` و`tawjih_eval`، بالمزوّد والنموذج المحددين عند التشغيل (`--backend` و`--model`)؛ وخطوات الكود فقط مع `--allow-code`، وعندها في العزل دائماً. و`tawjih_run_status` يقرأ التشغيل الدائم و`tawjih_run_cancel` يوقفه |
 
 **التشغيل الدائم.** `tawjih_run` مع `key` (مفتاح تكرار آمن يختاره المساعد)
 يجعل التشغيل دائماً: يعمل في عملية مستقلة فيستمر إن انتهى العميل أو الخادم،
@@ -587,7 +587,12 @@ claude mcp add tawjih -- python /path/to/tawjih.py -p /path/to/project mcp --all
 `completed` أو `failed`) ونتيجته دون أن يبدأ شيئاً أو يغيّره. يأتي الجواب خلال
 `wait` ثانية (الافتراضي 30)، أو يأتي الرقم. والمفتاح نفسه مع المسار والمدخل
 والمزوّد والنموذج أنفسها يُرجع التشغيل نفسه ولا يبدأ شيئاً، حتى من اتصال جديد
-ودون سؤال إنسان مرة أخرى؛ والمفتاح نفسه مع غير ذلك تعارض لا يبدأ شيئاً. وبلا
+ودون سؤال إنسان مرة أخرى؛ والمفتاح نفسه مع غير ذلك تعارض لا يبدأ شيئاً.
+و`tawjih_run_cancel` يوقف تشغيلاً ما زال يعمل، ويبقى التشغيل المنتهي كما انتهى.
+وتنتهي صلاحية التشغيل بعد `--run-ttl` ساعة (الافتراضي 24): العامل منه يُوقف
+ويُعلَّم فاشلاً، والمنتهي يُحذف ويصبح مفتاحه حراً من جديد. وتجيب هذه الأدوات
+بصيغة JSON: `{"run": {...}}` أو `{"error": {"code", "message"}}` بالرموز
+`idempotency_conflict` و`invalid_request` و`not_found`. وبلا
 مفتاح يعمل `tawjih_run` كما كان: يجيب عند انتهاء التشغيل. ومخزن الأجوبة لا
 يفعل هذا: يحفظ أجوبة النموذج، لكنه لا يعرف إن كانت خطوة كود قد نُفّذت.
 

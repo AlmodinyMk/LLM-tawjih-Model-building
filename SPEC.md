@@ -773,13 +773,26 @@ exclusively, so two clients cannot start two runs. Then
 `started`, runs the path once as `tawjih_run` would, and replaces the file
 with `status: completed` and `output`, or `failed` and `error`. Files are
 replaced in one step. A key already used with the same fingerprint
-returns its run, with no approval and no new run; with another, an error
-"idempotency conflict", and nothing starts. A request refused by the
-checks (an unknown path, code without `--allow-code`) leaves the key
-unused. `tawjih_run_status` (listed with the run level, but read-only and
-never approved) returns `run ID: STATUS` and the output or error; a run
-whose process has ended while `working` becomes `failed`, and so does one
-whose process never started within 120 seconds. Without `key`,
+returns its run (`existing: true`), with no approval and no new run; with
+another, the error `idempotency_conflict` (with the key's `run`), and
+nothing starts. A request refused by the checks (an unknown path, code
+without `--allow-code`) is `invalid_request` and leaves the key unused.
+Answers are JSON: `{"run": {id, status, path, key, created, started,
+finished, ttl_seconds, expires, poll_seconds (while working), existing,
+output and notice (completed), error}}`, or `{"error": {code, message}}`
+with `not_found` for an unknown or expired id; the tool result is an
+error for `failed` runs and for errors. `tawjih_run_status` (listed with
+the run level, but read-only and never approved) reads a run; a run whose
+process has ended while `working` becomes `failed`, and so does one whose
+process never started within 120 seconds. `tawjih_run_cancel` (never
+approved: it can only stop work) marks a working run `cancelled` and stops
+its process and what it started (its process group, or `taskkill /T` on
+Windows); an ended run is returned as it is. The first end of a run
+stays: a worker that finishes after a cancel or an expiry does not
+overwrite it. `mcp --run-ttl HOURS` (default 24) sets `ttl_seconds`: on
+every keyed call and status read, a working run older than that is
+stopped and marked `failed`, and a run ended longer ago than that is
+deleted with its key file, so the key is free again. Without `key`,
 `tawjih_run` is unchanged.
 
 Each call appends `{time, tool, args, status}` to
