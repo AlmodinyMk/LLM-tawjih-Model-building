@@ -79,14 +79,53 @@ class Identity(Base):
         self.assertEqual(core.who_label({"id": "u-1", "name": "N"}),
                          "N (u-1)")
 
-    def test_without_identity(self):
-        with mock.patch.object(core, "_git_name", return_value="Git Name"):
-            self.assertEqual(core.who(), {"name": "Git Name", "from": "git"})
-        with mock.patch.object(core, "_git_name", return_value=""):
+    def test_first_use_makes_a_permanent_id(self):
+        import contextlib
+        import io
+        self.assertFalse(self.idfile.exists())
+        err = io.StringIO()
+        with mock.patch.object(core, "_git_name", return_value="Git Name"), \
+                contextlib.redirect_stderr(err):
             by = core.who()
-            self.assertEqual(by["from"], "system")
-            self.assertNotIn("email", by)
-        # someone who wants no name in records, without setting one
+        self.assertRegex(by["id"], r"^u-[0-9a-f]{8}$")
+        self.assertEqual(by["name"], "Git Name")
+        self.assertIn("your id is " + by["id"], err.getvalue())
+        me = json.loads(self.idfile.read_text(encoding="utf-8"))
+        self.assertEqual((me["from"], me["record"]), ("git", "name"))
+        self.assertNotIn("email", me)
+        # the same id from then on, said only once
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(core.who()["id"], by["id"])
+        self.assertEqual(err.getvalue(), "")
+        if os.name != "nt":
+            self.assertEqual(self.idfile.stat().st_mode & 0o777, 0o600)
+        # whoami shows it
+        out = self.cli("whoami")[1]
+        self.assertIn(by["id"], out)
+        self.assertIn("made", out)
+
+    def test_first_use_without_git(self):
+        import contextlib
+        import io
+        with mock.patch.object(core, "_git_name", return_value=""), \
+                contextlib.redirect_stderr(io.StringIO()):
+            by = core.who()
+        me = json.loads(self.idfile.read_text(encoding="utf-8"))
+        self.assertEqual(me["from"], "system")
+        self.assertIn("id", by)
+
+    def test_cannot_keep_an_identity(self):
+        self.env.stop()
+        bad = self.root / "afile"
+        bad.write_text("x")
+        with mock.patch.dict(os.environ, {"TAWJIH_IDENTITY": str(
+                bad / "identity.json")}), \
+                mock.patch.object(core, "_git_name", return_value="G"):
+            self.assertEqual(core.who(), {"name": "G", "from": "git"})
+        self.env.start()
+
+    def test_opt_out(self):
         self.assertEqual(self.cli("whoami", "set", "--record", "none")[0], 0)
         self.assertIsNone(core.who())
 

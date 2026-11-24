@@ -343,16 +343,22 @@ it as `paths/NAME.path`, refusing to replace an existing path without
 
 ## Identity
 
-`whoami set` keeps `{id, name, email, record}` in `identity.json` in the
+The first time a record needs one, `first_identity` writes
+`{id, name, record: "name", from, created}` (from: `git` when the name is
+`git config user.name`, else `system`, the computer's user name; no email),
+creating the file exclusively and with mode 600, and says the id once on
+standard error. `whoami` with no action does the same. `whoami set` keeps
+`{id, name, email, record}` in `identity.json` in the
 person's settings folder (`$XDG_CONFIG_HOME/tawjih`, `%APPDATA%\tawjih` on
 Windows, else `~/.config/tawjih`; `TAWJIH_IDENTITY` names another file),
 never in the project. `id` is the one given (letters, digits, `. - _ :`,
 up to 64) or `u-` and eight random hex digits, kept across changes.
 
 Records note `by`: with `record` `name`, `{id, name}`; `id`, `{id}`;
-`email`, `{id, name, email}`; `none`, nothing (`null`). Without an
-identity, `{name, from: "git"}` from `git config user.name`, else
+`email`, `{id, name, email}`; `none`, nothing (`null`). When the file
+cannot be written, `{name, from: "git"}` from `git config user.name`, else
 `{name, from: "system"}`; an email is never taken from git or the system.
+`whoami clear` removes the file, and the next record makes a new id.
 `by` is in run records, evaluation records, dataset manifests, release
 manifests, schedules and triggers, runtime `job.json`, and as
 `decided_by` in decided assistant requests. `reviewed_by` in a file's

@@ -12,6 +12,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tawjih  # noqa: E402
 
+# the identity made on first use goes to a file of the tests, never into
+# the settings of the person running them (child processes inherit it)
+if "TAWJIH_IDENTITY" not in os.environ:
+    os.environ["TAWJIH_IDENTITY"] = os.path.join(
+        tempfile.mkdtemp(prefix="tawjih-id-"), "identity.json")
+    Path(os.environ["TAWJIH_IDENTITY"]).write_text(
+        '{"id": "u-7e575000", "name": "Tester", "record": "name"}',
+        encoding="utf-8")
+
 HUMAN = "المفهوم البشري السري"
 READING = "مقطع الكتاب السري"
 
