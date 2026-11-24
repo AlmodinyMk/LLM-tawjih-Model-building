@@ -307,6 +307,7 @@ class Redactor:
     def mask(self, text):
         found = {}                    # original -> placeholder
         counts = {}
+        given = text                  # a placeholder never already in it
 
         def sub(label):
             def f(m):
@@ -314,8 +315,12 @@ class Redactor:
                 if label == "CARD" and not _luhn(re.sub(r"\D", "", val)):
                     return val
                 if val not in found:
-                    counts[label] = counts.get(label, 0) + 1
-                    found[val] = "[%s_%d]" % (label, counts[label])
+                    while True:
+                        counts[label] = counts.get(label, 0) + 1
+                        ph = "[%s_%d]" % (label, counts[label])
+                        if ph not in given:
+                            break
+                    found[val] = ph
                 return found[val]
             return f
         for label, pat in self.rules:

@@ -1,0 +1,45 @@
+name: fuzzing
+# ClusterFuzzLite runs the fuzzers in fuzz/ (with Atheris) for a few minutes
+# on every pull request that changes code. A crash fails the check and is
+# reported with the input that caused it.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tawjihlib/**"
+      - "fuzz/**"
+      - ".clusterfuzzlite/**"
+      - ".github/workflows/cflite.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: build the fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          sanitizer: address
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: the base image's digest
+        run: docker image inspect gcr.io/oss-fuzz-base/base-builder-python --format '{{json .RepoDigests}}'
+      - name: run the fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          sanitizer: address
+          mode: code-change
+          fuzz-seconds: 300
+          output-sarif: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
