@@ -1559,6 +1559,32 @@ def flow_condition_notes(store, flow):
     return out
 
 
+# ------------------------------------------------------------------ process
+def alive(pid):
+    """Whether a process still runs."""
+    if not pid:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259          # STILL_ACTIVE
+    try:
+        os.kill(int(pid), 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 # ----------------------------------------------------------------- identity
 RECORD_WHO = ("name", "id", "email", "none")
 
@@ -1634,7 +1660,7 @@ def who_label(by):
 
 
 __all__ = [
-    'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
+    'alive', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
     'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',

@@ -200,10 +200,17 @@ def cmd_eval(a):
     judge = None
     if a.judge:
         judge = (a.judge_backend or a.backend, a.judge, st.root)
-    results, passed, skipped = [], 0, 0
-    for c in cases:
+    n_runs = a.repeat or 1
+    need = a.min_pass if a.min_pass is not None else n_runs
+    if n_runs < 1 or not 1 <= need <= n_runs:
+        die("--min-pass K needs 1 <= K <= N of --repeat N")
+    if n_runs > 1 and a.resume:
+        die("--repeat asks the model each time; --resume would repeat the "
+            "kept answer instead")
+
+    def once(c):
         err = io.StringIO()
-        usage, t0, record = {}, time.monotonic(), ""
+        usage, t0 = {}, time.monotonic()
         try:
             with contextlib.redirect_stderr(err):
                 if flow is None:          # the model asked directly
@@ -237,16 +244,47 @@ def cmd_eval(a):
                     encoding="utf-8")).get("usage", {})
             except (OSError, ValueError):
                 usage = {}
+        served = usage.get("served") or []
+        if isinstance(served, str):
+            served = [served]
+        return {"output": out, "pass": ok, "why": why, "log": log,
+                "record": record, "seconds": seconds,
+                "tokens_in": usage.get("in", 0),
+                "tokens_out": usage.get("out", 0), "served": served}
+
+    results, passed, skipped, served = [], 0, 0, []
+    for c in cases:
+        runs = [once(c) for _ in range(n_runs)]
+        for r in runs:
+            served += [m for m in r.pop("served") if m not in served]
+        first = runs[0]
+        if any(r["pass"] is None for r in runs):
+            ok, why = None, next(r["why"] for r in runs if r["pass"] is None)
+        elif n_runs == 1:
+            ok, why = first["pass"], first["why"]
+        else:
+            good = sum(r["pass"] for r in runs)
+            ok = good >= need
+            why = "%d of %d runs passed (need %d)" % (good, n_runs, need)
+            if not ok:
+                why += "; first failure: " + next(
+                    r["why"] for r in runs if not r["pass"])
+        out, log, record = first["output"], first["log"], first["record"]
+        entry = {"name": c["name"], "input": c["input"],
+                 "expect": c["expect"], "match": c.get("match", ""),
+                 "output": out, "pass": ok, "why": why, "log": log,
+                 "record": record,
+                 "seconds": round(sum(r["seconds"] for r in runs), 3),
+                 "tokens_in": sum(r["tokens_in"] for r in runs),
+                 "tokens_out": sum(r["tokens_out"] for r in runs)}
+        if n_runs > 1:
+            entry["passes"] = sum(bool(r["pass"]) for r in runs)
+            entry["runs"] = runs
         if ok is None:
             skipped += 1
         else:
             passed += ok
-        results.append({"name": c["name"], "input": c["input"],
-                        "expect": c["expect"], "match": c.get("match", ""),
-                        "output": out, "pass": ok, "why": why, "log": log,
-                        "record": record, "seconds": seconds,
-                        "tokens_in": usage.get("in", 0),
-                        "tokens_out": usage.get("out", 0)})
+        results.append(entry)
         print("%-4s %-28s %s" % ({True: "PASS", False: "FAIL", None: "SKIP"}
                                  [ok], c["name"][:28], why[:90]))
         if a.fail_fast and ok is False:
@@ -261,6 +299,7 @@ def cmd_eval(a):
     data = {"tawjih": __version__, "path": a.name,
             "mode": "direct" if flow is None else "path",
             "backend": a.backend, "model": os.environ.get("TAWJIH_MODEL", ""),
+            "served": served, "repeat": n_runs, "min_pass": need,
             "by": who(), "judge": a.judge or "", "passed": passed, "total": total,
             "skipped": skipped, "cases": results}
     rec.write_text(json.dumps(data, ensure_ascii=False, indent=2),

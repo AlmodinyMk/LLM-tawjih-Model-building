@@ -551,6 +551,13 @@ def build_parser():
                    "match judge by asking this model")
     s.add_argument("--judge-backend", metavar="PROVIDER",
                    help="provider of the judge (default: --backend)")
+    s.add_argument("--repeat", type=int, metavar="N",
+                   help="run each case N times, asking the model each time "
+                   "(a live check of a model that does not always answer "
+                   "the same)")
+    s.add_argument("--min-pass", type=int, metavar="K",
+                   help="with --repeat: a case passes when at least K of "
+                   "its N runs pass (default: all N)")
     s.add_argument("--fail-fast", action="store_true",
                    help="stop at the first failed case and show it")
     s.add_argument("--branch", help="extract, synthesize: only this branch")

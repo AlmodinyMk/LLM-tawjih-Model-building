@@ -18,7 +18,7 @@ from collections import deque
 from pathlib import Path
 
 from .commands import _fancy, display_width, tree_lines
-from .core import Store
+from .core import Store, alive
 from .home import C, Paint
 
 M = dict(C, red=(243, 139, 168), teal=(148, 226, 213), sky=(137, 220, 235),
@@ -66,31 +66,6 @@ def fmt_count(n):
 
 
 # ------------------------------------------------------------------ system
-def alive(pid):
-    """Whether a process still runs."""
-    if not pid:
-        return False
-    if pid == os.getpid():
-        return True
-    if os.name == "nt":
-        import ctypes
-        k = ctypes.windll.kernel32
-        h = k.OpenProcess(0x1000, False, int(pid))
-        if not h:
-            return False
-        code = ctypes.c_ulong()
-        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
-        k.CloseHandle(h)
-        return bool(ok) and code.value == 259          # STILL_ACTIVE
-    try:
-        os.kill(int(pid), 0)
-    except PermissionError:
-        return True
-    except (OSError, ValueError):
-        return False
-    return True
-
-
 def _read(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:

@@ -391,6 +391,12 @@ match becomes `[LABEL_k]`; the placeholders found in the answer are
 replaced by the originals. Logs and the cache keep the original text, since
 they stay on the computer.
 
+**Served model**: when the provider's answer names the model that
+answered (`model` in Ollama, OpenAI-compatible and Anthropic answers), it
+is kept as `served`: per step in `steps[].usage.served`, the distinct
+names in the run's `usage.served`, in evaluation records, and as
+`gen_ai.response.model` in traces.
+
 **Usage**: each model call records the input and output tokens the provider
 reports (Ollama `prompt_eval_count`/`eval_count`, OpenAI `usage`, Anthropic
 `usage`), the seconds waited, and the characters sent and received. The run
@@ -437,7 +443,12 @@ the output, pass, the reason, the run's log and record, seconds and tokens.
 the run's backend) with a fixed grading prompt; the first word PASS or FAIL
 decides; without `--judge` such a case is skipped and not counted.
 `--direct` sends each input to the model without the path and records
-`mode: direct`. When `paths/NAME.baseline.json` exists, a case that passed
+`mode: direct`. `--repeat N` runs each case N times (never from the
+answer cache, so not with `--resume`) and `--min-pass K` (1 to N, default
+N) sets how many must pass; such a case records `passes` and `runs` (each
+run's output, pass, reason, log, record, seconds and tokens), its `pass`
+is `passes >= K`, and the record has `repeat`, `min_pass` and `served`,
+the model names the provider reported. When `paths/NAME.baseline.json` exists, a case that passed
 there and fails now is a regression, and the exit status is 1. Actions:
 
 - `init NAME`: writes a commented template cases file; refuses to replace.
@@ -751,6 +762,26 @@ prefixed `(proposed through MCP)`; it refuses locked and mounted files.
 `tawjih_run` and `tawjih_eval` use `--backend` and `--model` from the
 command line, `allow_code` and `sandbox` both equal to `--allow-code`.
 `manual` is refused as a backend, and `--allow-code` needs `--allow-run`.
+**Durable runs.** `tawjih_run` with `key` (matching `[\w.:-]{1,128}`)
+and `wait` (0-600 seconds, default 30): the key's fingerprint is the
+SHA-256 of the path, input, backend, model and `allow_code`. A key file
+`mcp-runs/keys/<sha256(key)[:32]>.json` (`{run, fingerprint}`) is created
+exclusively, so two clients cannot start two runs. Then
+`mcp-runs/<id>.json` (id `mYYYYMMDD-HHMMSS-XXXXXXXX`) is written with
+`status: working`, before the id is returned, and a separate process
+(its own session, or a detached process on Windows) sets `pid` and
+`started`, runs the path once as `tawjih_run` would, and replaces the file
+with `status: completed` and `output`, or `failed` and `error`. Files are
+replaced in one step. A key already used with the same fingerprint
+returns its run, with no approval and no new run; with another, an error
+"idempotency conflict", and nothing starts. A request refused by the
+checks (an unknown path, code without `--allow-code`) leaves the key
+unused. `tawjih_run_status` (listed with the run level, but read-only and
+never approved) returns `run ID: STATUS` and the output or error; a run
+whose process has ended while `working` becomes `failed`, and so does one
+whose process never started within 120 seconds. Without `key`,
+`tawjih_run` is unchanged.
+
 Each call appends `{time, tool, args, status}` to
 `history/mcp-YYYYMMDD.jsonl`, with `title`, `text`, `input`,
 `statements`, `why` and `query` replaced by `<N characters>`.

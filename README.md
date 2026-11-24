@@ -568,6 +568,7 @@ never reach training data; `weight: 2` makes them count more, and
 | `eval synthesize NAME --backend B [--count N]` | a model proposes hard cases from the human sides and examples (never from `eval` files) into a file to review; `--accept` adds them |
 | `eval NAME [--judge MODEL] [--fail-fast]` | runs the cases; `match: judge` cases are graded by a model; `--fail-fast` stops at the first failure and shows it |
 | `eval NAME --direct` | the same cases sent straight to the model, without the path |
+| `eval NAME --repeat N [--min-pass K]` | each case run N times, asking the model each time; a case passes when at least K of N runs pass (default all N). For a live check of a model that does not always answer the same, run on a schedule rather than on every change |
 | `eval compare NAME [A B]` | two evaluations case by case, by default the path against the model asked directly |
 | `eval baseline NAME --save` / `eval diff NAME [--baseline]` | a reference result; every later `eval` reports cases that passed then and fail now (exit status 1); `diff` lists cases that changed |
 | `eval blame NAME [--case C]` | for each failed case, the steps of its run: which failed, or where the expected text appeared and was lost |
@@ -628,7 +629,20 @@ or, in a client's configuration file:
 |---|---|
 | reading (always) | `tawjih_tree`, `tawjih_show`, `tawjih_search`, `tawjih_paths`, `tawjih_plan`, `tawjih_check`, `tawjih_status`, `tawjih_impact`, `tawjih_staged`, `tawjih_language` |
 | `--allow-write` | `tawjih_new`, `tawjih_contract`, `tawjih_link`, `tawjih_move`, `tawjih_define_path` (replaces a path only with `replace=true`), and `tawjih_propose`: the new text of a side, kept in `stage/` until a person runs `stage --show` and `stage --apply` |
-| `--allow-run` | `tawjih_run` and `tawjih_eval`, with the provider and model given at start (`--backend`, `--model`); code steps only with `--allow-code`, and then always in the sandbox |
+| `--allow-run` | `tawjih_run` and `tawjih_eval`, with the provider and model given at start (`--backend`, `--model`); code steps only with `--allow-code`, and then always in the sandbox. `tawjih_run_status` reads a durable run |
+
+**Durable runs.** `tawjih_run` with a `key` (an idempotency key the
+assistant chooses) makes the run durable. It runs in a process of its own,
+so it goes on if the client or the server ends; its id can be read as soon
+as it is given; `tawjih_run_status` reads its state (`working`,
+`completed`, `failed`) and output without starting or changing anything.
+The answer comes within `wait` seconds (default 30), or as the id. The same
+key with the same path, input, provider and model returns the same run and
+starts nothing, even from a new connection and without asking a person
+again; the same key with anything else is an idempotency conflict and
+starts nothing. Without a key, `tawjih_run` works as before: it answers
+when the run ends. The answer cache does not do this: it keeps model
+answers, but cannot tell whether a code step has already run.
 
 **A person approves.** By default (`--human-approval always`) every write
 and every run waits for a person. When the client supports MCP elicitation,
@@ -1211,6 +1225,7 @@ archive/  archived branches
 templates/ saved templates
 stage/    proposals waiting for review           (git-ignored)
 requests/ an assistant's requests waiting for approval (git-ignored)
+mcp-runs/ an assistant's durable runs and their keys (git-ignored)
 quarantine/ files repair could not read        (git-ignored)
 mounts.json, schedules.json, seal.json   (optional)
 models/   adapters, merged models, GGUF files, registry.json,

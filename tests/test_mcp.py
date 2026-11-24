@@ -284,5 +284,98 @@ class Stdio(Base):
         self.assertIn("MCP server", r.stderr)
 
 
+class Audit(Base):
+    """One real stdio session, two checks after every call (as suggested by
+    jiangxingfan1-coder): the files of the project and of stage/ change
+    exactly as expected, and the audit log gains exactly the expected
+    event. The log is kept out of the first check, not out of the test."""
+    def setUp(self):
+        super().setUp()
+        self.tree()
+        self.fill("1.1.1", human="original", instructions="answer")
+
+    def files(self):
+        import hashlib
+        out = {}
+        for f in sorted(self.root.rglob("*")):
+            rel = f.relative_to(self.root).as_posix()
+            if f.is_file() and not re.fullmatch(r"history/mcp-\d{8}\.jsonl",
+                                                rel):
+                out[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
+        return out
+
+    def events(self):
+        out = []
+        for f in sorted((self.root / "history").glob("mcp-*.jsonl")):
+            out += [json.loads(l) for l in
+                    f.read_text(encoding="utf-8").splitlines() if l.strip()]
+        return out
+
+    def test_each_call_changes_only_what_it_declares(self):
+        p = subprocess.Popen([sys.executable, PROGRAM, "-p", self.dir, "mcp",
+                              "--allow-write", "--human-approval", "never"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True,
+                             encoding="utf-8")
+        mid = [0]
+
+        def send(method, params):
+            mid[0] += 1
+            p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": mid[0],
+                                      "method": method,
+                                      "params": params}) + "\n")
+            p.stdin.flush()
+            reply = json.loads(p.stdout.readline())
+            self.assertEqual(reply["id"], mid[0])
+            return reply
+
+        def tool(name, args):
+            r = send("tools/call", {"name": name, "arguments": args})
+            self.assertFalse(r["result"].get("isError"), r)
+            return r
+
+        try:
+            send("initialize", {"protocolVersion": "2025-06-18"})
+            ref = self.store().resolve("1.1.1")
+            before = self.files()
+            seen = len(self.events())
+            steps = [
+                ("tawjih_tree", {}, set(), {}),
+                ("tawjih_show", {"ref": "1.1.1"}, set(), {"ref": "1.1.1"}),
+                ("tawjih_propose", {"ref": "1.1.1", "side": "human",
+                                    "text": "a new human side",
+                                    "why": "clearer"},
+                 {"stage/%s.human.json" % ref},
+                 {"ref": "1.1.1", "side": "human",
+                  "text": "<16 characters>", "why": "<7 characters>"}),
+                ("tawjih_staged", {}, set(), {}),
+            ]
+            for name, args, added, logged in steps:
+                tool(name, args)
+                after = self.files()
+                # 1. the project and stage/: exactly these files added,
+                #    nothing changed or removed
+                self.assertEqual(set(after) - set(before), added, name)
+                self.assertEqual(set(before) - set(after), set(), name)
+                self.assertEqual({k for k in before if after[k] != before[k]},
+                                 set(), name)
+                # 2. the audit log: exactly one new event, this one, with
+                #    free text kept as its length only
+                ev = self.events()
+                self.assertEqual(len(ev), seen + 1, name)
+                self.assertEqual((ev[-1]["tool"], ev[-1]["args"],
+                                  ev[-1]["status"]), (name, logged, 0))
+                before, seen = after, len(ev)
+            log = "".join(f.read_text(encoding="utf-8") for f in
+                          (self.root / "history").glob("mcp-*.jsonl"))
+            self.assertNotIn("a new human side", log)
+            n = self.store().nodes[ref]
+            self.assertEqual(n.human.strip(), "original")
+        finally:
+            p.stdin.close()
+            p.wait(timeout=30)
+            p.stdout.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -838,6 +838,12 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                     pu["calls"] += 1
                     for k in ("in", "out", "seconds"):
                         pu[k] = round(pu[k] + usage.get(k, 0), 3)
+                    if usage.get("served"):
+                        pu["served"] = usage["served"]
+                        with lock:
+                            sv = record["usage"].setdefault("served", [])
+                            if usage["served"] not in sv:
+                                sv.append(usage["served"])
                     if usage.get("redacted"):
                         log.append("(%d private item(s) were replaced by "
                                    "placeholders before sending)"

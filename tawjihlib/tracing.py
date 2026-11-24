@@ -244,6 +244,7 @@ class Tracer:
                     "langfuse.observation.model.name": c["model"] or
                     u.get("provider", ""),
                     "gen_ai.request.model": c["model"] or None,
+                    "gen_ai.response.model": u.get("served"),
                     "gen_ai.system": u.get("provider"),
                     "langfuse.observation.input": self._mask(u["sent"])
                     if "sent" in u else None,

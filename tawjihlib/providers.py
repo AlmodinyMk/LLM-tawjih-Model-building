@@ -82,8 +82,12 @@ def use_model(a):
 _usage = threading.local()     # token counts of the last answer, per thread
 
 
-def _note_usage(tokens_in, tokens_out):
+def _note_usage(tokens_in, tokens_out, served=None):
+    """Token counts of the last answer, and the model the provider says
+    answered (often a dated or digested version of the name asked for)."""
     _usage.last = {"in": int(tokens_in or 0), "out": int(tokens_out or 0)}
+    if isinstance(served, str) and served:
+        _usage.last["served"] = served[:200]
 
 
 def backend_dry(prompt, model=""):
@@ -98,7 +102,8 @@ def backend_ollama(prompt, model=""):
     data = _post(host + "/api/chat",
                  {"model": _model(model), "stream": False,
                   "messages": [{"role": "user", "content": prompt}]}, {})
-    _note_usage(data.get("prompt_eval_count"), data.get("eval_count"))
+    _note_usage(data.get("prompt_eval_count"), data.get("eval_count"),
+                data.get("model"))
     return data["message"]["content"]
 
 
@@ -113,7 +118,8 @@ def backend_anthropic(prompt, model=""):
                   "messages": [{"role": "user", "content": prompt}]},
                  {"x-api-key": key, "anthropic-version": "2023-06-01"})
     u = data.get("usage") or {}
-    _note_usage(u.get("input_tokens"), u.get("output_tokens"))
+    _note_usage(u.get("input_tokens"), u.get("output_tokens"),
+                data.get("model"))
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
@@ -127,7 +133,8 @@ def backend_openai(prompt, model=""):
                  {"model": _model(model),
                   "messages": [{"role": "user", "content": prompt}]}, headers)
     u = data.get("usage") or {}
-    _note_usage(u.get("prompt_tokens"), u.get("completion_tokens"))
+    _note_usage(u.get("prompt_tokens"), u.get("completion_tokens"),
+                data.get("model"))
     return data["choices"][0]["message"]["content"]
 
 

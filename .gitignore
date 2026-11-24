@@ -17,6 +17,7 @@ quarantine/
 models/
 datasets/
 requests/
+mcp-runs/
 build/
 dist/
 *.egg-info/
