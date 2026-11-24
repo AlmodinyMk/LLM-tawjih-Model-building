@@ -1626,14 +1626,52 @@ def _git_name():
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def _system_name():
+    try:
+        import getpass
+        return getpass.getuser()
+    except (OSError, KeyError, ImportError):
+        return ""
+
+
+def first_identity():
+    """The identity made the first time this person's records need one: a
+    permanent id (u- and eight random hex digits), and the name from git's
+    user.name, else the system's user name; no email. Kept in the person's
+    settings, said once on standard error. {} when it cannot be written."""
+    name, origin = _git_name(), "git"
+    if not name:
+        name, origin = _system_name(), "system"
+    me = {"id": "u-" + os.urandom(4).hex(), "name": name[:100],
+          "record": "name", "from": origin,
+          "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+    f = identity_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(f), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:            # made meanwhile by another process
+        return load_identity()
+    except OSError:
+        return {}
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        out.write(json.dumps(me, ensure_ascii=False, indent=2) + "\n")
+    print("tawjih: your id is %s, with the name %r from %s; records of "
+          "runs, approvals and reviews note them. Change them with "
+          "`tawjih whoami set`, or keep names out with `tawjih whoami set "
+          "--record id` (or none)." % (me["id"], me["name"], origin),
+          file=sys.stderr)
+    return me
+
+
 def who():
     """Who a record notes as having run, approved or reviewed something:
-    the identity set with whoami set, as much of it as its 'record' setting
-    allows (name: id and name; id: the id only; email: id, name and email;
-    none: nothing). Without one, the name from git's user.name, else the
-    system's user name; an email is never taken from anywhere else. None
-    when nothing may be recorded."""
-    me = load_identity()
+    the person's identity (made by first_identity the first time, or set
+    with whoami set), as much of it as its 'record' setting allows (name:
+    id and name; id: the id only; email: id, name and email; none:
+    nothing). An email is never taken from git or the system. When no
+    identity can be kept, the name from git, else the system. None when
+    nothing may be recorded."""
+    me = load_identity() or first_identity()
     if me:
         mode = me.get("record", "name")
         if mode == "none":
@@ -1647,11 +1685,7 @@ def who():
     name = _git_name()
     if name:
         return {"name": name, "from": "git"}
-    try:
-        import getpass
-        name = getpass.getuser()
-    except (OSError, KeyError, ImportError):
-        name = ""
+    name = _system_name()
     return {"name": name, "from": "system"} if name else None
 
 
@@ -1665,7 +1699,7 @@ def who_label(by):
 
 __all__ = [
     'alive', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
-    'who', 'who_label',
+    'first_identity', 'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',
     'SCHEMA_KEYWORDS', 'SCHEMA_TYPES', '_as_keys', '_same', 'load_schema',

@@ -747,8 +747,11 @@ Since 0.10 a project can be guarded and kept over time.
 
 ### Who did it: `whoami`
 
-Records say who ran, approved and reviewed. Set your identity once; it is
-kept in your own settings (beside your runtimes), not in the project:
+Records say who ran, approved and reviewed. Everyone who uses Tawjih gets
+an identity with a permanent id the first time a record needs one: an id
+such as `u-3f9a1c07`, and the name from git's `user.name` (else the
+computer's user name), said once on the terminal. It is kept in your own
+settings (beside your runtimes), not in the project, and you can change it:
 
 ```
 tawjih whoami set --name "Mohammed" --email m@example.com
@@ -757,7 +760,8 @@ tawjih whoami set --id 0000-0002-1825-0097   # an ORCID, or any id you use
 tawjih whoami set --record id      # records note only the id
 ```
 
-Without `--id`, one is made for you (`u-` and eight hex digits) and kept.
+The id stays the same when the name or email changes; `--id` replaces it
+with one of your own, such as an ORCID.
 What records note follows `--record`: `name` (the id and the name, the
 default), `id` (the id only), `email` (also the email) or `none` (nothing).
 The email is never written anywhere else, and never sent with a trace.
@@ -767,10 +771,11 @@ or `deny`), the answer, and `by` when a person answered on the terminal;
 `review --ok` writes `reviewed_by` into the file; evaluations, dataset
 manifests, releases, schedules, runtime jobs and decided assistant requests
 (`decided_by`) note it too. With `--trace`, the id (or the name) becomes the
-trace's user in Langfuse. Without an identity, records take the name from
-git's `user.name`, else the computer's user name; `whoami set --record none`
-keeps names out. Records of runs can be committed with the project, so
-choose what they note before you share it.
+trace's user in Langfuse. `whoami set --record id` keeps names out of
+records and `--record none` keeps out the id too. Records of runs can be
+committed with the project, so choose what they note before you share it.
+When the settings folder cannot be written, records take the name from git,
+else the computer, with no id.
 
 ## Training adapters: the neural bridge
 

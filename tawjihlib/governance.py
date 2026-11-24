@@ -19,7 +19,8 @@ from pathlib import Path
 
 from .core import (
     Die, EXTRA, FlowError, HEAD_FILE, LEVELS, Node, SECTIONS, Store, __version__,
-    _kw, die, identity_file, load_identity, parse_examples, who,
+    _kw, die, first_identity, identity_file, load_identity, parse_examples,
+    who,
     who_label,
 )
 from .providers import (
@@ -1655,16 +1656,19 @@ def cmd_whoami(a):
     elif a.action == "clear":
         if f.is_file():
             f.unlink()
-        print("identity cleared; records now note %s" % (
-            who_label(who()) or "no one"))
+        print("identity cleared; the next record makes a new id (to keep "
+              "names out of records instead: whoami set --record none)")
         return 0
+    else:
+        me = me or first_identity()
     by = who()
     if a.json:
         print(json.dumps({"identity": me, "file": str(f), "records": by},
                          ensure_ascii=False, indent=2))
         return 0
     if me:
-        print("id      %s" % me.get("id", ""))
+        print("id      %s%s" % (me.get("id", ""), "  (made %s)" % me["created"]
+                                 if me.get("created") else ""))
         print("name    %s" % (me.get("name") or "-"))
         print("email   %s" % (me.get("email") or "-"))
         print("record  %s" % me.get("record", "name"))
