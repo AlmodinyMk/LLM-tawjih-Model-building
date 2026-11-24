@@ -248,15 +248,32 @@ def _parse_contract(spec):
     return ("unknown", [spec])
 
 
+def _fenced(t):
+    """The inside of the first ``` code fence: from the line after the
+    opening fence to the next ```. Linear in the length of the text: a
+    regular expression here took quadratic time on an answer full of
+    unclosed fences."""
+    i = t.find("```")
+    if i < 0:
+        return None
+    nl = t.find("\n", i + 3)
+    if nl < 0:
+        return None
+    j = t.find("```", nl + 1)
+    if j < 0:
+        return None
+    return t[nl + 1:j]
+
+
 def _json_in(text):
     """The JSON object in an answer: the whole text, the inside of a code
     fence, or the span from the first '{' to the last '}' (models often add
     a sentence before or after). Returns (object, its JSON text)."""
     t = text.strip()
     cands = [t]
-    m = re.search(r"```[^\n]*\n(.*?)\n?```", t, re.S)
-    if m:
-        cands.append(m.group(1).strip())
+    fenced = _fenced(t)
+    if fenced is not None:
+        cands.append(fenced.strip())
     i, j = t.find("{"), t.rfind("}")
     if 0 <= i < j:
         cands.append(t[i:j + 1])
@@ -952,9 +969,7 @@ class Store:
         return n
 
     def load_path(self, name, whole_lines=False):
-        if not re.fullmatch(r"[\w\-]+", name):
-            die("path names may contain only letters, digits, '_' and '-'")
-        f = self.pdir / (name + ".path")
+        f = path_file(self.pdir, name, ".path")
         if not f.is_file():
             die("no path named '%s'" % name)
         lines = [l.split("#", 1)[0].strip()
@@ -976,7 +991,11 @@ class Store:
 
     def path_statements(self, name):
         """The statements of paths/NAME.path, for building or for CALL."""
-        if not (self.pdir / (name + ".path")).is_file():
+        try:
+            f = path_file(self.pdir, name, ".path")
+        except Die as e:
+            raise FlowError(getattr(e, "msg", "a bad path name"))
+        if not f.is_file():
             raise FlowError("no path named '%s'" % name)
         try:
             return [shlex.split(line) for line in self.load_path(name, True)]
@@ -1559,6 +1578,29 @@ def flow_condition_notes(store, flow):
     return out
 
 
+# -------------------------------------------------------------------- names
+NAME_RE = r"[\w\-]+"
+
+
+def inside(folder, filename):
+    """folder / filename, refused unless it stays inside folder: a name from
+    the command line or a client never reaches another folder ('..', '/',
+    a drive letter)."""
+    base = os.path.normpath(os.path.abspath(str(folder)))
+    full = os.path.normpath(os.path.join(base, filename))
+    if full.startswith(base + os.sep):
+        return Path(full)
+    die("'%s' would be outside %s" % (filename, folder))
+
+
+def path_file(folder, name, suffix):
+    """The file of a path, evaluation or record named NAME: letters, digits,
+    '_' and '-' only, inside folder."""
+    if not isinstance(name, str) or not re.fullmatch(NAME_RE, name):
+        die("path names may contain only letters, digits, '_' and '-'")
+    return inside(folder, name + suffix)
+
+
 # ------------------------------------------------------------------ process
 def alive(pid):
     """Whether a process still runs."""
@@ -1698,7 +1740,7 @@ def who_label(by):
 
 
 __all__ = [
-    'alive', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
+    'NAME_RE', 'inside', 'path_file', 'alive', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
     'first_identity', 'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',

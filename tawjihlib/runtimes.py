@@ -32,11 +32,10 @@ TEMPLATES = ("submit", "status", "logs", "cancel", "collect", "check")
 LOCAL = {"kind": "local"}
 
 
-from .core import Die, die, user_config_dir, who
+from .core import die, user_config_dir, who
 from .providers import load_policy
 
 
-RuntimeError_ = Die          # what a runtime or job problem raises
 
 
 def fail(msg):

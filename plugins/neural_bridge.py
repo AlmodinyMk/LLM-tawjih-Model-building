@@ -1624,10 +1624,9 @@ def serverless(a, base, items):
               "Written by Tawjih's training bridge for vLLM 0.32. Check the "
               "flags against the vLLM version you run.", "",
               "## Build and run", "", "```",
-              "docker build -t %s-serve %s%s ." % (
+              "docker build -t %s-serve %s." % (
                   tag.lower(), "--secret id=hf_token,env=HF_TOKEN "
-                  if a.weights == "image" and not local_base else "",
-                  "" if True else ""),
+                  if a.weights == "image" and not local_base else ""),
               "docker run --gpus all -p 8000:8000 -v cache:%s %s-serve" % (
                   a.cache_dir, tag.lower()), "```", ""]
     if a.weights == "image" and local_base:

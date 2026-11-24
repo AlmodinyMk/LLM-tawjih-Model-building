@@ -15,7 +15,8 @@ import time
 from pathlib import Path
 
 from .core import (
-    Die, Store, __version__, _json_in, _norm_q, die, parse_examples, who,
+    Die, Store, __version__, _json_in, _norm_q, die, parse_examples, path_file,
+    who,
 )
 from .providers import (
     backend_kind, call_model, use_model,
@@ -101,7 +102,9 @@ EVAL_ACTIONS = ("init", "extract", "synthesize", "compare", "diff",
 
 
 def _cases_file(st, name, given=None):
-    return Path(given) if given else st.pdir / (name + ".cases.jsonl")
+    """A path's evaluation cases: --cases FILE when given (a file the person
+    names), else paths/NAME.cases.jsonl, with NAME checked."""
+    return Path(given) if given else path_file(st.pdir, name, ".cases.jsonl")
 
 
 def _read_cases(cfile):
@@ -182,6 +185,7 @@ def cmd_eval(a):
         die("give one path name (or an action: %s)" % ", ".join(EVAL_ACTIONS))
     a.name = args[0]
     st = Store(a.project)
+    path_file(st.pdir, a.name, ".path")     # the name alone is checked
     flow = None if a.direct else _flow_from_args(st, a.name, [])
     cfile = _cases_file(st, a.name, a.cases)
     if not cfile.is_file():

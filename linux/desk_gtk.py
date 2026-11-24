@@ -691,7 +691,7 @@ class LibraryWindow(DeskWindow):
     def search(self):
         rows = self.guard(self.desk.search_books, self.query.get_text())
         self.hits.clear()
-        if rows in (None, True):
+        if not isinstance(rows, list):     # None or True: nothing to show
             rows = []
         for h in rows:
             self.hits.append([h["id"], h["name"], h["line"], h["text"]])
@@ -1011,7 +1011,7 @@ class PlanWindow(DeskWindow):
         sides = [s for s, c in self.side_checks.items() if c.get_active()]
         rows = self.guard(self.desk.search, self.query.get_text(), sides)
         self.hits.clear()
-        if rows in (None, True):
+        if not isinstance(rows, list):     # None or True: nothing to show
             rows = []
         for h in rows:
             self.hits.append([h["number"], h["tree"], h["title"], h["side"],
@@ -1027,7 +1027,7 @@ class PlanWindow(DeskWindow):
     def refresh(self):
         rows = self.guard(self.desk.tasks)
         self.tasks.clear()
-        if rows in (None, True):
+        if not isinstance(rows, list):     # None or True: nothing to show
             rows = []
         for t in rows:
             status = t["status"] + (" (late)" if t["late"] else "")

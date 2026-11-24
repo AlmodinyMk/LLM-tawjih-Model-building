@@ -18,7 +18,7 @@ from collections.abc import Mapping
 
 from .core import (
     Die, MARK, __version__, _json_in, _validate_contract, condition_holds,
-    conform, die, who,
+    conform, die, inside, who,
 )
 from .providers import (
     POLICY_FILE, backend_kind, call_model, default_backend, load_policy,
@@ -427,12 +427,13 @@ def choose_among(store, output, candidates):
 
 
 def _stamped(folder, name, suffix):
+    """A new file NAME-TIME[-k]SUFFIX in folder, never outside it."""
     folder.mkdir(exist_ok=True)
     stamp, k = time.strftime("%Y%m%d-%H%M%S"), 1
-    f = folder / ("%s-%s%s" % (name, stamp, suffix))
+    f = inside(folder, "%s-%s%s" % (name, stamp, suffix))
     while f.exists():
         k += 1
-        f = folder / ("%s-%s-%d%s" % (name, stamp, k, suffix))
+        f = inside(folder, "%s-%s-%d%s" % (name, stamp, k, suffix))
     return f
 
 
