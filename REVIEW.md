@@ -24,6 +24,8 @@ To ensure transparent evaluation, reviewers should note the exact boundaries of 
   * Bilingual declarative path parser and DAG/bounded-loop execution engine (`tawjih.py` and `tawjihlib/`).
   * Schema validation (`contract`), process-level code isolation (`sandbox`), restrictive project policies (`policy`), pre-flight redaction (`redact`), caching (`--resume`), and lineage tracing (`trace`).
   * Automated unit and workflow test suites (`tests/`) passing on both **Linux** and **Windows** with an in-process stand-in model and a local HTTP stand-in for an OpenAI-compatible server; live provider tests (`tests/test_live.py`) are skipped unless `TAWJIH_LIVE_TESTS=1`.
+  * Since `v0.16.0`: identities in run, approval and review records (`whoami`); durable MCP runs with idempotency keys, tested with a real stdio client killed mid-run against a stand-in model held on a signal; `eval --repeat N --min-pass K`; the MoE router's load-balancing loss checked on a real Mixtral build.
+  * Every change is analysed with CodeQL, the path language, contracts, examples and redaction are fuzzed (ClusterFuzzLite with Atheris on pull requests, random inputs in the tests), and releases are signed with Sigstore.
 * **Not Yet Verified (Open Milestones for `v1.0.0`):**
   * End-to-end integration benchmarks against live commercial and local LLM providers (e.g., live Ollama instances, OpenAI-compatible APIs, Anthropic) under non-deterministic generation variance.
   * Human usability and ergonomics testing of the experimental Linux desktop interface (`linux/`).
@@ -79,6 +81,7 @@ cat SECURITY.md
 python -m unittest discover -s tests
 
 # 3. Inspect the bundled multi-tree example project
+#    (the first command asks your name once; TAWJIH_NO_SETUP=1 skips it)
 python tawjih.py -p examples/quadratic trees
 python tawjih.py -p examples/quadratic check
 python tawjih.py -p examples/quadratic produce branch --plan
@@ -88,7 +91,8 @@ python tawjih.py -p examples/quadratic produce branch --plan
 * [`SPEC.md`](./SPEC.md) — Formal contract for file headers, machine digests, path semantics, and execution records.
 * [`tawjih.py`](./tawjih.py) & `tawjihlib/` — CLI entry point, parser, graph planner, contract validator, and runner implementation.
 * `examples/quadratic/` — Reference two-tree project demonstrating cross-tree handoffs and contracts.
-* `tests/` — Cross-platform test suite covering path parsing, caching, staleness, contracts, and sandboxing.
+* `tests/` — Cross-platform test suite covering path parsing, caching, staleness, contracts, sandboxing, the MCP server and durable runs.
+* `fuzz/` — Fuzz targets for the path language, contracts, examples and redaction.
 
 ---
 

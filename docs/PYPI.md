@@ -38,7 +38,8 @@ tawjih tree
 - Steps at the same time (`--max-workers`), going on past a failed branch,
   and `ITERATE` to run a whole path again on its result.
 - An architecture lab (`tawjih arch`): model architectures as files, exact
-  parameter counts, variants, a Hugging Face configuration, and a build
+  parameter counts, variants, mixture-of-experts routers (load-balancing
+  loss, jitter, expert shares), a Hugging Face configuration, and a build
   check with transformers; runtimes (`tawjih runtime`) for long jobs here,
   over ssh, or on a service you drive.
 - A home screen in the terminal (`tawjih` alone): the project at a glance,
@@ -50,10 +51,17 @@ tawjih tree
 - A project policy that can only restrict: no code, local providers only,
   always sandboxed, a least level of human approval.
 - Evaluation: cases from the examples, a path compared with the model asked
-  directly, baselines, datasets with SHA-256 manifests, lineage with `trace`.
+  directly, `--repeat N --min-pass K` for a model that does not always
+  answer the same, baselines, datasets with SHA-256 manifests, lineage with
+  `trace`; records keep the model version the provider reports.
 - Governance: locks, review, staged proposals, sealed releases, schedules.
 - `tawjih mcp`: an MCP server for AI assistants, where a person approves
-  every write and every run.
+  every write and every run; with a key, a run is durable (it survives a
+  disconnect, can be cancelled, and is never started twice).
+- `tawjih whoami`: everyone has a permanent id, and records say who ran,
+  approved and reviewed.
+- Checked on every change with CodeQL, fuzzed with ClusterFuzzLite, and
+  released with Sigstore signatures.
 - `tawjih do`: management statements in English or Arabic.
 
 Full documentation, the example project, the Linux windows and the optional

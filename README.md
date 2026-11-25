@@ -32,6 +32,8 @@ Anthropic provider. Python, standard library only; Linux and Windows.
 - **Answers you can trace.** Every run is saved with each step's prompt
   and answer, and its cost in the run's record. `trace` shows which files an output came from, and
   `--resume` replays a run from the cache without asking the model again.
+  Records also say who ran, approved and reviewed: everyone gets a
+  permanent id the first time (`whoami`).
 - **Checked handoffs.** A contract (JSON keys, or a JSON Schema) checks
   each step's output before the next step sees it; with `--retries`, the
   model is asked again when it does not fit.
@@ -43,6 +45,10 @@ Anthropic provider. Python, standard library only; Linux and Windows.
   computer only, always sandboxed); redaction before anything is sent.
 - **Arabic and English.** The path language, the management statements and
   the files themselves work in both.
+- **Assistants under your control.** `tawjih mcp` lets an AI assistant read
+  the project, propose changes and run paths, with a person approving every
+  write and run; a long run can be durable, so it survives a disconnect and
+  is never started twice.
 
 **Who it is for:** engineers and researchers who direct a model through
 reviewed text, keep their knowledge organised, and need to check where a
@@ -53,9 +59,12 @@ application in code, where a code-first framework fits better.
 
 ```
 pip install tawjih
-tawjih                 # the home screen
+tawjih                 # who you are (the first time), then the home screen
 tawjih home start      # your first project, step by step
 ```
+
+The first command on a terminal asks your name (and, if you like, an email
+or an ORCID) before it runs; see [Who did it](#who-did-it-whoami).
 
 The example project, a quadratic equation solved across two trees, is in
 this repository. Clone it and run the example without any account:
@@ -754,8 +763,9 @@ computer's user name). On a terminal, the first command asks for it before
 it runs: your name (required), and if you like an email, an id of your own
 such as an ORCID, and what records note. Where no one can answer (a
 script, a schedule, an assistant through `mcp`), it is made from git or the
-computer and said once. It is kept in your own settings (beside your
-runtimes), not in the project, and you can change it:
+computer and said once (`TAWJIH_NO_SETUP=1` does the same on a terminal).
+It is kept in your own settings (beside your runtimes), not in the project,
+and you can change it:
 
 ```
 tawjih whoami set --name "Mohammed" --email m@example.com
@@ -1268,7 +1278,13 @@ The program itself is `tawjih.py`, which runs and imports the package
 `outputs`, `evaluate`, `governance`, `runtimes`, `arch`, `script`,
 `mcpserver`, `home`, `monitor` (`top`) and `cli`. Each module imports only from
 the ones before it, and everything is reachable as `tawjih.NAME`. Keep the
-two together when you copy the program.
+two together when you copy the program. In the repository, `tests/` holds
+the tests and `fuzz/` the fuzz targets.
+
+Outside any project, in your own settings folder (`~/.config/tawjih`, or
+`%APPDATA%\tawjih` on Windows): `identity.json` (who you are, from
+`whoami`) and `runtimes.json` (your runtimes). Neither is ever copied into a
+project.
 
 ## Limitations
 
@@ -1349,14 +1365,19 @@ build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
 counts; since 0.16 durable MCP runs (a client killed mid-run and a fresh one
 picking the run up, against a stand-in model held on a signal), `eval
 --repeat`, identities (the first-use questions answered in a
-pseudo-terminal), and fuzz targets run with Atheris; traces (`--trace`): checked against the OpenTelemetry payload of Langfuse's own Python SDK 5.2 (same path, headers and attribute names) and parsed by a real OpenTelemetry Collector 0.115, with Langfuse itself replaced by a stand-in server; and `top`, its frames drawn at several sizes with and without
+pseudo-terminal), fuzz targets run with Atheris, and a MoE's router loss and
+expert shares on a real Mixtral built with PyTorch 2.15 and transformers
+5.24; traces (`--trace`): checked against the OpenTelemetry payload of Langfuse's own Python SDK 5.2 (same path, headers and attribute names) and parsed by a real OpenTelemetry Collector 0.115, with Langfuse itself replaced by a stand-in server; and `top`, its frames drawn at several sizes with and without
 colour, and its keys driven in a pseudo-terminal on Linux. The neural
 bridge has its own section above.
 Pandoc itself was tried on a real Word file with formulas. The diagrams from `graph` were
 rendered with the Mermaid command-line tool and with Graphviz.
 
 The same tests pass on Windows and Linux, on Python 3.11 and 3.13, in the
-GitHub Actions workflow that runs at every push. The Linux desktop windows
+GitHub Actions workflow that runs at every push and must pass before a pull
+request is merged. CodeQL analyses every change, ClusterFuzzLite fuzzes the
+parsers on pull requests, and releases are signed with Sigstore; see
+[SECURITY.md](SECURITY.md). The Linux desktop windows
 were driven by a script on a virtual display; see
 [linux/README.md](linux/README.md).
 
