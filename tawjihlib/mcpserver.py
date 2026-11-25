@@ -486,10 +486,8 @@ class Server:
         """For a key already used: the existing run (same fingerprint) or a
         conflict (another one); None for a key never seen or expired."""
         self.expire()
-        try:
-            known = json.loads(self._keyfile(a["key"]).read_text(
-                encoding="utf-8"))
-        except (OSError, ValueError):
+        known = _read_run(self._keyfile(a["key"]))
+        if known is None:
             return None
         if known.get("fingerprint") != self._fingerprint(a):
             return _error_reply(
@@ -543,9 +541,8 @@ class Server:
         for p in self.__dict__.get("children", []):
             p.poll()                     # an ended worker is not left a zombie
         f = Store(self.project).root / RUN_DIR / (rid + ".json")
-        try:
-            run = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        run = _read_run(f)
+        if run is None:
             return None
         if run["status"] == "working" and not run.get("pid") and \
                 time.time() - f.stat().st_mtime > 120:
@@ -555,8 +552,7 @@ class Server:
                 not alive(run["pid"]):
             time.sleep(0.2)              # it may have just written its end
             run = _finish(f, "failed", error="the run's process ended "
-                          "without finishing") or json.loads(
-                              f.read_text(encoding="utf-8"))
+                          "without finishing") or _read_run(f) or run
         return run
 
     def _reply(self, rid, run, existing=False):
@@ -611,9 +607,8 @@ class Server:
             return
         now = time.time()
         for f in d.glob("m*.json"):
-            try:
-                run = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            run = _read_run(f)
+            if run is None:
                 continue
             ttl = run.get("ttl_seconds")
             if not ttl:
@@ -897,13 +892,36 @@ def language_text():
     return "\n\n".join(keep) or text[:MAX_OUT]
 
 
+def _read_run(f):
+    """A run's file, or None when there is none. On Windows a file being
+    replaced by another process cannot be opened for a moment, and one
+    being written may be read half-way: both are tried again for a few
+    seconds before giving up."""
+    for _ in range(60):
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            time.sleep(0.05)
+    return None
+
+
 def _write_run(f, data):
     """Replace a run's file in one step: a reader sees the old or the new,
-    never half of one."""
+    never half of one. On Windows the replacement waits while another
+    process is reading the file."""
     tmp = f.with_name(f.name + ".%d.tmp" % os.getpid())
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                    encoding="utf-8")
-    os.replace(tmp, f)
+    for attempt in range(100):
+        try:
+            os.replace(tmp, f)
+            return
+        except PermissionError:
+            if attempt == 99:
+                raise
+            time.sleep(0.05)
 
 
 def _spawn_worker(project, rid):
@@ -927,11 +945,8 @@ def _spawn_worker(project, rid):
 def _finish(f, status, **fields):
     """End a working run, unless it has already ended: returns the run as
     written, or None when it had ended (the first end stays)."""
-    try:
-        run = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if run.get("status") != "working":
+    run = _read_run(f)
+    if run is None or run.get("status") != "working":
         return None
     run.update(fields, status=status, finished=time.strftime(
         "%Y-%m-%d %H:%M:%S"), finished_at=time.time())
@@ -971,8 +986,8 @@ def run_worker(project, rid, parser_factory):
     """Runs one durable run, once, and writes how it ended (unless it was
     cancelled or expired meanwhile: the first end stays)."""
     f = Store(project).root / RUN_DIR / (rid + ".json")
-    run = json.loads(f.read_text(encoding="utf-8"))
-    if run["status"] != "working" or run.get("pid"):
+    run = _read_run(f)
+    if run is None or run["status"] != "working" or run.get("pid"):
         return                          # already taken, or cancelled
     run.update(pid=os.getpid(), started=time.strftime("%Y-%m-%d %H:%M:%S"))
     _write_run(f, run)
