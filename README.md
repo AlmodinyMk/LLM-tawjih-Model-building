@@ -557,8 +557,10 @@ right to left is the terminal's own choice.
 
 ![tawjih top with a model server chosen: its health, settings, CPU and RAM, and the end of its log](docs/images/top-server.png)
 
-The server in these pictures is a stand-in, and this computer has no GPU,
-so no GPU bars show.
+The server in these pictures is a stand-in, and the four GPUs come from a
+stand-in for `nvidia-smi`: this computer has none. GPU 3 is red because
+its free memory is below `--min-free`, so `--gpus auto` would take 0, 1
+and 2.
 
 ### The board in a window: `tawjih dashboard`
 
