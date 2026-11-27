@@ -556,6 +556,8 @@ tawjih dashboard --interval 5     # التحديث كل 5 ثوانٍ
 
 ![tawjih dashboard بالإنجليزية](docs/images/dashboard-en.png)
 
+البطاقات الأربع في هاتين الصورتين من بديل لـ `nvidia-smi`، فهذا الجهاز بلا بطاقات.
+
 ## الأوامر
 
 | الأمر | الوظيفة |
