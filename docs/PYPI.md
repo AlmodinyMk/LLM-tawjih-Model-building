@@ -40,6 +40,14 @@ tawjih tree
   start, stop, health, logs, metrics, tuning, GPUs by free memory
   (`--gpus auto`), AWQ and TensorRT-LLM builds, benchmarks, systemd and
   Docker units. `tawjih batch` shares a folder of inputs among servers.
+  `tawjih k8s` runs a server on Kubernetes (its manifest, apply, status,
+  scale, rollback, through kubectl) and `tawjih ansible` on your own
+  machines as a systemd service (through ansible-playbook); nothing
+  changes without `--yes`.
+- Rate limits (`--rate 60/min`) and circuit breakers (`--breaker 5/60`) per
+  provider, `run --chaos` to test retries, fallbacks and breakers with
+  injected failures, and `tawjih health`: keys, providers, breakers,
+  servers, GPUs and installed libraries in one report.
 - Each file is a folder of three faces under one code, number and title:
   human, machine and science (`show REF --type machine`).
 - Steps at the same time (`--max-workers`), going on past a failed branch,
