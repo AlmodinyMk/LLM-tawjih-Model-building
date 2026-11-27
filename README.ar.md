@@ -121,6 +121,7 @@ python tawjih.py -p examples/quadratic eval report branch -o eval.md
 [مراقبة التنفيذ](#مراقبة-التنفيذ-tawjih-top) ·
 [Langfuse](#التتبّع-langfuse-وopentelemetry) ·
 [بيئات التنفيذ](#بيئات-التنفيذ-أين-تعمل-المهام) ·
+[خوادم النماذج](#خوادم-النماذج-tawjih-server) ·
 [نوافذ لينكس](#نوافذ-سطح-المكتب-لمستخدمي-لينكس) ·
 [الحدود](#الحدود) ·
 [ما تم التحقق منه](#ما-تم-التحقق-منه) ·
@@ -776,13 +777,40 @@ axolotl` يدرّب `lora` و`dora` و`rslora`. ويرفض DPO طريقتَي `p
 تغييرهما لأوزان الأساس يجعل النموذج المرجعي خاطئاً. و`lora list` يعرض طريقة كل
 محوّل مقروءة من `adapter_config.json`.
 
+### كل ما تقدّمه المكتبات غير ذلك
+
+الأوامر السابقة تغطي العمل الشائع. وكل ما سواه في PyTorch وtransformers وTRL
+يُوصل إليه دون أن يعرفه توجيه:
+
+```
+$B env                         # وأيضاً: DeepSpeed وFlashAttention وLiger وvLLM ...
+$B train big --base-model ... --dataset ... --gpus 4 \
+   --train-arg deepspeed=ds_zero3.json --train-arg gradient_checkpointing=true \
+   --model-arg attn_implementation=flash_attention_2 --run
+$B script my_train.py --data datasets/sft_train.jsonl --set lr=1e-4 \
+   --gpus 2 --runtime gpu --run --yes
+```
+
+- `--train-arg KEY=VALUE` يضبط أي حقل في إعداد التدريب في TRL، وفيه كل حقول
+  `TrainingArguments`: `use_liger_kernel` و`deepspeed` و`fsdp` و`report_to`
+  و`torch_compile` وغيرها. والحقل الذي لا تعرفه نسخة TRL المثبتة يوقف التشغيل
+  قبل التدريب. ومع `--engine axolotl` تكون المفاتيح مفاتيح axolotl.
+- `--model-arg KEY=VALUE` يُمرَّر إلى `from_pretrained` للنموذج.
+- `--gpus N` يشغّل عملية لكل بطاقة بـ torchrun (المحرك `torch`). ومع DeepSpeed
+  أو FSDP يقسم نموذجاً أكبر من بطاقة واحدة. وملف الإعداد المعطى لـ
+  `--train-arg` يذهب مع المهمة إلى الجهاز الآخر.
+- `script FILE` يشغّل برنامج بايثون الخاص بك مهمةً، هنا أو على بيئة تنفيذ. يأخذ
+  `job_config.json` (قيم `--set`، وملفات `--data` و`--with-file`) ويكتب نتائجه
+  في `out/`، فتعود إلى `models/scripts/NAME/`. ويحفظ سجل المهمة بصمة SHA-256
+  للبرنامج وإعداداته ومن شغّله.
+
 و`train` و`merge` يقبلان `--runtime NAME`: يصير العمل مجلد مهمة يعمل هنا أو
 في مكان آخر، وتُجمع نتائجه بـ `tawjih runtime collect` (انظر «بيئات التنفيذ»).
 
 | الأمر | عمله |
 |---|---|
 | `compile` | عبر أمر `dataset` في Tawjih نفسه: `sft_train.jsonl` (ملفات split `train`)، و`sft_eval.jsonl` (split `eval`)، و`dpo_train.jsonl` (زوج لكل سطر `BAD:`)، ولكل منها بيان المصدر؛ وحالة خروج 1 إذا وُجد سؤال في بيانات التدريب والتقييم معاً |
-| `env` | إصدارات torch وtransformers وpeft وtrl وdatasets وbitsandbytes وunsloth وaxolotl في بايثون التدريب، وبطاقة الرسومات، ومكان أدوات llama.cpp |
+| `env` | إصدارات torch وtransformers وpeft وtrl وdatasets وbitsandbytes وunsloth وaxolotl وdeepspeed وflash_attn وliger_kernel وxformers وvllm وsglang وlmdeploy في بايثون التدريب، وما تتيحه (`--gpus` و`--train-arg` و`--model-arg`)، وبطاقة الرسومات، ومكان أدوات llama.cpp |
 | `train NAME` | يكتب `models/adapters/NAME/` وفيه `train_config.json` وبيان البيانات و`train.py` (المحرك `torch`: transformers + PEFT + TRL، وأي طريقة من «طرق PEFT»، وQLoRA عبر bitsandbytes؛ أو `unsloth`) أو `axolotl.yml` (SFT على بيانات المحادثة فقط). يأخذ SFT صفوف محادثة أو prompt/completion، ويأخذ DPO صفوف prompt/chosen/rejected، وتُفحص البيانات أولاً |
 | `merge NAME` | دمج المحوّل في نموذجه الأساسي بدقة 16 بت (`merge_and_unload` في PEFT) تمهيداً للتحويل |
 | `setup [--for train,qlora,push,serve,stream,unsloth,axolotl]` | يثبّت بـ pip ما يحتاجه العمل في بايثون التدريب (`--python`)، أو على بيئة تنفيذ مهمةً (`--runtime`)، ثم يعرض ما فيها. توجيه يجلب المكتبات إلى بايثون التي تعمل، ولا يأخذ منها شيئاً في نفسه |
@@ -969,6 +997,49 @@ python neural_bridge.py pipeline algebra --base-model Qwen/Qwen2.5-1.5B-Instruct
 vLLM)، فيبقى سطر `model:` في كل ملف يختار محوّله. وإبقاء جهاز واحد دافئاً في الخدمة
 علاج آخر، يكلّف وهو خامل.
 
+## خوادم النماذج: `tawjih server`
+
+الأمر `tawjih server` (أو `خادم`) يشغّل البرامج التي تقدّم النماذج ويراقبها
+ويوقفها: vLLM وSGLang وLMDeploy وTensorRT-LLM وTriton وAphrodite وTabbyAPI
+وLiteLLM وOllama وllama.cpp، أو أي أمر. لا يحتوي توجيه أياً منها. يكتب سطر
+تشغيل كل محرك من إعدادات مشتركة قليلة، ويمرّر أي وسيط آخر كما هو، ويشغّله في
+الخلفية مع سجل، ويقرأ صحته ونماذجه ومقاييسه.
+
+```
+tawjih server gpus                                  # الذاكرة الحرة في كل بطاقة
+tawjih server add big --engine vllm --model Qwen/Qwen3-32B \
+    --gpus auto --tp 4 --context 65536 --mem 0.9 --kv-cache fp8 \
+    --api-key-env VLLM_KEY --pass=--enable-prefix-caching --provider
+tawjih server start big --wait 600                  # حتى يجيب
+tawjih server status big                            # الصحة والنماذج وذاكرة البطاقات
+tawjih server bench big --from-file 1.1.1 --requests 16 --concurrency 4
+tawjih server logs big --follow
+tawjih server metrics big --grep tokens
+tawjih server api big POST /flush_cache              # أي طلب إليه
+tawjih server unit big                              # وحدة systemd، أو --docker
+tawjih server stop big
+```
+
+يعرض `server engines` ما يقبله كل محرك: التوازي بالمصفوفات وبالطبقات (`--tp`
+و`--pp`)، والسياق، ونصيب الذاكرة، وذاكرة سياق أصغر (`--kv-cache fp8` أو `int8`
+أو `q8_0` ...). الإعداد الذي لا يقبله المحرك يُرفض ولا يُخمَّن، و`--pass` يعطي
+المحرك وسائطه الخاصة. و`--gpus auto` يأخذ البطاقات التي فيها أكثر ذاكرة حرة
+عند التشغيل. ومع `--provider` يصير الخادم مزوّداً للمشروع، فيعمل المسار عليه بـ
+`--backend big`.
+
+`bench` يرسل طلبات إلى الخادم ويقيس زمن كل طلب والرموز الخارجة في الثانية. ومع
+`--from-file REF` يكون الطلب هو الجانب الآلي للملف كما يرسله التشغيل تماماً،
+فيظهر ما يقدر عليه هذا الجهاز مع ملف طويل. و`--vary` يجعل كل طلب مختلفاً، فلا
+يُجاب أي منها من ذاكرة البادئة. ويُحفظ كل قياس في
+`history/bench-NAME-STAMP.json` مع البطاقات ومن أجراه.
+
+`prepare` يشغّل خطوة مرة واحدة قبل التقديم: `lmdeploy lite auto_awq` (أوزان AWQ
+بأربع بتات) أو `trtllm-build` (محرك TensorRT). ويُسجَّل كل تشغيل وإيقاف وتجهيز
+وطلب api في `history/servers-DATE.jsonl` مع من فعله.
+
+أسطر التشغيل هذه مكتوبة من وثائق كل محرك؛ واختُبرت هنا بخادم بديل، لا بالمحركات
+نفسها.
+
 ## نوافذ سطح المكتب، لمستخدمي لينكس
 
 **لمستخدمي لينكس فقط.** `linux/tawjih_desk.py` يفتح أربع نوافذ مستقلة على
@@ -1065,7 +1136,21 @@ tawjih.py provider test local                # استدعاء حقيقي؛ وأ�
 سلسلته البديلة بنموذجه هو، ويسجّل التشغيل أيّ مزوّد أجاب وبعد كم محاولة. وملف
 `fallback:` في الخطوة يبقى يعمل إذا فشلت كل المزوّدات. والأمر `provider policy
 NAME --retries ...` يغيّر هذه الإعدادات، و`provider rm` يحذف مزوّداً، و`provider
-test` يكتب كل نتيجة في `runs/provider-tests.jsonl`. والاختبارات الحية:
+test` يكتب كل نتيجة في `runs/provider-tests.jsonl`.
+
+**الملفات الطويلة وOllama.** يحتفظ Ollama من الطلب بقدر ما يتسع له سياقه فقط،
+ويحذف الباقي دون أي خطأ، وسياقه الافتراضي 4096 رمزاً على بطاقات ذاكرتها أقل من
+24 غيغابايت. والملف الذي فيه بضعة آلاف سطر أطول من ذلك بكثير، فأعطِ المزوّد
+سياقاً:
+
+```
+tawjih.py provider set local --num-ctx 32768        # أو TAWJIH_NUM_CTX
+```
+
+وينبّه توجيه على stderr حين يزيد الطلب على نحو 4 أحرف لكل رمز من السياق.
+و`--option KEY=VALUE` يرسل أي إعداد آخر يقبله الخادم كما هو (Ollama:
+`temperature=0.2`، وخادم متوافق مع OpenAI: `top_p=0.9` أو
+`chat_template_kwargs={"enable_thinking": false}`). والاختبارات الحية:
 `TAWJIH_LIVE_TESTS=1 TAWJIH_LIVE_PROJECT=folder python -m unittest
 tests.test_live`.
 

@@ -96,12 +96,69 @@ def backend_dry(prompt, model=""):
         m_tag, len(prompt))
 
 
+def _options():
+    """Settings sent to the server as they are (providers.json "options"):
+    anything the server takes that Tawjih has no word for."""
+    opts = _setting("options") or {}
+    return dict(opts) if isinstance(opts, dict) else {}
+
+
+def _extra(body):
+    """The request body with the provider's options added; the model and
+    the messages stay Tawjih's."""
+    for k, v in _options().items():
+        if k not in ("model", "messages", "stream"):
+            body[k] = v
+    return body
+
+
+_told_ctx = set()
+
+
+def _context_warning(prompt, num_ctx, where):
+    """Ollama keeps only as many tokens as its context holds and drops the
+    rest without an error. A token is about 4 characters of English (fewer
+    for Arabic), so a prompt of more than 4 characters per token of context
+    may not fit. Said once per provider and size."""
+    est = len(prompt) // 4
+    limit = int(num_ctx) if num_ctx else 4096
+    if est <= limit:
+        return
+    key = (where, limit)
+    if key in _told_ctx:
+        return
+    _told_ctx.add(key)
+    if num_ctx:
+        msg = ("the prompt is about %d tokens or more, and num_ctx is %d: "
+               "Ollama keeps only the last %d tokens, so the model may not "
+               "see all of it. Raise num_ctx (tawjih provider set NAME "
+               "--num-ctx N)" % (est, limit, limit))
+    else:
+        msg = ("the prompt is about %d tokens or more. Ollama's context is "
+               "4096 tokens by default on GPUs with less than 24 GiB, and a "
+               "longer prompt is cut without an error. Set num_ctx (tawjih "
+               "provider set NAME --num-ctx N, or TAWJIH_NUM_CTX)" % est)
+    print("warning: %s: %s" % (where, msg), file=sys.stderr)
+
+
 def backend_ollama(prompt, model=""):
     host = _setting("base_url", "OLLAMA_HOST",
                     "http://localhost:11434").rstrip("/")
-    data = _post(host + "/api/chat",
-                 {"model": _model(model), "stream": False,
-                  "messages": [{"role": "user", "content": prompt}]}, {})
+    if not re.match(r"https?://", host):
+        host = "http://" + host         # OLLAMA_HOST is often host:port
+    opts = _options()
+    num_ctx = _setting("num_ctx", "TAWJIH_NUM_CTX") or opts.get("num_ctx")
+    if num_ctx:
+        try:
+            opts["num_ctx"] = int(num_ctx)
+        except (TypeError, ValueError):
+            die("num_ctx must be a whole number, not %r" % num_ctx)
+    _context_warning(prompt, opts.get("num_ctx"), "ollama at " + host)
+    body = {"model": _model(model), "stream": False,
+            "messages": [{"role": "user", "content": prompt}]}
+    if opts:
+        body["options"] = opts
+    data = _post(host + "/api/chat", body, {})
     _note_usage(data.get("prompt_eval_count"), data.get("eval_count"),
                 data.get("model"))
     return data["message"]["content"]
@@ -113,9 +170,10 @@ def backend_anthropic(prompt, model=""):
     base = _setting("base_url", "ANTHROPIC_BASE_URL",
                     "https://api.anthropic.com")
     data = _post(base.rstrip("/") + "/v1/messages",
-                 {"model": _model(model),
-                  "max_tokens": int(os.environ.get("TAWJIH_MAX_TOKENS", "4096")),
-                  "messages": [{"role": "user", "content": prompt}]},
+                 _extra({"model": _model(model),
+                         "max_tokens": int(os.environ.get(
+                             "TAWJIH_MAX_TOKENS", "4096")),
+                         "messages": [{"role": "user", "content": prompt}]}),
                  {"x-api-key": key, "anthropic-version": "2023-06-01"})
     u = data.get("usage") or {}
     _note_usage(u.get("input_tokens"), u.get("output_tokens"),
@@ -130,8 +188,9 @@ def backend_openai(prompt, model=""):
     key = _api_key("TAWJIH_API_KEY")
     headers = {"Authorization": "Bearer " + key} if key else {}
     data = _post(base.rstrip("/") + "/chat/completions",
-                 {"model": _model(model),
-                  "messages": [{"role": "user", "content": prompt}]}, headers)
+                 _extra({"model": _model(model),
+                         "messages": [{"role": "user", "content": prompt}]}),
+                 headers)
     u = data.get("usage") or {}
     _note_usage(u.get("prompt_tokens"), u.get("completion_tokens"),
                 data.get("model"))
@@ -162,7 +221,8 @@ DEFAULT_POLICY = {"timeout": 600, "retries": 2,
                   "retry_status": [429, 500, 502, 503, 504],
                   "backoff": "exponential", "backoff_seconds": 2.0}
 PROVIDER_KEYS = ("kind", "base_url", "model", "api_key_env", "timeout",
-                 "retries", "retry_status", "backoff", "backoff_seconds")
+                 "retries", "retry_status", "backoff", "backoff_seconds",
+                 "num_ctx", "options")
 
 
 # ---------------------------------------------------------------- providers

@@ -22,6 +22,7 @@ from .core import (
     RECORD_WHO, _git_name, _kw, die, first_identity, identity_file,
     load_identity, parse_examples, who,
     who_label,
+    key_values,
 )
 from .providers import (
     BACKENDS, DEFAULT_POLICY, POLICY_DEFAULT, POLICY_FILE, POLICY_KEYS,
@@ -1403,6 +1404,11 @@ def _provider_line(name, cfg, data):
         bits.append(cfg["base_url"])
     if cfg.get("model"):
         bits.append("model " + cfg["model"])
+    if cfg.get("num_ctx"):
+        bits.append("num_ctx %s" % cfg["num_ctx"])
+    if cfg.get("options"):
+        bits.append("options " + json.dumps(cfg["options"],
+                                            ensure_ascii=False))
     if env:
         bits.append("key in %s: %s" % (env, "set" if os.environ.get(env)
                                        else "NOT set"))
@@ -1478,6 +1484,27 @@ def cmd_provider(a):
                 die("--retry-status takes numbers: 429,500,502,503,504")
         if (a.retries or 0) < 0 or (a.timeout is not None and a.timeout <= 0):
             die("retries must be 0 or more, and timeout more than 0")
+        if a.num_ctx is not None:
+            if a.num_ctx < 0:
+                die("--num-ctx takes a number of tokens (0 removes it)")
+            if a.num_ctx:
+                cfg["num_ctx"] = a.num_ctx
+            else:
+                cfg.pop("num_ctx", None)
+        if a.option:
+            opts = dict(cfg.get("options") or {})
+            opts.update(key_values(a.option, "--option"))
+            for k in [k for k, v in opts.items() if v is None]:
+                del opts[k]
+            if opts:
+                cfg["options"] = opts
+            else:
+                cfg.pop("options", None)
+        if any(re.search(r"(?i)api.?key|secret|passw|auth|bearer|"
+                         r"^(access_|refresh_)?token$", k)
+               for k in cfg.get("options") or {}):
+            die("an option that looks like a key or password is not kept in "
+                "providers.json; use --api-key-env")
         provs[name] = cfg
         if not data["default"] and a.action == "add":
             data["default"] = name

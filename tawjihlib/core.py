@@ -1602,6 +1602,59 @@ def path_file(folder, name, suffix):
 
 
 # ------------------------------------------------------------------ process
+def key_values(items, flag="--set"):
+    """KEY=VALUE pairs given on the command line, as a dict: a value that
+    reads as JSON (a number, true, a list, an object) is that value, any
+    other is text, and an empty value or null is None (removes the key)."""
+    out = {}
+    for item in items or []:
+        key, eq, value = str(item).partition("=")
+        key = key.strip()
+        if not eq or not re.fullmatch(r"[A-Za-z_][\w.\-]*", key):
+            die("%s takes KEY=VALUE, not %s" % (flag, item))
+        value = value.strip()
+        if value in ("", "null"):
+            out[key] = None
+            continue
+        try:
+            out[key] = json.loads(value)
+        except ValueError:
+            out[key] = value
+    return out
+
+
+def kill_tree(pid):
+    """Stop a process and what it started: its process group (it was
+    started in a session of its own), or taskkill /T on Windows."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        else:
+            import signal
+            os.killpg(int(pid), signal.SIGTERM)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+
+def spawn_detached(argv, cwd=None, log=None, env=None):
+    """Start a program in a session of its own (a detached process on
+    Windows), so it goes on after Tawjih ends; its output goes to log."""
+    out = open(log, "ab") if log else subprocess.DEVNULL
+    kw = {"stdin": subprocess.DEVNULL, "stdout": out,
+          "stderr": subprocess.STDOUT if log else subprocess.DEVNULL,
+          "close_fds": True, "cwd": cwd, "env": env}
+    if os.name == "nt":
+        kw["creationflags"] = 0x00000008 | 0x00000200   # detached, new group
+    else:
+        kw["start_new_session"] = True
+    try:
+        return subprocess.Popen([str(x) for x in argv], **kw)
+    finally:
+        if log:
+            out.close()
+
+
 def alive(pid):
     """Whether a process still runs."""
     if not pid:
@@ -1740,7 +1793,7 @@ def who_label(by):
 
 
 __all__ = [
-    'NAME_RE', 'inside', 'path_file', 'alive', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
+    'NAME_RE', 'inside', 'path_file', 'alive', 'key_values', 'kill_tree', 'spawn_detached', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
     'first_identity', 'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',

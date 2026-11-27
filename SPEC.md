@@ -153,6 +153,19 @@ fallback gets its own model, else the step's. When every provider fails, the
 step fails as for any model call (and its `fallback:` file runs). Usage
 records `provider` and `attempts`.
 
+`options` is an object sent to the server as it is: for `ollama` in the
+request's `options` (`temperature`, `num_predict` ...), for `openai` and
+`anthropic` in the request itself (`top_p`, `max_tokens`,
+`chat_template_kwargs` ...), never over `model`, `messages` or `stream`.
+`num_ctx` (or `$TAWJIH_NUM_CTX`) is Ollama's context in tokens. Ollama keeps
+only that many tokens of a prompt and drops the rest without an error, and
+its default is 4096 on GPUs with less than 24 GiB; so a prompt of more than
+4 characters per token of that context is warned about on stderr, once per
+provider and size. `provider add|set` takes `--num-ctx N` (0 removes it) and
+`--option KEY=VALUE` (repeatable; the value is read as JSON when it is
+JSON, an empty value removes the key). An option whose name looks like a key
+or password is refused.
+
 ## Policy
 
 `tawjih.policy.json` restricts the project; nothing in it can allow what the
@@ -884,13 +897,61 @@ to where the job's results go. Starting a job whose runtime is not this
 computer needs `--yes`, and is refused when the project's policy has
 `allow_network` other than true.
 
+## Model servers
+
+`tawjih server` (`خادم`) starts, watches and stops the programs that serve
+models. They are not part of Tawjih: it writes their command line, runs it
+in the background and reads their HTTP addresses. Servers are kept in the
+project's `servers.json`; a running server's process id, its log and
+`started.json` (command, time, who) are in `servers/NAME/`, and each start,
+stop, prepare and api call is a line of `history/servers-DATE.jsonl` with
+`by`.
+
+| Engine | Program | Common settings it takes | KV cache |
+|---|---|---|---|
+| `vllm` | `vllm serve` | tp, pp, context, mem, served-name; key in `VLLM_API_KEY` | fp8, fp8_e4m3, fp8_e5m2 |
+| `sglang` | `python -m sglang.launch_server --enable-metrics` | tp, pp, context, mem, served-name; `--api-key` | fp8, fp8_e5m2, fp8_e4m3 |
+| `lmdeploy` | `lmdeploy serve api_server` | tp, context, mem, served-name; `--api-keys` | int8, int4 (`--quant-policy`) |
+| `trtllm` | `trtllm-serve` | tp, pp, context, mem | |
+| `triton` | `tritonserver` (the model repository) | | |
+| `aphrodite` | `aphrodite run` | tp, pp, context, mem, served-name; `--api-keys` | fp8 |
+| `tabby` | `python main.py` in `--dir` | context | fp16, q8, q6, q4 |
+| `litellm` | `litellm --config` | key in `LITELLM_MASTER_KEY` | |
+| `ollama` | `ollama serve` (`OLLAMA_HOST`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_KV_CACHE_TYPE`) | context | f16, q8_0, q4_0 |
+| `llamacpp` | `llama-server --metrics` | context, served-name; `--api-key` | f16, q8_0, q4_0 |
+| `custom` | `--command "PROG ARGS"`, `{model}` `{host}` `{port}` filled in | | |
+
+A setting an engine does not take is refused; any argument of the engine
+goes to it as it is with `--pass ARG` (repeatable), and a variable with
+`--env KEY=VALUE` (not for keys). `--gpus 0,1` sets `CUDA_VISIBLE_DEVICES`
+and `HIP_VISIBLE_DEVICES`; `--gpus auto` chooses, when the server starts,
+as many GPUs as tp x pp with the most free memory and at least `--min-free`
+MiB, from `nvidia-smi`; without it, or without enough GPUs, nothing starts.
+A key is read from the variable named by `--api-key-env` when the server
+starts and is never written or shown. The host is `127.0.0.1` unless
+`--host` says otherwise.
+
+| Action | Does |
+|---|---|
+| `engines`, `gpus` | the engines and what they take; the GPUs and their free memory |
+| `add NAME`, `set NAME` | keep a server's settings (`--provider`: also a provider) |
+| `list`, `show NAME`, `rm NAME` | the servers; one's command line and addresses |
+| `start NAME [--wait S]`, `stop`, `restart` | run it in its own session, its output to its log; refused when its port is used (with the process that holds it); `--wait` waits for its health; `stop` ends it and what it started |
+| `status [NAME]` | running or not, health, models, GPU memory of its processes |
+| `logs NAME [--lines N] [--follow]`, `metrics NAME [--grep W]` | its log; its Prometheus metrics |
+| `api NAME METHOD PATH [--data JSON]` | any request to it (flush a cache, load a model, reload a config, make a key), with `--key-env VAR` and `--key-header NAME` |
+| `provider NAME [PROVIDER]` | a provider of this project at its address |
+| `prepare NAME [STEP] --out DIR [--tool-arg ARG]` | lmdeploy `awq` (`lmdeploy lite auto_awq`), trtllm `build` (`trtllm-build`), run once before serving |
+| `bench NAME` | `--requests N` at `--concurrency C`, with `--prompt`, `--prompt-file` or `--from-file REF` (a file's machine side as it is sent), `--max-tokens`, `--vary` (each prompt different, so none is answered from a cache); time per request (median, 95th percentile), output tokens per second; `history/bench-NAME-STAMP.json` with the GPUs, settings and `by` |
+| `unit NAME [--docker --image IMG]` | a systemd unit (written to `servers/NAME/`) or a `docker run` command, to start it with the computer; not with `--gpus auto` |
+
 ## Program layout
 
 `tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
 copies every name of its modules into its own namespace and runs `main()`.
 The modules, in order: `core`, `providers`, `tracing`, `engine`, `commands`,
 `library`, `manage`, `outputs`, `evaluate`, `governance`, `runtimes`,
-`arch`, `script`, `mcpserver`, `home`, `monitor`, `cli`. A module
+`serving`, `arch`, `script`, `mcpserver`, `home`, `monitor`, `cli`. A module
 imports only from those before it, by name, and only the standard library
 from outside; each lists its names in `__all__`.
 

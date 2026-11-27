@@ -131,6 +131,7 @@ published here yet.
 [Watching runs](#watching-runs-tawjih-top) ·
 [Langfuse](#traces-langfuse-and-opentelemetry) ·
 [Runtimes](#runtimes-where-jobs-run) ·
+[Model servers](#model-servers-tawjih-server) ·
 [Linux windows](#desktop-windows-for-linux-users) ·
 [Limitations](#limitations) ·
 [What is verified](#what-is-and-is-not-verified) ·
@@ -850,6 +851,35 @@ unsloth` trains `lora` and `rslora`; `--engine axolotl` trains `lora`,
 weights would make the reference model wrong. `lora list` shows each
 adapter's method, read from its `adapter_config.json`.
 
+### Everything else the libraries offer
+
+The commands above cover the common work. Everything else in PyTorch,
+transformers and TRL is reached without Tawjih knowing it:
+
+```
+$B env                         # also: DeepSpeed, FlashAttention, Liger, vLLM ...
+$B train big --base-model ... --dataset ... --gpus 4 \
+   --train-arg deepspeed=ds_zero3.json --train-arg gradient_checkpointing=true \
+   --model-arg attn_implementation=flash_attention_2 --run
+$B script my_train.py --data datasets/sft_train.jsonl --set lr=1e-4 \
+   --gpus 2 --runtime gpu --run --yes
+```
+
+- `--train-arg KEY=VALUE` sets any field of TRL's training configuration,
+  which holds every `TrainingArguments` field: `use_liger_kernel`,
+  `deepspeed`, `fsdp`, `report_to`, `torch_compile` and so on. A field the
+  installed TRL does not have stops the run before training. With
+  `--engine axolotl` the keys are axolotl's.
+- `--model-arg KEY=VALUE` is passed to the model's `from_pretrained`.
+- `--gpus N` starts one process per GPU with torchrun (engine `torch`).
+  With DeepSpeed or FSDP it shares a model too big for one GPU. A config
+  file given to `--train-arg` goes with a job to the other computer.
+- `script FILE` runs your own Python program as a job, here or on a
+  runtime. It gets `job_config.json` (your `--set` values, the `--data`
+  and `--with-file` files) and writes its results in `out/`, which come
+  back to `models/scripts/NAME/`. The job's record keeps the program's
+  SHA-256, its settings and who ran it.
+
 `train` and `merge` take `--runtime NAME`: the work becomes a job folder
 that runs here or elsewhere and is collected back with `tawjih runtime
 collect` (see [Runtimes](#runtimes-where-jobs-run)).
@@ -857,7 +887,7 @@ collect` (see [Runtimes](#runtimes-where-jobs-run)).
 | Command | Does |
 |---|---|
 | `compile` | through Tawjih's own `dataset`: `sft_train.jsonl` (files of split `train`), `sft_eval.jsonl` (split `eval`), `dpo_train.jsonl` (a pair for each `BAD:` line), each with its manifest; exit status 1 when a question is in both training and evaluation data |
-| `env` | the versions of torch, transformers, peft, trl, datasets, bitsandbytes, unsloth and axolotl in the training Python, its GPU, and where llama.cpp's tools are |
+| `env` | the versions of torch, transformers, peft, trl, datasets, bitsandbytes, unsloth, axolotl, deepspeed, flash_attn, liger_kernel, xformers, vllm, sglang and lmdeploy in the training Python, what they make possible (`--gpus`, `--train-arg`, `--model-arg`), its GPU, and where llama.cpp's tools are |
 | `train NAME` | writes `models/adapters/NAME/` with `train_config.json`, the dataset's manifest, and `train.py` (engine `torch`: transformers + PEFT + TRL, any of the [PEFT methods](#peft-methods), QLoRA through bitsandbytes; engine `unsloth`) or `axolotl.yml` (SFT on chat data only). SFT takes chat or prompt/completion rows, DPO takes prompt/chosen/rejected rows; the data is checked first |
 | `merge NAME` | the adapter merged into its base in 16-bit (PEFT `merge_and_unload`), for conversion |
 | `setup [--for train,qlora,push,serve,stream,unsloth,axolotl]` | installs with pip what that work needs into the training Python (`--python`), or on a runtime as a job (`--runtime`); then shows what that Python has. Tawjih brings the libraries to the Python that works, and takes none into itself |
@@ -1070,6 +1100,53 @@ The adapters are copied into the folder and served under their names
 `model:` line still picks its adapter. Keeping one machine warm on the
 service is the other remedy, and it costs while idle.
 
+## Model servers: `tawjih server`
+
+`tawjih server` starts, watches and stops the programs that serve models:
+vLLM, SGLang, LMDeploy, TensorRT-LLM, Triton, Aphrodite, TabbyAPI,
+LiteLLM, Ollama, llama.cpp, or any command. Tawjih contains none of them.
+It writes each one's command line from a few common settings, passes any
+other argument as it is, runs it in the background with a log, and reads
+its health, models and metrics.
+
+```
+tawjih server gpus                                  # free memory per GPU
+tawjih server add big --engine vllm --model Qwen/Qwen3-32B \
+    --gpus auto --tp 4 --context 65536 --mem 0.9 --kv-cache fp8 \
+    --api-key-env VLLM_KEY --pass=--enable-prefix-caching --provider
+tawjih server start big --wait 600                  # until it answers
+tawjih server status big                            # health, models, GPU memory
+tawjih server bench big --from-file 1.1.1 --requests 16 --concurrency 4
+tawjih server logs big --follow
+tawjih server metrics big --grep tokens
+tawjih server api big POST /flush_cache              # any request to it
+tawjih server unit big                              # a systemd unit, or --docker
+tawjih server stop big
+```
+
+`server engines` lists what each engine takes: tensor and pipeline
+parallel (`--tp`, `--pp`), context, memory share, a smaller KV cache
+(`--kv-cache fp8`, `int8`, `q8_0` ...). A setting an engine does not take
+is refused rather than guessed, and `--pass` gives the engine its own
+arguments. `--gpus auto` takes the GPUs with the most free memory when the
+server starts. With `--provider` the server becomes a provider of the
+project, so `--backend big` runs paths on it.
+
+`bench` sends requests at the server and reports the time per request and
+the output tokens per second. With `--from-file REF` the prompt is a
+file's machine side exactly as a run sends it, so a long file shows what
+this computer can do with it. `--vary` makes each prompt different, so
+none is answered from a prefix cache. Each bench is kept in
+`history/bench-NAME-STAMP.json` with the GPUs and who ran it.
+
+`prepare` runs a step once before serving: `lmdeploy lite auto_awq`
+(4-bit AWQ weights) or `trtllm-build` (a TensorRT engine). Starts, stops,
+preparations and api calls are noted in `history/servers-DATE.jsonl` with
+who did them.
+
+These command lines follow each engine's documentation; they were tested
+here with a stand-in server, not with the engines themselves.
+
 ## Desktop windows, for Linux users
 
 **For Linux users only.** `linux/tawjih_desk.py` opens four independent
@@ -1183,7 +1260,22 @@ is called with that provider's own model; the run's usage records which
 provider answered and after how many attempts. A step's `fallback:` file
 still runs when every provider failed. `provider policy NAME --retries ...`
 changes these settings, `provider rm` removes one, and `provider test`
-writes each result to `runs/provider-tests.jsonl`. Live tests:
+writes each result to `runs/provider-tests.jsonl`.
+
+**Long files and Ollama.** Ollama keeps only as many tokens of a prompt as
+its context holds and drops the rest without an error; its default is 4096
+tokens on GPUs with less than 24 GiB. A file of a few thousand lines is far
+longer, so give the provider a context:
+
+```
+tawjih.py provider set local --num-ctx 32768        # or TAWJIH_NUM_CTX
+```
+
+Tawjih warns on stderr when a prompt is longer than about 4 characters per
+token of the context. `--option KEY=VALUE` sends any other setting the
+server takes, as it is (Ollama: `temperature=0.2`; an OpenAI-compatible
+server: `top_p=0.9`, `chat_template_kwargs={"enable_thinking": false}`).
+Live tests:
 `TAWJIH_LIVE_TESTS=1 TAWJIH_LIVE_PROJECT=folder python -m unittest
 tests.test_live`.
 
