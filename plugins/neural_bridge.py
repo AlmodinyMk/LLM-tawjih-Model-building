@@ -1400,7 +1400,6 @@ def check_hub_allowed(a):
 
 
 def _repo_ok(repo):
-    import re
     if not repo or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         fail("--repo takes OWNER/NAME on the Hugging Face Hub, not %r"
              % repo)
@@ -1616,7 +1615,6 @@ def serverless(a, base, items):
     start cold (serverless GPUs): start.sh with the flags that shorten the
     start, a Dockerfile that puts the weights in the image, warmup.sh that
     fills the compile cache once, and README.md explaining each choice."""
-    import re
     tag = re.sub(r"[^\w.-]+", "-", base.split("/")[-1]) or "model"
     out = Path(a.out_dir) if a.out_dir else models_dir(a) / "serve" / tag
     (out / "adapters").mkdir(parents=True, exist_ok=True)

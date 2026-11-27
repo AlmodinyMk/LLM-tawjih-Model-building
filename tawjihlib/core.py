@@ -1634,7 +1634,7 @@ def kill_tree(pid):
             import signal
             os.killpg(int(pid), signal.SIGTERM)
     except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+        pass    # already ended, or not ours to stop: nothing more to do
 
 
 def spawn_detached(argv, cwd=None, log=None, env=None):

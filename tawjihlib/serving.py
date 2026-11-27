@@ -390,7 +390,7 @@ def port_owner(port):
             m = re.search(r"pid=(\d+)", out)
             return int(m.group(1)) if m else None
     except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+        pass        # the system would not say; the caller says less
     return None
 
 
@@ -457,8 +457,9 @@ def start(root, name, cfg, wait=0):
     if var and ENGINES[cfg["engine"]].get("key"):
         key = os.environ.get(var)
         if not key:
-            die("%s is not set: the server's key is read from it when it "
-                "starts" % var)
+            die("the variable named by --api-key-env is not set: the "
+                "server's key is read from it when it starts (server show "
+                "%s names it)" % name)
     if cfg.get("gpus") == "auto":
         cfg = dict(cfg, gpus=choose_gpus(cfg))
         print("%s: GPUs %s (the most free memory)" % (name, cfg["gpus"]))
@@ -516,8 +517,9 @@ def gpu_list():
         return None
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.free,"
-             "utilization.gpu", "--format=csv,noheader,nounits"],
+            ["nvidia-smi",
+             "--query-gpu=index,name,memory.total,memory.free,utilization.gpu",
+             "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=15).stdout
     except (OSError, subprocess.SubprocessError):
         return None
@@ -748,7 +750,7 @@ def stop(root, name):
         try:
             os.killpg(pid, signal.SIGKILL)
         except OSError:
-            pass
+            pass    # it ended between the check and the kill
     f.unlink(missing_ok=True)
     _note(root, "stop", name, pid=pid)
     print("%s stopped (pid %d)" % (name, pid))
@@ -792,7 +794,7 @@ def status_line(root, name, cfg):
             bits.append("models: %s" % (", ".join(i for i in ids if i)
                                         or "none"))
         except (ValueError, AttributeError):
-            pass
+            pass    # an answer that lists no models: none are shown
     if pid:
         mib = gpu_memory(group_pids(pid))
         if mib is not None:
@@ -1065,8 +1067,8 @@ def cmd_server(a):
                     "lmsysorg/sglang:TAG)")
             print(docker_command(name, cfg, image))
             if cfg.get("api_key_env"):
-                print("# the key is read from %s where you run this"
-                      % cfg["api_key_env"])
+                print("# the key is read from the variable named by "
+                      "--api-key-env where you run this")
             print("# logs: docker logs -f tawjih-%s; restart: docker restart "
                   "tawjih-%s; stop: docker stop tawjih-%s" % (name, name,
                                                               name))
