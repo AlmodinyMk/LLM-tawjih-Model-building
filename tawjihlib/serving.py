@@ -27,7 +27,8 @@ import urllib.request
 from pathlib import Path
 
 from .core import (
-    NAME_RE, Store, alive, die, key_values, kill_tree, spawn_detached, who,
+    NAME_RE, Store, alive, die, key_values, kill_tree, signal_tree,
+    spawn_detached, who,
 )
 from .providers import (
     BACKENDS, load_providers,
@@ -862,9 +863,12 @@ def stop(root, name):
     if alive(pid) and os.name != "nt":
         import signal
         try:
-            os.killpg(pid, signal.SIGKILL)
+            signal_tree(pid, signal.SIGKILL)
         except OSError:
             pass    # it ended between the check and the kill
+        time.sleep(0.5)
+    if alive(pid):
+        die("%s (pid %d) did not stop" % (name, pid))
     f.unlink(missing_ok=True)
     _note(root, "stop", name, pid=pid)
     print("%s stopped (pid %d)" % (name, pid))

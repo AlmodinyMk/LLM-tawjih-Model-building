@@ -420,8 +420,9 @@ over the files of the trees.
 
 - **cpu**: a graph of the last minutes, each core, the load average.
 - **mem · disk · net**: memory, the free space of the project's disk, the
-  network, the GPU when `nvidia-smi` is there, and the CPU and memory of
-  the runs going now.
+  network, and the CPU and memory of the runs going now. With `nvidia-smi`,
+  each GPU's free memory as a bar, red under `--min-free` MiB (8000 by
+  default), and which GPUs `--gpus auto` could take now.
 - **trees**: every file on its tree lines, with how often it ran, how
   often it succeeded and how long it takes on average; ▶ marks a file
   running now.
@@ -429,18 +430,37 @@ over the files of the trees.
   fallbacks and model, and each step with the time it took as a bar; the
   step running now is ▶ and its time keeps counting.
 - **runs**: the runs going now, the runtime jobs (with the percentage
-  their log shows), then the finished runs.
+  their log shows), the project's [model servers](#model-servers-tawjih-server)
+  (port, uptime, health, and the CPU and memory of its processes), then the
+  finished runs.
+- **the chosen server**: its status, process, uptime, engine, port, GPUs,
+  health, model, tuned settings, the CPU, memory (RAM) and GPU memory taken
+  by it and the processes it started, its command line, and the end of
+  its log.
 
-Up and down choose a run, PgUp and PgDn move the trees, + and - change the
-refresh time, q quits. `top --once` prints one frame, and `top --json`
-gives the same facts to a script.
+Up and down choose a row, PgUp and PgDn move the trees, + and - change the
+refresh time, L switches between English and Arabic (`--arabic` starts in
+Arabic), q quits. On a server:
+
+| Key | Does |
+|---|---|
+| `s` | start it |
+| `x`, `r` | stop it, restart it (press twice) |
+| `t` | tune it: type `KEY=VALUE ...` on the last line, as `server tune` |
+| `f` | empty its KV cache (SGLang's `/flush_cache`) |
+| `d` | show the `batch` command for the running servers that are providers |
+
+Each of these is noted in `history/servers-DATE.jsonl` with who did it,
+and its result shows at the foot of the board. `top --once` prints one
+frame, and `top --json` gives the same facts to a script.
 
 A run writes `history/live/PID-….json` as each step starts and ends and
 removes it when it ends; a run whose process has gone shows as stopped.
 The record in `history/` now also keeps each step's time. CPU, memory and
 network are read from the system on Linux, and CPU and memory on Windows;
 on macOS the CPU comes from the load average and memory is not shown.
-Arabic titles show as the terminal lays them out.
+In Arabic the two columns change sides; whether the letters also run
+right to left is the terminal's own choice.
 
 ![tawjih top: the processor, memory, the trees with each file's runs, the step running now, and the runs](docs/images/top.png)
 
