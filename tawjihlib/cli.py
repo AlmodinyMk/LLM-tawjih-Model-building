@@ -18,8 +18,8 @@ from .core import (
     who,
 )
 from .providers import (
-    POLICY_FILE, backend_kind, default_backend, load_policy,
-    load_providers, provider_chain,
+    CHAOS, POLICY_FILE, backend_kind, default_backend, load_policy,
+    load_providers, parse_chaos, provider_chain,
 )
 from .engine import (
     CODE_TIMEOUT, SANDBOX_MEMORY_MB,
@@ -60,6 +60,7 @@ from .script import (
 from .arch import cmd_arch
 from .serving import add_batch_parser, add_server_parser
 from .dashboard import add_dashboard_parser
+from .health import add_health_parser
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .monitor import cmd_top
@@ -79,6 +80,10 @@ def main():
     first_use(a)
     resolve_backend(a)
     try:
+        CHAOS[:] = [parse_chaos(x) for x in getattr(a, "chaos", None) or []]
+    except ValueError as e:
+        die(str(e))
+    try:
         rc = a.fn(a)
     except BrokenPipeError:          # output piped into head and closed
         try:
@@ -86,6 +91,8 @@ def main():
         except OSError:
             pass
         sys.exit(0)
+    finally:
+        CHAOS.clear()                # only for this command
     if isinstance(rc, int) and rc:
         sys.exit(rc)
 
@@ -769,6 +776,11 @@ def build_parser():
     s.add_argument("--on-failure", choices=["stop", "continue"],
                    default="stop", help="continue: leave a failed step "
                    "out and skip what needs it, instead of stopping")
+    s.add_argument("--chaos", action="append", metavar="RULE",
+                   help="test retries, fallbacks and breakers with injected "
+                   "trouble: fail@STEP, fail=429@STEP, slow=3s@STEP, "
+                   "fail@provider:NAME, or @* for every call (repeatable); "
+                   "the run is marked, and kept answers are not reused")
     s.add_argument("--trace", action="store_true",
                    help="send the run as a trace to Langfuse (or another "
                    "OpenTelemetry collector); see: tawjih observe status")
@@ -833,6 +845,11 @@ def build_parser():
     s.add_argument("--on-failure", choices=["stop", "continue"],
                    default="stop", help="continue: leave a failed step "
                    "out and skip what needs it, instead of stopping")
+    s.add_argument("--chaos", action="append", metavar="RULE",
+                   help="test retries, fallbacks and breakers with injected "
+                   "trouble: fail@STEP, fail=429@STEP, slow=3s@STEP, "
+                   "fail@provider:NAME, or @* for every call (repeatable); "
+                   "the run is marked, and kept answers are not reused")
     s.add_argument("--trace", action="store_true",
                    help="send the run as a trace to Langfuse (or another "
                    "OpenTelemetry collector); see: tawjih observe status")
@@ -1208,12 +1225,14 @@ def build_parser():
     add_server_parser(sub)
     add_batch_parser(sub)
     add_dashboard_parser(sub)
+    add_health_parser(sub)
 
     s = sub.add_parser("provider", help="named providers (providers.json): "
                        "address, model, key variable, retries, default, "
                        "fallback chain, and a test call")
     s.add_argument("action", choices=["list", "add", "set", "policy", "rm",
-                                      "default", "fallback", "test"])
+                                      "default", "fallback", "test",
+                                      "breaker"])
     s.add_argument("name", nargs="?", help="provider name (test: or all)")
     s.add_argument("others", nargs="*", metavar="FALLBACK",
                    help="fallback: the providers to try after NAME, in "
@@ -1241,6 +1260,16 @@ def build_parser():
                    "anthropic, gemini: in the request, e.g. top_p=0.9 or "
                    "generationConfig={\"temperature\": 0.2}); an empty "
                    "value removes it (repeatable)")
+    s.add_argument("--rate", metavar="N/UNIT", help="at most N calls in "
+                   "each window, waited for instead of a 429: 60/min, 2/s, "
+                   "1000/h, 10000/day (none removes it)")
+    s.add_argument("--breaker", metavar="FAILURES[/SECONDS]",
+                   help="after FAILURES failed calls in a row (each after "
+                   "its retries) skip the provider for SECONDS (60), going "
+                   "to its fallback; one call is tried after that (0 "
+                   "removes it)")
+    s.add_argument("--reset", action="store_true",
+                   help="breaker: close the breaker of NAME, or all")
     s.add_argument("--json", action="store_true", help="test: one JSON line")
     s.add_argument("--yes", action="store_true",
                    help="rm: also remove it from fallback chains")

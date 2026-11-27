@@ -102,6 +102,8 @@ CARDS = [
          "What a step expects and produces: json, keys or a schema."),
         ("provider", "models", "provider add NAME --kind ollama",
          "Named providers, retries, fallback chains, a test call."),
+        ("health", "check", "health",
+         "Keys, providers, breakers, servers, GPUs, libraries: one report."),
         ("policy", "limits", "policy set --allow-code false",
          "Limits the project sets for itself; it only restricts."),
         ("sandbox", "code", "sandbox REF --input FILE",
