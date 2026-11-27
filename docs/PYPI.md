@@ -25,14 +25,21 @@ tawjih new "Algebra" --parent 1
 tawjih tree
 ```
 
-- A path language in English and Arabic: `TO`, `AND`, `IF … ELSE` (also `IF key = value`), `AMONG … BY key`,
-  `THROUGH`, `LINK`, `CALL`, with per-step `EACH`, `APPROVE`, `USING`,
-  `RETRY … UNTIL`, `PICK`.
+- A path language in English and Arabic: `TO`, `AND`, `IF … ELSE` (also
+  `IF key = value`, and `IF tokens > N` on the size of a step's output),
+  `AMONG … BY key`, `THROUGH`, `LINK`, `CALL`, with per-step `EACH`,
+  `APPROVE`, `USING` (a provider for one step), `RETRY … UNTIL`, `PICK`.
 - Contracts between steps (keys or a JSON Schema), staleness when sources
   change, a cache to resume.
-- Named providers (`providers.json`): Ollama, any OpenAI-compatible server,
-  Anthropic, with retries, backoff and fallback chains; keys stay in
-  environment variables.
+- Named providers (`providers.json`): Ollama (with `num_ctx`), any
+  OpenAI-compatible server, Anthropic and Google Gemini, with options sent
+  as given, retries, backoff and fallback chains; keys stay in environment
+  variables.
+- Model servers (`tawjih server`): vLLM, SGLang, LMDeploy, TensorRT-LLM,
+  Triton, Aphrodite, TabbyAPI, LiteLLM, Ollama, llama.cpp or any command;
+  start, stop, health, logs, metrics, tuning, GPUs by free memory
+  (`--gpus auto`), AWQ and TensorRT-LLM builds, benchmarks, systemd and
+  Docker units. `tawjih batch` shares a folder of inputs among servers.
 - Each file is a folder of three faces under one code, number and title:
   human, machine and science (`show REF --type machine`).
 - Steps at the same time (`--max-workers`), going on past a failed branch,
@@ -45,7 +52,13 @@ tawjih tree
 - A home screen in the terminal (`tawjih` alone): the project at a glance,
   the commands as cards, and `tawjih home TOPIC` explanations.
 - `tawjih top`: a live board like btop, the runs of paths and the files of
-  the trees beside the computer's CPU, memory, disk, network and GPU.
+  the trees beside every counter of the computer: each core, memory, disk,
+  network, each GPU's use and memory (VRAM), and the processor and GPU
+  models; model servers with their health, CPU, RAM and GPU memory, and
+  keys to start, stop, restart, tune and flush them. Arabic or English.
+- `tawjih dashboard`: the same board in a window on this computer
+  (Tkinter), with no browser, web server or network; Arabic (right to left,
+  letters joined on Linux) or English.
 - `run --trace`: each run as a trace in Langfuse or any OpenTelemetry
   collector (OTLP/JSON, no extra library), texts after redaction.
 - A project policy that can only restrict: no code, local providers only,
@@ -68,11 +81,15 @@ Full documentation, the example project, the Linux windows and the optional
 training bridge are in the repository. The bridge (`plugins/neural_bridge.py`:
 SFT and DPO with LoRA, QLoRA, DoRA, PiSSA, LoHa, IA3, VeRA, OFT, prompt
 tuning and other PEFT methods, here or on a rented GPU over ssh) is one
-file that works beside this package:
+file that works beside this package; it takes any TRL or `TrainingArguments`
+setting (`--train-arg`), `from_pretrained` settings (`--model-arg`) and
+several GPUs (`--gpus N`):
 <https://github.com/AlmodinyMk/LLM-tawjih-Model-building>
 ([العربية](https://github.com/AlmodinyMk/LLM-tawjih-Model-building/blob/main/README.ar.md)).
 
 ![How Tawjih is built](https://raw.githubusercontent.com/AlmodinyMk/LLM-tawjih-Model-building/main/docs/images/architecture-en.png)
+
+![tawjih dashboard: each core, RAM, each GPU's memory and use, the model servers, the trees, the runs and the actions](https://raw.githubusercontent.com/AlmodinyMk/LLM-tawjih-Model-building/main/docs/images/dashboard-en-0.17.png)
 
 Licensed CC BY-NC-SA 4.0: noncommercial use with credit and the same
 license for adaptations; commercial use needs permission from the author.

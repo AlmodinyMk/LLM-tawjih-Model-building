@@ -2,7 +2,7 @@
 
 **Repository:** `AlmodinyMk/LLM-tawjih-Model-building`  
 **Package:** `tawjih` (PyPI)  
-**Current Version:** `v0.17.0` (Pre-1.0 Experimental)  
+**Current Version:** `v0.17.1` (Pre-1.0 Experimental)  
 **Specification:** [`SPEC.md`](./SPEC.md)  
 
 ---

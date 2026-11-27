@@ -28,7 +28,7 @@ from pathlib import Path
 
 
 
-__version__ = "0.17.0"
+__version__ = "0.17.1"
 
 DESCRIPTION = "tawjih - personal LLM command-directing (توجيه أوامر الآلة)."
 LEVELS = ["general", "section", "chapter", "topic", "branch", "part"]
