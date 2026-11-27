@@ -2,6 +2,7 @@
 system's), the keys that act on servers (none with --read-only), Arabic
 joined and turned for Tk on X11, and the window itself where Tkinter and a
 display are there."""
+import gc
 import json
 import os
 import sys
@@ -132,6 +133,7 @@ class Window(Base):
                 w.root.destroy()
             except tkinter.TclError:
                 pass                    # the test closed it already
+            gc.collect()                # free Tk here, in its own thread
         self.addCleanup(close)
         for _ in range(60):
             w.root.update()

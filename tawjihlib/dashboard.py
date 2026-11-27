@@ -682,12 +682,15 @@ class Window:
         """Read the board in a thread, then again after the interval."""
         if not self.busy:
             self.busy = True
+            # The thread holds the board and the queue, never the window:
+            # Tk must only be freed in the thread that made it.
+            board, q = self.board, self.q
 
             def work():
                 try:
-                    self.q.put(("state", self.board.snapshot()))
+                    q.put(("state", board.snapshot()))
                 except Exception as e:                  # shown, not raised
-                    self.q.put(("msg", "error: %s" % e))
+                    q.put(("msg", "error: %s" % e))
             threading.Thread(target=work, daemon=True).start()
         self.root.after(int(self.every * 1000), self.fetch)
 
@@ -955,9 +958,11 @@ class Window:
                 return None
         self.say("…")
 
+        board, q, name = self.board, self.q, r["name"]   # not the window
+
         def work():
-            code, msg = self.board.act(r["name"], key, text)
-            self.q.put(("msg", msg))
+            code, msg = board.act(name, key, text)
+            q.put(("msg", msg))
         threading.Thread(target=work, daemon=True).start()
         return None
 
