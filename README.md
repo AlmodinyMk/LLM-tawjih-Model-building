@@ -124,7 +124,7 @@ them is bundled, and none is needed for the rest of Tawjih to work.
 |---|---|---|---|
 | Models (providers) | Ollama · Anthropic · Google Gemini · OpenAI and any OpenAI-compatible server: vLLM, SGLang, LMDeploy, TensorRT-LLM (`trtllm-serve`), Aphrodite, TabbyAPI (ExLlamaV2), llama.cpp (`llama-server`), LiteLLM | HTTP with `--backend` or [`providers.json`](#ai-providers); a different provider for each step with `USING`; any server setting with `--option` | stand-in servers that answer in each format; live tests with `TAWJIH_LIVE_TESTS=1` |
 | Serving models | those engines and Triton; systemd and Docker to run them with the computer; `nvidia-smi` for GPUs | [`tawjih server`](#model-servers-tawjih-server) writes the command line, runs it, reads health, models and metrics; `batch` shares inputs among servers | a stand-in server, not the engines |
-| Training | PyTorch, transformers, PEFT (LoRA and 15 other methods), TRL (SFT, DPO), datasets, accelerate, bitsandbytes (QLoRA), Unsloth, axolotl; through `--train-arg`, `--model-arg` and `--gpus`: DeepSpeed, FSDP, FlashAttention, Liger kernels, torchrun, TensorBoard, Weights & Biases, MLflow; any PyTorch, TRL or JAX code with `script` | [`neural_bridge.py`](#training-adapters-the-neural-bridge) writes the training script and runs it with the Python you name, here or on a runtime | the scripts and commands, without a GPU; see its section |
+| Training | PyTorch, transformers, PEFT (LoRA and 16 other methods), TRL (SFT, DPO), datasets, accelerate, bitsandbytes (QLoRA), Unsloth, axolotl; through `--train-arg`, `--model-arg` and `--gpus`: DeepSpeed, FSDP, FlashAttention, Liger kernels, torchrun, TensorBoard, Weights & Biases, MLflow; any PyTorch, TRL or JAX code with `script` | [`neural_bridge.py`](#training-adapters-the-neural-bridge) writes the training script and runs it with the Python you name, here or on a runtime | the scripts and commands, without a GPU; see its section |
 | Model files | llama.cpp (`convert_hf_to_gguf.py`, `llama-quantize`), GGUF; Hugging Face Hub (`huggingface_hub`); vLLM in Docker for serverless GPUs | `convert`, `quantize`, `push`, `pipeline`, `lora serve --serverless` | stand-in tools and a stand-in Hub |
 | Architectures | PyTorch and transformers (Llama, Mixtral, GPT-2 configurations) | [`arch export`](#the-architecture-lab) writes `config.json`; `arch build` builds the model | real models built on a CPU |
 | Where jobs run | this computer; another one over `ssh` and `scp` (rented GPUs from RunPod, Vast.ai, Lambda ...); any queue or service through `command` runtimes | [runtimes](#runtimes-where-jobs-run): a job folder sent, followed and collected | an ssh server on this computer; a stand-in service |
@@ -150,6 +150,96 @@ Its answer leaves out the model's thinking parts. The record notes the
 A prompt that Google blocks fails the step with the reason. Gemini's
 OpenAI-compatible address works with `--kind openai` too.
 
+## Building a whole model stack: the nine layers
+
+With Tawjih, the libraries it works with, and an AI assistant, one person
+can build, test and evaluate every layer of a language-model stack. The way
+differs by layer. Some layers have commands of their own in Tawjih. For
+others the code is written (by you or the assistant) and Tawjih runs it as
+a job with `script` and keeps its record: the program's SHA-256, its
+settings, its results and who ran it.
+
+| Layer | Build | Test | Evaluate |
+|---|---|---|---|
+| 1. Data | `ingest`, `deposit`, `compile` (SFT and DPO data, each with the files it came from) | `compile` refuses a question that is in both the training and the evaluation data | `lora lineage`: what each adapter was trained on, and what changed since |
+| 1. Tokenizer | `script` with the `tokenizers` library, written by you or the assistant | inside the script | inside the script (tokens per Arabic word, say); the result is kept with the job |
+| 2. GPU kernels | `script` with Triton, or CUDA through PyTorch, written by the assistant | inside the script, against PyTorch's own operation | speed inside the script; Tawjih keeps the program's hash, its settings and who ran it |
+| 3. Attention | `arch create`, `arch derive` (MHA, GQA, MQA, RoPE); new kinds through `script` | `arch validate`, `arch build` (a real forward and backward pass) | `arch show`, `arch rank --by kv` (KV memory) and `--by speed` |
+| 4. Backbone | `arch create`, `derive`, `mutate`, `set` (layers, feed-forward, MoE, norms) | `arch build`: the model is built and its parameter count checked | `arch rank`, `arch diff`, and the statistics of each version in its lineage tree |
+| 5. Distribution | `train --gpus N` with DeepSpeed and FSDP; servers with `--tp` and `--pp` | the run itself, with its record and the job's | `server bench` (tokens a second, time per request), `top` |
+| 6. Training | `train`: 17 PEFT methods, SFT and DPO, QLoRA; pretraining from scratch through `script` | the data checked before training, `--train-arg` strict, an evaluation file during training | `eval` on the path, `eval --repeat` (pass rate), `compare` and `report` between two models or two versions |
+| 7. KV cache | `--kv-cache fp8`, `int8`, `q8_0` ...; prefix caching through `--pass` | `server status`, the log | `arch show` (its size per token); `server bench` with and without `--vary`, to measure the cache |
+| 8. Inference engine | `server add`, `tune`, `prepare` (AWQ, TensorRT) for ten engines | `status`, `metrics`, `logs`, `top` | `server bench --from-file` (your real file as the prompt), a record kept for each measure |
+| 9. Agent harness | paths in Arabic and English, size conditions, a provider per step, `batch` | `check`, contracts, retries, approval | `eval` of the path against `eval --direct` of the model alone: does the method actually help? |
+
+**The AI assistant's part.**
+
+- Through the [MCP server](#ai-assistants-the-mcp-server), Claude Desktop
+  or any MCP client runs paths and reads records and evaluation results.
+- The assistant writes what has no ready command: kernel scripts, a
+  tokenizer, pretraining code.
+- `edit --ask` asks it for a file's instructions or code.
+
+The assistant gets no extra power. The project's policy limits what it may
+do (code, network, the least human approval), and everything it runs is
+recorded under your identity.
+
+### The libraries, by layer
+
+● built in: a Tawjih command does it, with its own settings.
+◐ through arguments: Tawjih runs the library, and the library's own
+options pass as they are (`--train-arg`, `--model-arg`, `--pass`, `--option`).
+○ through `script`: your own code, or the assistant's, run as a recorded job.
+
+| Layer | Library or tool | How |
+|---|---|---|
+| 1. Data | LaTeX, Markdown, HTML, PreTeXt, plain text (`deposit`); Word and EPUB (built-in reader) | ● |
+| | Pandoc, Docling, Marker, `pdftotext` (`ingest`) | ● (the program you install) |
+| | JSONL training data, SFT and DPO (`compile`); Hugging Face `datasets` in training | ● |
+| 1. Tokenizer | the base model's tokenizer through transformers | ● |
+| | Hugging Face `tokenizers`, SentencePiece | ○ |
+| 2. GPU kernels | FlashAttention (`--model-arg attn_implementation=flash_attention_2`), Liger Kernel (`--train-arg use_liger_kernel=true`), xformers (used by Unsloth) | ◐ |
+| | Triton, CUDA C++ through PyTorch (`torch.utils.cpp_extension`) | ○ |
+| 3. Attention | transformers: MHA, GQA, MQA, RoPE, learned positions (`arch`) | ● |
+| | PyTorch, for an attention of your own | ○ |
+| 4. Backbone | PyTorch and transformers: Llama, Mixtral (MoE), GPT-2 configurations (`arch export`, `arch build`) | ● |
+| | other architectures; JAX and Flax | ○ |
+| 5. Distribution | torchrun (`--gpus N`) | ● |
+| | DeepSpeed ZeRO, FSDP through accelerate (`--train-arg`) | ◐ |
+| | tensor and pipeline parallel in vLLM, SGLang, TensorRT-LLM, Aphrodite, LMDeploy (`server --tp --pp`) | ● |
+| | Megatron-LM, TorchTitan | ○ |
+| 6. Training | PyTorch, transformers, PEFT (LoRA and 16 other methods), TRL (SFT, DPO), bitsandbytes (QLoRA), Unsloth, axolotl (`train`) | ● |
+| | every TRL and `TrainingArguments` field; TensorBoard, Weights & Biases, MLflow (`report_to`) | ◐ |
+| | TRL's other trainers (GRPO, KTO, ORPO), full fine-tuning, pretraining | ○ |
+| | llama.cpp (`convert_hf_to_gguf.py`, `llama-quantize`), GGUF; Hugging Face Hub (`push`) | ● |
+| 7. KV cache | its size per token (`arch show`) | ● |
+| | fp8 in vLLM, SGLang, Aphrodite; int8 and int4 in LMDeploy; q8_0 and q4_0 in llama.cpp and Ollama (`--kv-cache`); SGLang's flush (`top`, key `f`) | ● |
+| | prefix caching and every other cache option (`--pass`) | ◐ |
+| 8. Inference engine | vLLM, SGLang, LMDeploy, TensorRT-LLM, Triton, Aphrodite, TabbyAPI, LiteLLM, Ollama, llama.cpp (`server`) | ● |
+| | AWQ through LMDeploy, `trtllm-build` (`server prepare`); systemd and Docker (`server unit`) | ● |
+| | every engine argument (`--pass`); any other engine (`--engine custom`) | ◐ |
+| 9. Agent harness | Tawjih itself: paths, contracts, approval, records, `batch` | ● |
+| | providers: Ollama, OpenAI and any compatible server, Anthropic, Google Gemini | ● |
+| | MCP clients (Claude Desktop and others); Langfuse and OpenTelemetry (`--trace`); BM25 and embeddings (`search`) | ● |
+
+**Limits, plainly.**
+
+- For layers 1 (the tokenizer), 2, new kinds of attention, and pretraining
+  in layer 6, Tawjih only runs and records. All the intelligence is in the
+  code the assistant or you write, and the evaluation happens inside that
+  code, not through a Tawjih command.
+- The backbone is limited to the Llama, Mixtral and GPT-2 families; others
+  go through `script`.
+- Inside a path, the model does not pick its tools freely. The path sets
+  the steps, the tools (code steps) and the branches, and the model can
+  only choose among set branches (`AMONG`). An assistant can drive Tawjih
+  from outside through MCP.
+- None of this chain has run yet on a real GPU. `arch build` was run on a
+  CPU, and training and the servers were tested with stand-ins (see
+  [What is verified](#what-is-and-is-not-verified)). The first measure on a
+  computer with a GPU is what turns these commands from possible into
+  proven.
+
 ## Contents
 
 [Screenshots](#screenshots) ·
@@ -170,6 +260,7 @@ OpenAI-compatible address works with `--kind openai` too.
 [Runtimes](#runtimes-where-jobs-run) ·
 [Model servers](#model-servers-tawjih-server) ·
 [What it works with](#what-it-works-with) ·
+[The nine layers](#building-a-whole-model-stack-the-nine-layers) ·
 [Linux windows](#desktop-windows-for-linux-users) ·
 [Limitations](#limitations) ·
 [What is verified](#what-is-and-is-not-verified) ·
