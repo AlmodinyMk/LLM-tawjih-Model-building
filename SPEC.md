@@ -1002,6 +1002,70 @@ starts and is never written or shown. The host is `127.0.0.1` unless
 | `tune NAME --set KEY=VALUE [--restart]` | change settings by name: a common one (`mem`, `tp`, `pp`, `context`, `kv_cache`, `served_name`) or the engine's own flag without dashes, in its spelling (`schedule-policy=lpm`; trtllm's with underscores); the engine's own name of a common setting changes that setting; `true` is the flag alone, `false` or empty removes it. Engines read these when they start: `--restart` restarts a running server. Ollama is tuned with `--env` |
 | `kill PID` / `kill --port-of PORT` | a process Tawjih did not start (one holding a port): shows its command line; stops it only with `--yes` (never process 1 or Tawjih itself), noted with `by` |
 
+## Clusters and fleets
+
+`tawjih k8s ACTION [NAME]` (`عنقود`) and `tawjih ansible ACTION NAME`
+(`أنسبل`) take a server from `servers.json`.
+
+`k8s manifest` writes a Deployment and a Service named `tawjih-NAME`,
+labelled `app.kubernetes.io/name: tawjih-NAME` and
+`app.kubernetes.io/managed-by: tawjih`:
+- the container: the engine's `image` (only vLLM has one; else `--image`
+  is required), its command (the server's argv with host `0.0.0.0`) and
+  `containerPort`;
+- the key: with `api_key_env`, `TAWJIH_SERVER_KEY` comes first from the
+  Secret `tawjih-NAME-key`, key `api-key`; the engine's key argument is
+  `$(TAWJIH_SERVER_KEY)` and its key variable has that value. The name of
+  the variable on this computer is not written;
+- environment: the server's environment without `CUDA_VISIBLE_DEVICES` and
+  `HIP_VISIBLE_DEVICES`;
+- resources: `nvidia.com/gpu` limits from `--gpus N` or the count in the
+  server's `gpus`;
+- a readiness `httpGet` on the health path;
+- volumes: `/dev/shm` as memory, and with `--claim` a claim mounted at the
+  model's path (or `/models`);
+- `--replicas` and `--namespace`.
+
+All strings are double-quoted YAML.
+
+The other actions run `$KUBECTL` (else `kubectl` on PATH) with
+`--context` and `--namespace` when given:
+- `status`: `get deployment,service,pod -l` the name, or `managed-by=tawjih`
+  without one, read as JSON;
+- `logs`: `logs deployment/tawjih-NAME --tail N`;
+- `forward`: `port-forward service/tawjih-NAME LOCAL:PORT`;
+- `apply`: `apply -f -`. Without `--yes` it runs `--dry-run=server` instead;
+- `scale --replicas N`, `rollback` (`rollout undo`) and `delete` (by the
+  label) need `--yes`, and only say what they would do without it.
+
+Changes are noted in `history/servers-DATE.jsonl` (`k8s apply`, `by`,
+`namespace`, `context`).
+
+`ansible playbook` writes one play for the group (`--group`, `tawjih`), with
+`become`. Its tasks:
+- `pip` the engine's package (`--install`; known for vllm, sglang,
+  lmdeploy, aphrodite and litellm);
+- create `/var/lib/tawjih`;
+- with `api_key_env`, `/etc/tawjih/NAME.env` (0600, `no_log`) holding
+  `TAWJIH_SERVER_KEY` and the engine's key variable, each
+  `lookup('env', tawjih_key_env)` on the controller (`tawjih_key_env` is
+  a play variable); the unit passes `${TAWJIH_SERVER_KEY}` as the key
+  argument;
+- the unit `/etc/systemd/system/tawjih-NAME.service`: `ExecStart=/usr/bin/env`
+  and the argv, listening on `--listen` or the server's host, `User=--user`;
+- `systemd` with `daemon_reload`, `enabled` unless stopped, and `state`
+  (`--state started|restarted|stopped`);
+- unless stopped, `uri` on the health path, retried 60 times every 10 s.
+
+`ansible run` writes the playbook to `servers/ansible/NAME.yml`, the
+inventory from `--hosts` to `servers/ansible/hosts.ini` (`user@host` gives
+`ansible_user`), or takes `-i`. It runs `$ANSIBLE_PLAYBOOK` (else
+`ansible-playbook`) with `--limit`, adding `--check --diff` without
+`--yes`. Done runs are noted as `ansible STATE`.
+
+`k8s` actions other than `manifest`, and `ansible run`, are refused unless
+the policy's `allow_network` is `true`.
+
 ## Batches
 
 `tawjih batch NAME --inputs-dir DIR --backends P1,P2 [--pattern GLOB]
