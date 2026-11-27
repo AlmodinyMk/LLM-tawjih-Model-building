@@ -114,7 +114,7 @@ python tawjih.py -p examples/quadratic eval report branch -o eval.md
 |---|---|---|---|
 | النماذج (المزوّدون) | Ollama · Anthropic · Google Gemini · OpenAI وكل خادم متوافق معه: vLLM وSGLang وLMDeploy وTensorRT-LLM (`trtllm-serve`) وAphrodite وTabbyAPI (ExLlamaV2) وllama.cpp (`llama-server`) وLiteLLM | عبر HTTP بـ `--backend` أو [`providers.json`](#المزوّدون)؛ ومزوّد مختلف لكل خطوة بـ `بواسطة`؛ وأي إعداد للخادم بـ `--option` | خوادم بديلة تجيب بصيغة كل منها؛ واختبارات حية بـ `TAWJIH_LIVE_TESTS=1` |
 | تقديم النماذج | تلك المحركات وTriton؛ وsystemd وDocker لتشغيلها مع الجهاز؛ و`nvidia-smi` للبطاقات | [`tawjih server`](#خوادم-النماذج-tawjih-server) يكتب سطر التشغيل ويشغّله ويقرأ الصحة والنماذج والمقاييس؛ و`batch` يوزّع المدخلات على الخوادم | خادم بديل، لا المحركات نفسها |
-| التدريب | PyTorch وtransformers وPEFT (LoRA و15 طريقة أخرى) وTRL (SFT وDPO) وdatasets وaccelerate وbitsandbytes (QLoRA) وUnsloth وaxolotl؛ وعبر `--train-arg` و`--model-arg` و`--gpus`: DeepSpeed وFSDP وFlashAttention وLiger وtorchrun وTensorBoard وWeights & Biases وMLflow؛ وأي كود PyTorch أو TRL أو JAX بـ `script` | [`neural_bridge.py`](#تدريب-المحوّلات-الجسر-العصبي) يكتب سكربت التدريب ويشغّله ببايثون التي تسمّيها، هنا أو على بيئة تنفيذ | السكربتات والأوامر، بلا بطاقة رسوميات؛ انظر قسمه |
+| التدريب | PyTorch وtransformers وPEFT (LoRA و16 طريقة أخرى) وTRL (SFT وDPO) وdatasets وaccelerate وbitsandbytes (QLoRA) وUnsloth وaxolotl؛ وعبر `--train-arg` و`--model-arg` و`--gpus`: DeepSpeed وFSDP وFlashAttention وLiger وtorchrun وTensorBoard وWeights & Biases وMLflow؛ وأي كود PyTorch أو TRL أو JAX بـ `script` | [`neural_bridge.py`](#تدريب-المحوّلات-الجسر-العصبي) يكتب سكربت التدريب ويشغّله ببايثون التي تسمّيها، هنا أو على بيئة تنفيذ | السكربتات والأوامر، بلا بطاقة رسوميات؛ انظر قسمه |
 | ملفات النماذج | llama.cpp (`convert_hf_to_gguf.py` و`llama-quantize`) وGGUF؛ وHugging Face Hub (`huggingface_hub`)؛ وvLLM في Docker للبطاقات السحابية | `convert` و`quantize` و`push` و`pipeline` و`lora serve --serverless` | أدوات بديلة وخادم Hub بديل |
 | المعماريات | PyTorch وtransformers (إعدادات Llama وMixtral وGPT-2) | [`arch export`](#مختبر-المعماريات) يكتب `config.json`، و`arch build` يبني النموذج | نماذج حقيقية بُنيت على معالج عادي |
 | أين تعمل المهام | هذا الجهاز؛ وجهاز آخر عبر `ssh` و`scp` (بطاقات مستأجرة من RunPod وVast.ai وLambda ...)؛ وأي طابور أو خدمة عبر بيئات `command` | [بيئات التنفيذ](#بيئات-التنفيذ-أين-تعمل-المهام): مجلد مهمة يُرسل ويُتابع وتُجمع نتائجه | خادم ssh على هذا الجهاز؛ وخدمة بديلة |
@@ -138,6 +138,90 @@ tawjih.py run mypath --input "..." --backend gem
 ويحسب رموز التفكير مع المخرج. والطلب الذي تحجبه Google تفشل خطوته مع السبب.
 وعنوان Gemini المتوافق مع OpenAI يعمل أيضاً بـ `--kind openai`.
 
+## بناء طبقات النموذج كلها: الطبقات التسع
+
+بتوجيه والمكتبات التي يعمل معها ومساعد ذكاء اصطناعي، يستطيع شخص واحد أن يبني
+كل طبقة من طبقات النموذج اللغوي ويختبرها ويقيّمها. لكن الطريقة تختلف من طبقة
+إلى أخرى. بعضها له أوامر جاهزة في توجيه، وبعضها يُكتب كوداً (تكتبه أنت أو
+المساعد) يشغّله توجيه مهمةً عبر `script` ويحفظ سجله: بصمة SHA-256 للبرنامج،
+وإعداداته، ونتائجه، ومن شغّله.
+
+| الطبقة | البناء | الاختبار | التقييم |
+|---|---|---|---|
+| 1. البيانات | `ingest` و`deposit` و`compile` (بيانات SFT وDPO مع بيان مصدرها) | `compile` يرفض سؤالاً موجوداً في التدريب والتقييم معاً | `lora lineage`: ما دُرّب عليه كل محوّل، وما تغيّر بعده |
+| 1. الترميز | `script` بمكتبة `tokenizers`، يكتبه المساعد أو أنت | داخل السكربت | داخل السكربت، مثل عدد الرموز لكل كلمة عربية؛ والنتيجة تُحفظ مع المهمة |
+| 2. أنوية المعالج | `script` بلغة Triton أو CUDA عبر PyTorch، يكتبه المساعد | داخل السكربت، بمقارنة النتيجة بعملية PyTorch العادية | السرعة داخل السكربت؛ وتوجيه يحفظ البصمة والإعدادات ومن شغّلها |
+| 3. الانتباه | `arch create` و`derive` (MHA وGQA وMQA وRoPE)؛ والأنواع الجديدة عبر `script` | `arch validate`، و`arch build` (تمريرة أمامية وخلفية حقيقية) | `arch show` و`arch rank --by kv` (ذاكرة KV) و`--by speed` |
+| 4. العمود الفقري | `arch create` و`derive` و`mutate` و`set` (طبقات، FFN، MoE، معايرة) | `arch build`: يبني النموذج ويطابق عدد المعاملات | `arch rank` و`arch diff`، والإحصاءات لكل نسخة في شجرة سلالتها |
+| 5. الربط والتوزيع | `train --gpus N` مع DeepSpeed وFSDP؛ وخوادم بـ `--tp` و`--pp` | التشغيل نفسه، بسجله وسجل المهمة | `server bench` (رموز في الثانية، وزمن كل طلب)، و`top` |
+| 6. التدريب | `train`: 17 طريقة PEFT، وSFT وDPO، وQLoRA؛ والتدريب المسبق من الصفر عبر `script` | فحص البيانات قبل التدريب، و`--train-arg` الصارم، وملف التقييم أثناء التدريب | `eval` على المسار، و`eval --repeat` (معدل النجاح)، و`compare` و`report` بين نموذجين أو نسختين |
+| 7. ذاكرة السياق | `--kv-cache fp8` و`int8` و`q8_0` ...، وتخزين البادئة (prefix caching) عبر `--pass` | `server status`، والسجل | `arch show` (حجمها لكل رمز)، و`server bench` بـ `--vary` ومن دونه لقياس أثر التخزين |
+| 8. محرك الاستدلال | `server add` و`tune` و`prepare` (AWQ وTensorRT) لعشرة محركات | `status` و`metrics` و`logs` و`top` | `server bench --from-file` (ملفك الحقيقي هو الطلب)، وسجل يُحفظ لكل قياس |
+| 9. مُشغّل الوكيل | المسارات بالعربية والإنجليزية، وشروط الحجم، ومزوّد لكل خطوة، و`batch` | `check`، والعقود، وإعادة المحاولة، والموافقة | `eval` للمسار مقابل `eval --direct` للنموذج وحده: هل الطريقة أفضل فعلاً؟ |
+
+**دور المساعد الاصطناعي.**
+
+- عبر [خادم MCP](#مساعدو-الذكاء-الاصطناعي-خادم-mcp) يشغّل Claude Desktop أو أي
+  عميل MCP المسارات، ويقرأ السجلات ونتائج التقييم.
+- يكتب المساعد ما لا أمر جاهزاً له: سكربتات الأنوية، والمُرمِّز، وكود التدريب
+  المسبق.
+- `edit --ask` يطلب منه تعليمات ملف أو كوده.
+
+ولا يأخذ المساعد صلاحيات زائدة. سياسة المشروع تقيّد ما يفعله (الكود، والشبكة،
+والحد الأدنى للموافقة البشرية)، وكل ما يشغّله يُسجَّل مع هويتك.
+
+### المكتبات حسب الطبقة
+
+● مدمج: أمر في توجيه يفعله، بإعداداته الخاصة.
+◐ عبر الوسائط: توجيه يشغّل المكتبة، وتمرّ خيارات المكتبة نفسها كما هي
+(`--train-arg` و`--model-arg` و`--pass` و`--option`).
+○ عبر `script`: كودك أو كود المساعد، يُشغَّل مهمةً مسجّلة.
+
+| الطبقة | المكتبة أو الأداة | كيف |
+|---|---|---|
+| 1. البيانات | LaTeX وMarkdown وHTML وPreTeXt والنص (`deposit`)؛ وWord وEPUB (قارئ مدمج) | ● |
+| | Pandoc وDocling وMarker و`pdftotext` (`ingest`) | ● (البرنامج الذي تثبّته) |
+| | بيانات تدريب JSONL لـ SFT وDPO (`compile`)؛ ومكتبة `datasets` من Hugging Face في التدريب | ● |
+| 1. الترميز | مُرمِّز النموذج الأساسي عبر transformers | ● |
+| | `tokenizers` من Hugging Face، وSentencePiece | ○ |
+| 2. أنوية المعالج | FlashAttention (`--model-arg attn_implementation=flash_attention_2`)، وLiger Kernel (`--train-arg use_liger_kernel=true`)، وxformers (يستعمله Unsloth) | ◐ |
+| | Triton، وCUDA C++ عبر PyTorch (`torch.utils.cpp_extension`) | ○ |
+| 3. الانتباه | transformers: MHA وGQA وMQA وRoPE والمواضع المتعلَّمة (`arch`) | ● |
+| | PyTorch، لانتباه من تصميمك | ○ |
+| 4. العمود الفقري | PyTorch وtransformers: إعدادات Llama وMixtral (MoE) وGPT-2 (`arch export` و`arch build`) | ● |
+| | المعماريات الأخرى؛ وJAX وFlax | ○ |
+| 5. الربط والتوزيع | torchrun (`--gpus N`) | ● |
+| | DeepSpeed ZeRO، وFSDP عبر accelerate (`--train-arg`) | ◐ |
+| | التوازي بالمصفوفات وبالطبقات في vLLM وSGLang وTensorRT-LLM وAphrodite وLMDeploy (`server --tp --pp`) | ● |
+| | Megatron-LM وTorchTitan | ○ |
+| 6. التدريب | PyTorch وtransformers وPEFT (LoRA و16 طريقة أخرى) وTRL (SFT وDPO) وbitsandbytes (QLoRA) وUnsloth وaxolotl (`train`) | ● |
+| | كل حقول TRL و`TrainingArguments`؛ وTensorBoard وWeights & Biases وMLflow (`report_to`) | ◐ |
+| | بقية مدرّبات TRL (GRPO وKTO وORPO)، والصقل الكامل، والتدريب المسبق | ○ |
+| | llama.cpp (`convert_hf_to_gguf.py` و`llama-quantize`) وGGUF؛ وHugging Face Hub (`push`) | ● |
+| 7. ذاكرة السياق | حجمها لكل رمز (`arch show`) | ● |
+| | fp8 في vLLM وSGLang وAphrodite؛ وint8 وint4 في LMDeploy؛ وq8_0 وq4_0 في llama.cpp وOllama (`--kv-cache`)؛ وتفريغ SGLang (`top`، المفتاح `f`) | ● |
+| | تخزين البادئة وكل خيار آخر للذاكرة (`--pass`) | ◐ |
+| 8. محرك الاستدلال | vLLM وSGLang وLMDeploy وTensorRT-LLM وTriton وAphrodite وTabbyAPI وLiteLLM وOllama وllama.cpp (`server`) | ● |
+| | AWQ عبر LMDeploy، و`trtllm-build` (`server prepare`)؛ وsystemd وDocker (`server unit`) | ● |
+| | كل وسيط للمحرك (`--pass`)؛ وأي محرك آخر (`--engine custom`) | ◐ |
+| 9. مُشغّل الوكيل | توجيه نفسه: المسارات والعقود والموافقة والسجلات و`batch` | ● |
+| | المزوّدون: Ollama، وOpenAI وكل خادم متوافق معه، وAnthropic، وGoogle Gemini | ● |
+| | عملاء MCP (Claude Desktop وغيره)؛ وLangfuse وOpenTelemetry (`--trace`)؛ وBM25 والمتجهات (`search`) | ● |
+
+**الحدود، بصراحة.**
+
+- في الطبقة 1 (الترميز) والطبقة 2 وأنواع الانتباه الجديدة والتدريب المسبق في
+  الطبقة 6، توجيه *يشغّل ويسجّل* فقط. الذكاء كله في الكود الذي يكتبه المساعد أو
+  أنت، والتقييم يجري داخل ذلك الكود، لا بأمر من توجيه.
+- العمود الفقري محصور في عائلات Llama وMixtral وGPT-2، وما سواها عبر `script`.
+- داخل المسار لا يختار النموذج أدواته بحرية. المسار يحدد الخطوات والأدوات (خطوات
+  الكود) والتفرعات، والنموذج يختار فقط بين فروع محددة (`بين`). والمساعد يقود
+  توجيه من الخارج عبر MCP.
+- لم يُشغَّل شيء من هذه السلسلة بعد على بطاقة رسومية حقيقية. `arch build` جُرّب
+  على معالج عادي، والتدريب والخوادم جُرّبت ببدائل تحاكيها (انظر
+  [ما تم التحقق منه](#ما-تم-التحقق-منه)). وأول قياس حقيقي على جهاز فيه بطاقة هو
+  ما يحوّل هذه الأوامر من "ممكنة" إلى "مثبتة".
+
 ## المحتويات
 
 [صور البرنامج](#صور-البرنامج-وهو-يعمل) ·
@@ -158,6 +242,7 @@ tawjih.py run mypath --input "..." --backend gem
 [بيئات التنفيذ](#بيئات-التنفيذ-أين-تعمل-المهام) ·
 [خوادم النماذج](#خوادم-النماذج-tawjih-server) ·
 [ما يعمل معه](#ما-يعمل-معه) ·
+[الطبقات التسع](#بناء-طبقات-النموذج-كلها-الطبقات-التسع) ·
 [نوافذ لينكس](#نوافذ-سطح-المكتب-لمستخدمي-لينكس) ·
 [الحدود](#الحدود) ·
 [ما تم التحقق منه](#ما-تم-التحقق-منه) ·
