@@ -150,7 +150,7 @@ TOPICS = {
         ("Run", "tawjih.py produce first 1 TO 1.1 --input \"...\" "
          "--backend manual\n"
          "manual shows each prompt and lets you answer it yourself; dry "
-         "runs without a model; ollama, openai and anthropic call one."),
+         "runs without a model; ollama, openai, anthropic and gemini call one."),
     ]),
     "files": ("Files and trees", [
         ("Three faces", "Every file is a folder files/CODE/ with three "
@@ -186,7 +186,8 @@ TOPICS = {
     ]),
     "providers": ("Providers", [
         ("Built in", "dry (no model), manual (you answer), ollama, openai "
-         "(any compatible server), anthropic. Keys are read from "
+         "(any compatible server), anthropic, gemini (Google). Keys are "
+         "read from "
          "environment variables only."),
         ("Named", "provider add local --kind ollama --model llama3.2\n"
          "provider fallback local cloud\n"

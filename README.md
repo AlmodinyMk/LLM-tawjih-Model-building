@@ -113,6 +113,43 @@ question straight to the model; `compare` lists them case by case, and
 `report` adds time and tokens. No measured result with a real model is
 published here yet.
 
+## What it works with
+
+Tawjih itself uses only Python's standard library. Every library and tool
+below is installed separately, where you need it. Tawjih talks to it over
+HTTP, runs it, or writes the script or command line that runs it. None of
+them is bundled, and none is needed for the rest of Tawjih to work.
+
+| Area | Works with | How | Checked |
+|---|---|---|---|
+| Models (providers) | Ollama · Anthropic · Google Gemini · OpenAI and any OpenAI-compatible server: vLLM, SGLang, LMDeploy, TensorRT-LLM (`trtllm-serve`), Aphrodite, TabbyAPI (ExLlamaV2), llama.cpp (`llama-server`), LiteLLM | HTTP with `--backend` or [`providers.json`](#ai-providers); a different provider for each step with `USING`; any server setting with `--option` | stand-in servers that answer in each format; live tests with `TAWJIH_LIVE_TESTS=1` |
+| Serving models | those engines and Triton; systemd and Docker to run them with the computer; `nvidia-smi` for GPUs | [`tawjih server`](#model-servers-tawjih-server) writes the command line, runs it, reads health, models and metrics; `batch` shares inputs among servers | a stand-in server, not the engines |
+| Training | PyTorch, transformers, PEFT (LoRA and 15 other methods), TRL (SFT, DPO), datasets, accelerate, bitsandbytes (QLoRA), Unsloth, axolotl; through `--train-arg`, `--model-arg` and `--gpus`: DeepSpeed, FSDP, FlashAttention, Liger kernels, torchrun, TensorBoard, Weights & Biases, MLflow; any PyTorch, TRL or JAX code with `script` | [`neural_bridge.py`](#training-adapters-the-neural-bridge) writes the training script and runs it with the Python you name, here or on a runtime | the scripts and commands, without a GPU; see its section |
+| Model files | llama.cpp (`convert_hf_to_gguf.py`, `llama-quantize`), GGUF; Hugging Face Hub (`huggingface_hub`); vLLM in Docker for serverless GPUs | `convert`, `quantize`, `push`, `pipeline`, `lora serve --serverless` | stand-in tools and a stand-in Hub |
+| Architectures | PyTorch and transformers (Llama, Mixtral, GPT-2 configurations) | [`arch export`](#the-architecture-lab) writes `config.json`; `arch build` builds the model | real models built on a CPU |
+| Where jobs run | this computer; another one over `ssh` and `scp` (rented GPUs from RunPod, Vast.ai, Lambda ...); any queue or service through `command` runtimes | [runtimes](#runtimes-where-jobs-run): a job folder sent, followed and collected | an ssh server on this computer; a stand-in service |
+| Documents | LaTeX, Markdown, HTML, PreTeXt, text (built in); Word and EPUB (built in, or Pandoc); PDF through Docling, Marker or `pdftotext` | `deposit`, `ingest` | stand-ins for Docling and Marker; Pandoc on a real file |
+| Search | BM25 (built in); embeddings from Ollama or an OpenAI-compatible server | `search`, `index` | a stand-in embedding server |
+| Traces | Langfuse; any OpenTelemetry collector | `--trace` sends each run as a trace | Langfuse's SDK payload, a real OpenTelemetry Collector |
+| AI assistants | Claude Desktop and any MCP client | [`tawjih mcp`](#ai-assistants-the-mcp-server) | the official MCP Python SDK as the client |
+| Editors and windows | Notepad, nano, vim, VS Code or any editor; GTK 3 or Tkinter on Linux | [`open`](#editors), the Linux windows | a scripted editor; windows driven on a virtual display |
+| Diagrams | Mermaid, Graphviz | `graph` writes their source | rendered with both |
+
+**Gemini.** Make a key in Google AI Studio and put it in `GEMINI_API_KEY`
+(or `GOOGLE_API_KEY`). The key goes in the request's header, never in its
+address:
+
+```
+tawjih.py provider add gem --kind gemini --model gemini-2.5-flash
+tawjih.py provider set gem --option 'generationConfig={"temperature": 0.2}'
+tawjih.py run mypath --input "..." --backend gem
+```
+
+Its answer leaves out the model's thinking parts. The record notes the
+`modelVersion` Google reports, and counts thinking tokens with the output.
+A prompt that Google blocks fails the step with the reason. Gemini's
+OpenAI-compatible address works with `--kind openai` too.
+
 ## Contents
 
 [Screenshots](#screenshots) ·
@@ -132,6 +169,7 @@ published here yet.
 [Langfuse](#traces-langfuse-and-opentelemetry) ·
 [Runtimes](#runtimes-where-jobs-run) ·
 [Model servers](#model-servers-tawjih-server) ·
+[What it works with](#what-it-works-with) ·
 [Linux windows](#desktop-windows-for-linux-users) ·
 [Limitations](#limitations) ·
 [What is verified](#what-is-and-is-not-verified) ·
@@ -1262,9 +1300,10 @@ The built-in kinds:
 | `ollama` | a local Ollama server | `OLLAMA_HOST` (optional) |
 | `openai` | any OpenAI-compatible `/chat/completions` endpoint | `TAWJIH_BASE_URL`, `TAWJIH_API_KEY` |
 | `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY` |
+| `gemini` | Google's Gemini API (`generateContent`) | `GEMINI_API_KEY` or `GOOGLE_API_KEY`; `GEMINI_BASE_URL` |
 
 Name the model with `--model NAME` or the `TAWJIH_MODEL` variable, for all
-three network backends. Keys are
+four network backends. Keys are
 read from the environment and never written to disk.
 
 **Named providers.** `providers.json` in the project gives providers names,
@@ -1486,7 +1525,10 @@ to overlap), `ITERATE`, the runtimes (a local job, and a command runtime
 driving a stand-in for a remote service), and the architecture lab: `arch
 build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
 (Llama with GQA and MQA, GPT-2, Mixtral), and their parameters matched the
-counts; since 0.16 durable MCP runs (a client killed mid-run and a fresh one
+counts; since 0.17 provider options and Ollama's `num_ctx`, the Gemini
+backend, `--train-arg`, `--model-arg`, `--gpus` and `script`, size
+conditions, a provider per step, `batch`, and `tawjih server` (with a
+stand-in server and stand-ins for `nvidia-smi` and `lmdeploy`); since 0.16 durable MCP runs (a client killed mid-run and a fresh one
 picking the run up, against a stand-in model held on a signal), `eval
 --repeat`, identities (the first-use questions answered in a
 pseudo-terminal), fuzz targets run with Atheris, and a MoE's router loss and
@@ -1517,7 +1559,9 @@ large files, which it sends another way), vLLM serving and a Docker build, an ss
 (it was run against an ssh server on this one, on port 2222 through a
 `~/.ssh/config` alias: `train` with DoRA, `merge` and `arch build`, each
 sent, followed and collected), a real GPU, and any cloud
-service. The three network backends, and the retries and fallback
+service, and the model servers' engines themselves (their command lines
+follow each engine's documentation). The four network backends, and the
+retries and fallback
 chains of named providers, were checked only against a local mock server
 that imitates the response formats and the busy statuses.
 

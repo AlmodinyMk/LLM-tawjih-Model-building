@@ -1397,7 +1397,8 @@ def _save_providers(root, data):
 def _provider_line(name, cfg, data):
     kind = cfg.get("kind", name)
     env = cfg.get("api_key_env") or {"openai": "TAWJIH_API_KEY",
-                                     "anthropic": "ANTHROPIC_API_KEY"}.get(kind)
+                                     "anthropic": "ANTHROPIC_API_KEY",
+                                     "gemini": "GEMINI_API_KEY"}.get(kind)
     bits = [name + (" (default)" if data.get("default") == name else ""),
             "kind " + kind]
     if cfg.get("base_url"):

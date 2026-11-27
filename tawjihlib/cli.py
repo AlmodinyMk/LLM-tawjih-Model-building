@@ -1209,7 +1209,7 @@ def build_parser():
                    help="fallback: the providers to try after NAME, in "
                    "order (none clears the chain)")
     s.add_argument("--kind", help="dry, manual, ollama, openai (any "
-                   "OpenAI-compatible server) or anthropic")
+                   "OpenAI-compatible server), anthropic or gemini (Google)")
     s.add_argument("--base-url", help="the server's address")
     s.add_argument("--model", help="model (test: this model)")
     s.add_argument("--api-key-env", metavar="VARIABLE", help="the NAME of "
@@ -1228,7 +1228,8 @@ def build_parser():
     s.add_argument("--option", action="append", metavar="KEY=VALUE",
                    help="any setting the server takes, sent as it is "
                    "(ollama: in options, e.g. temperature=0.2; openai and "
-                   "anthropic: in the request, e.g. top_p=0.9); an empty "
+                   "anthropic, gemini: in the request, e.g. top_p=0.9 or "
+                   "generationConfig={\"temperature\": 0.2}); an empty "
                    "value removes it (repeatable)")
     s.add_argument("--json", action="store_true", help="test: one JSON line")
     s.add_argument("--yes", action="store_true",

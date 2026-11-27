@@ -26,6 +26,7 @@ class Recorder:
     server, and keeps every request body."""
     def __init__(self):
         bodies = self.bodies = []
+        headers = self.headers = []
 
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -35,7 +36,22 @@ class Recorder:
                 n = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(n))
                 bodies.append((self.path, body))
-                if self.path == "/api/chat":
+                headers.append(dict(self.headers))
+                if self.path.endswith(":generateContent"):
+                    text = body["contents"][0]["parts"][0]["text"]
+                    out = {"modelVersion": "gemini-x-001",
+                           "usageMetadata": {"promptTokenCount": 7,
+                                             "candidatesTokenCount": 2,
+                                             "thoughtsTokenCount": 3}}
+                    if text == "blocked":
+                        out["promptFeedback"] = {"blockReason": "SAFETY"}
+                    else:
+                        out["candidates"] = [{"finishReason": "STOP",
+                                              "content": {"parts": [
+                                                  {"text": "thinking",
+                                                   "thought": True},
+                                                  {"text": "gem ok"}]}}]
+                elif self.path == "/api/chat":
                     out = {"model": body["model"], "message": {
                         "content": "ok"}, "prompt_eval_count": 5,
                         "eval_count": 1}
@@ -124,6 +140,37 @@ class ProviderOptions(Base):
         self.assertEqual(body["chat_template_kwargs"],
                          {"enable_thinking": False})
         self.assertEqual(body["model"], "m")          # stays Tawjih's
+
+    def test_gemini(self):
+        os.environ["TEST_GEM_KEY"] = "g-secret"
+        self.addCleanup(os.environ.pop, "TEST_GEM_KEY", None)
+        code, out, err = self.cli(
+            "provider", "add", "gem", "--kind", "gemini", "--base-url",
+            self.srv.url + "/v1beta", "--model", "gemini-2.5-flash",
+            "--api-key-env", "TEST_GEM_KEY", "--option",
+            'generationConfig={"temperature": 0.2}')
+        self.assertEqual(code, 0, err)
+        answer, usage = providers.call_model(self.dir, "gem", "hello")
+        self.assertEqual(answer, "gem ok")             # no thought parts
+        path, body = self.srv.bodies[-1]
+        self.assertEqual(path, "/v1beta/models/gemini-2.5-flash:"
+                         "generateContent")
+        self.assertEqual(body["contents"], [{"role": "user", "parts": [
+            {"text": "hello"}]}])
+        self.assertEqual(body["generationConfig"], {"temperature": 0.2})
+        sent = {k.lower(): v for k, v in self.srv.headers[-1].items()}
+        self.assertEqual(sent["x-goog-api-key"], "g-secret")
+        self.assertNotIn("g-secret", path)              # never in the address
+        self.assertEqual((usage["in"], usage["out"], usage["served"]),
+                         (7, 5, "gemini-x-001"))
+        with self.assertRaises(RuntimeError) as e:
+            providers.call_model(self.dir, "gem", "blocked")
+        self.assertIn("SAFETY", str(e.exception))
+        with self.assertRaises(tawjih.Die):
+            with contextlib.redirect_stderr(io.StringIO()):
+                providers.call_model(self.dir, "gem", "x", model="a/b")
+        out = self.cli("provider", "list")[1]
+        self.assertIn("kind gemini", out)
 
     def test_no_secret_in_options(self):
         for bad in ("api_key=x", "token=y", "Authorization=z"):

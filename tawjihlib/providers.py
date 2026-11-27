@@ -181,6 +181,49 @@ def backend_anthropic(prompt, model=""):
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def backend_gemini(prompt, model=""):
+    """Google's Gemini API (a key from Google AI Studio): generateContent,
+    the key in the x-goog-api-key header, never in the address."""
+    key = _api_key("GEMINI_API_KEY") or (
+        "" if _setting("api_key_env") else os.environ.get("GOOGLE_API_KEY",
+                                                          "")) or die(
+        "set %s" % (_setting("api_key_env") or "GEMINI_API_KEY (or "
+                    "GOOGLE_API_KEY)"))
+    base = _setting("base_url", "GEMINI_BASE_URL", GEMINI_URL)
+    name = _model(model)
+    if not name:
+        die("gemini needs a model: --model gemini-2.5-flash, or the "
+            "provider's model")
+    name = name if name.startswith("models/") else "models/" + name
+    if not re.fullmatch(r"models/[\w.\-]+", name):
+        die("%s is not a Gemini model name" % name[7:])
+    data = _post(base.rstrip("/") + "/%s:generateContent" % name,
+                 _extra({"contents": [{"role": "user",
+                                       "parts": [{"text": prompt}]}]}),
+                 {"x-goog-api-key": key})
+    blocked = (data.get("promptFeedback") or {}).get("blockReason")
+    if blocked:
+        raise RuntimeError("Gemini did not answer: the prompt was blocked "
+                           "(%s)" % blocked)
+    cands = data.get("candidates") or []
+    if not cands:
+        raise RuntimeError("Gemini gave no answer")
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    if not text.strip() and cands[0].get("finishReason") not in (None, "STOP"):
+        raise RuntimeError("Gemini stopped without an answer (%s)"
+                           % cands[0]["finishReason"])
+    u = data.get("usageMetadata") or {}
+    _note_usage(u.get("promptTokenCount"),
+                (u.get("candidatesTokenCount") or 0) +
+                (u.get("thoughtsTokenCount") or 0) or None,
+                data.get("modelVersion"))
+    return text
+
+
 def backend_openai(prompt, model=""):
     """Any provider exposing the OpenAI-style /chat/completions endpoint."""
     base = _setting("base_url", "TAWJIH_BASE_URL",
@@ -215,8 +258,8 @@ def backend_manual(prompt, model=""):
 
 BACKENDS = {"dry": backend_dry, "manual": backend_manual,
             "openai": backend_openai, "ollama": backend_ollama,
-            "anthropic": backend_anthropic}
-NETWORK_KINDS = ("ollama", "openai", "anthropic")
+            "anthropic": backend_anthropic, "gemini": backend_gemini}
+NETWORK_KINDS = ("ollama", "openai", "anthropic", "gemini")
 DEFAULT_POLICY = {"timeout": 600, "retries": 2,
                   "retry_status": [429, 500, 502, 503, 504],
                   "backoff": "exponential", "backoff_seconds": 2.0}
@@ -512,7 +555,8 @@ def check_network(root, chain):
             "openai": os.environ.get("TAWJIH_BASE_URL",
                                      "https://api.openai.com/v1"),
             "anthropic": os.environ.get("ANTHROPIC_BASE_URL",
-                                        "https://api.anthropic.com")}[kind]
+                                        "https://api.anthropic.com"),
+            "gemini": os.environ.get("GEMINI_BASE_URL", GEMINI_URL)}[kind]
         if not _is_local(url):
             die("the project's policy (%s) allows only providers on this "
                 "computer; %s is at %s" % (POLICY_FILE, name, url))
@@ -525,6 +569,7 @@ __all__ = [
     'default_backend', 'load_policy', 'load_providers', 'provider_chain',
     'providers_file', 'REDACT_PATTERNS', 'REDACT_TEMPLATE', 'Redactor', '_luhn',
     '_model', '_note_usage', '_post', '_usage', 'backend_anthropic',
+    'backend_gemini',
     'backend_dry', 'backend_manual', 'backend_ollama', 'backend_openai',
     'call_model', 'use_model',
 ]

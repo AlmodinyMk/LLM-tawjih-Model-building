@@ -125,7 +125,7 @@ names a provider sends the step to that provider (its model, unless
 ## Providers
 
 `--backend NAME` names a built-in kind (`dry`, `manual`, `ollama`, `openai`,
-`anthropic`) or a provider in `providers.json`; without it, the file's
+`anthropic`, `gemini`) or a provider in `providers.json`; without it, the file's
 `default`, else `dry`. An unknown name is an error.
 
 ```
@@ -141,8 +141,10 @@ names a provider sends the step to that provider (its model, unless
 ```
 
 A provider's settings come before the environment variables of its kind
-(`OLLAMA_HOST`, `TAWJIH_BASE_URL`, `ANTHROPIC_BASE_URL`); its key is read
-from the variable named by `api_key_env`, else the kind's usual variable.
+(`OLLAMA_HOST`, `TAWJIH_BASE_URL`, `ANTHROPIC_BASE_URL`, `GEMINI_BASE_URL`);
+its key is read from the variable named by `api_key_env`, else the kind's
+usual variable (`TAWJIH_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`
+then `GOOGLE_API_KEY`).
 No key is ever written to a file. A built-in kind without an entry uses the
 defaults shown. A call that fails with no connection, a timeout or a status
 in `retry_status` is made again up to `retries` times; the wait is
@@ -156,9 +158,20 @@ step fails as for any model call (and its `fallback:` file runs). Usage
 records `provider` and `attempts`.
 
 `options` is an object sent to the server as it is: for `ollama` in the
-request's `options` (`temperature`, `num_predict` ...), for `openai` and
-`anthropic` in the request itself (`top_p`, `max_tokens`,
-`chat_template_kwargs` ...), never over `model`, `messages` or `stream`.
+request's `options` (`temperature`, `num_predict` ...), for `openai`,
+`anthropic` and `gemini` in the request itself (`top_p`, `max_tokens`,
+`chat_template_kwargs`, Gemini's `generationConfig` ...), never over
+`model`, `messages` or `stream`.
+
+`gemini` calls Google's Gemini API: `POST
+{base}/models/MODEL:generateContent` (base
+`https://generativelanguage.googleapis.com/v1beta`), with the key in the
+`x-goog-api-key` header and never in the address. The answer is the text of
+the first candidate without its thought parts; usage counts
+`promptTokenCount` in, and `candidatesTokenCount` plus `thoughtsTokenCount`
+out; `served` is `modelVersion`. A prompt blocked (`promptFeedback.
+blockReason`), no candidate, or a stop other than `STOP` with no text fails
+the call with the reason.
 `num_ctx` (or `$TAWJIH_NUM_CTX`) is Ollama's context in tokens. Ollama keeps
 only that many tokens of a prompt and drops the rest without an error, and
 its default is 4096 on GPUs with less than 24 GiB; so a prompt of more than
