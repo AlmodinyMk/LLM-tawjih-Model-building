@@ -229,23 +229,27 @@ def make_server(board, host, port, token):
         def do_GET(self):
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
-                return self.send(200, board.page, "text/html")
-            if path == "/api/state":
-                if not self.ok():
-                    return self.send(401, {"error": "missing or wrong token"})
-                return self.send(200, board.snapshot())
-            self.send(404, {"error": "not found"})
+                self.send(200, board.page, "text/html")
+            elif path != "/api/state":
+                self.send(404, {"error": "not found"})
+            elif not self.ok():
+                self.send(401, {"error": "missing or wrong token"})
+            else:
+                self.send(200, board.snapshot())
 
         def do_POST(self):
             if self.path.split("?")[0] != "/api/action":
-                return self.send(404, {"error": "not found"})
+                self.send(404, {"error": "not found"})
+                return
             if not self.ok():
-                return self.send(401, {"error": "missing or wrong token"})
+                self.send(401, {"error": "missing or wrong token"})
+                return
             try:
                 n = int(self.headers.get("Content-Length", 0))
                 req = json.loads(self.rfile.read(min(n, 65536)) or b"{}")
             except ValueError:
-                return self.send(400, {"error": "not JSON"})
+                self.send(400, {"error": "not JSON"})
+                return
             code, msg = board.act(str(req.get("server", "")),
                                   str(req.get("key", "")),
                                   str(req.get("text", ""))[:500])
@@ -274,7 +278,7 @@ def cmd_dashboard(a):
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        pass
+        pass        # Ctrl-C is how the board is stopped
     finally:
         httpd.server_close()
     return 0
