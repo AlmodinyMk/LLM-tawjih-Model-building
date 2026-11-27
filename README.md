@@ -560,10 +560,11 @@ right to left is the terminal's own choice.
 The server in these pictures is a stand-in, and this computer has no GPU,
 so no GPU bars show.
 
-### The board as a web page: `tawjih dashboard`
+### The board in a window: `tawjih dashboard`
 
-`tawjih dashboard` (Arabic `لوحة`) serves the same board as a web page from
-Tawjih itself, on this computer. It shows:
+`tawjih dashboard` (Arabic `لوحة`) opens the same board in a window on this
+computer. It is drawn by Tawjih itself with Tkinter, which comes with
+Python: no browser, no web server, no port and no network. It shows:
 
 - the processor, memory and each GPU's free memory;
 - the model servers, the trees with each file's runs, and the runs;
@@ -571,30 +572,34 @@ Tawjih itself, on this computer. It shows:
   settings, CPU, RAM and log;
 - the servers' actions with who did them.
 
-The page runs in Arabic, right to left, or English (`L`). The keys are the
-same as in `top`. `x` and `r` ask before they act, and `t` asks for
-`KEY=VALUE`.
+The window runs in Arabic, right to left, or English. The keys are the same
+as in `top`: `↑↓` choose, `s` start, `x` stop, `r` restart, `t` tune,
+`f` flush, `d` batch, `+`/`-` refresh speed, `L` language, `q` quit. `x` and
+`r` ask before they act, and `t` asks for `KEY=VALUE`.
 
 ```
-tawjih dashboard                  # http://127.0.0.1:8765/#t=TOKEN
+tawjih dashboard                  # the window, in Arabic
 tawjih dashboard --lang en        # start in English (--lang ar: Arabic)
 tawjih dashboard --read-only      # show only: no key acts on a server
+tawjih dashboard --interval 5     # refresh every 5 seconds
 ```
 
-The language is chosen when the board starts, with `--lang ar` or
-`--lang en`. Without it, the page uses the browser's last choice, else
-Arabic. `L` switches it at any time. `top` takes `--lang` too (English by
-default; `--arabic` is the same as `--lang ar`).
+`--lang ar` or `--lang en` chooses the language when the board starts
+(Arabic without it), and `L` switches it at any time. `top` takes `--lang`
+too (English by default; `--arabic` is the same as `--lang ar`).
 
-- **Nothing from outside.** No script, font or style comes from another
-  address. The page says so itself (`Content-Security-Policy:
-  default-src 'none'`), so it works with no network.
-- **This computer only.** It listens on `127.0.0.1` unless `--host` says
-  otherwise, and then it warns.
-- **A token.** Every request needs the token, which is printed with the
-  address after `#t=`. The browser never sends that part of the address,
-  and the page sends the token in a header. Give your own with `--token`
-  or `TAWJIH_TOKEN`.
+- **Nothing from outside.** The window reads the project's files and the
+  computer itself; it opens no connection. Only a server's health check
+  talks to that server, as in `top`.
+- **Arabic on Linux.** Tk on Linux (X11) neither joins Arabic letters nor
+  lays them right to left, so the board does both itself: letters take
+  their joined forms (with lam-alef), and each line is ordered right to
+  left with English words and numbers kept in place. On Windows and macOS
+  Tk does this, and the board leaves it to Tk.
+- **Tkinter.** It is part of Python, but some Linux systems ship it
+  apart: `sudo apt install python3-tk` (Debian, Ubuntu) or
+  `sudo dnf install python3-tkinter` (Fedora). Without it, the board says
+  so; `tawjih top` shows the same in the terminal.
 
 ![tawjih dashboard in Arabic, right to left](docs/images/dashboard-ar.png)
 

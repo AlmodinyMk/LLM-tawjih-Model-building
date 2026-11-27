@@ -1,80 +1,59 @@
-"""Tests for tawjih dashboard: the page has no outside address, nothing is
-answered without the token, the state is the project's and the system's,
-and the keys act on servers as in top (or not at all with --read-only)."""
+"""Tests for tawjih dashboard: the board's data (the project's and the
+system's), the keys that act on servers (none with --read-only), Arabic
+joined and turned for Tk on X11, and the window itself where Tkinter and a
+display are there."""
 import json
-import re
+import os
 import sys
-import threading
+import time
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_tawjih import Base  # noqa: E402
 import test_monitor  # noqa: E402
-from tawjihlib.dashboard import PAGE, Board, make_server  # noqa: E402
+from tawjihlib.dashboard import (  # noqa: E402
+    Board, detail_lines, row_cells, shape, visual,
+)
+
+try:
+    import tkinter
+    HAS_TK = True
+except ImportError:
+    HAS_TK = False
 
 
-class Dashboard(Base):
-    def start(self, read_only=False):
-        board = Board(self.root, 8000, read_only)
-        httpd = make_server(board, "127.0.0.1", 0, "tok")
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.server_close)
-        self.addCleanup(httpd.shutdown)
-        self.base = "http://127.0.0.1:%d" % httpd.server_address[1]
-        return board
+def can_show():
+    if not HAS_TK or (os.name != "nt" and not os.environ.get("DISPLAY")):
+        return False
+    try:
+        tkinter.Tk().destroy()
+        return True
+    except tkinter.TclError:
+        return False
 
-    def call(self, path, body=None, token="tok"):
-        req = urllib.request.Request(
-            self.base + path, method="POST" if body is not None else "GET",
-            data=None if body is None else json.dumps(body).encode(),
-            headers={"Authorization": "Bearer " + token} if token else {})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status, r.read().decode("utf-8"), dict(r.headers)
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode("utf-8"), dict(e.headers)
 
-    def test_the_page_needs_nothing_from_outside(self):
-        self.assertIsNone(re.search(r"(?i)\b(https?:)?//[a-z0-9.-]+\.[a-z]",
-                                    PAGE))
-        for word in ("<script src", "<link", "@import", "fonts.g"):
-            self.assertNotIn(word, PAGE)
-        self.start()
-        code, text, headers = self.call("/", token=None)
-        self.assertEqual(code, 200)
-        self.assertIn('dir="rtl"', text)
-        self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
-        self.assertIn("connect-src 'self'", headers["Content-Security-Policy"])
+class Arabic(unittest.TestCase):
+    def test_joined_forms(self):
+        self.assertEqual(shape("شرح"), "ﺷﺮﺡ")
+        self.assertEqual(shape("لا"), "ﻻ")                # lam-alef
+        self.assertEqual(shape("سلا"), "ﺳﻼ")
+        self.assertEqual(shape("و"), "ﻭ")
+        self.assertEqual(shape("abc"), "abc")
 
-    def test_the_language_chosen_at_start(self):
-        for lang, want_dir, forced in ((None, "rtl", "false"),
-                                       ("en", "ltr", "true"),
-                                       ("ar", "rtl", "true")):
-            board = Board(self.root, 8000, False, lang)
-            self.assertIn('lang="%s" dir="%s"' % (lang or "ar", want_dir),
-                          board.page)
-            self.assertIn("FORCED = %s;" % forced, board.page)
-            self.assertNotIn("__LANG__", board.page)
-        code, out, err = self.cli("top", "--once", "--lang", "ar", "--width",
-                                  "100", "--height", "28")
-        self.assertEqual(code, 0, err)
-        self.assertIn("المعالج", out)
-        self.assertNotIn("المعالج", self.cli("top", "--once", "--lang", "en",
-                                             "--width", "100", "--height",
-                                             "28")[1])
+    def test_visual_order(self):
+        cases = {"سلام (1.1)": "(1.1) ﻡﻼﺳ",
+                 "المزوّد: slow": "slow :" + visual("المزوّد"),
+                 "step 3: شرح": "step 3: \ufea1\ufeae\ufeb7",
+                 "1.1.1.3": "1.1.1.3", "v1.2-rc": "v1.2-rc"}
+        for text, want in cases.items():
+            self.assertEqual(visual(text), want, text)
+        # a mark stays on its letter
+        self.assertIn("ﻭّ", visual("المزوّد"))
 
-    def test_nothing_without_the_token(self):
-        self.start()
-        self.assertEqual(self.call("/api/state", token=None)[0], 401)
-        self.assertEqual(self.call("/api/state", token="wrong")[0], 401)
-        self.assertEqual(self.call("/api/action", {"server": "x", "key": "s"},
-                                   token=None)[0], 401)
-        self.assertEqual(self.call("/nothing")[0], 404)
 
-    def test_state(self):
+class Data(Base):
+    def test_snapshot(self):
         self.cli("new", "الجبر")
         self.cli("new", "فرع", "--parent", "1")
         self.fill("1", instructions="first")
@@ -84,23 +63,27 @@ class Dashboard(Base):
                                   "fake")[0], 0)
         self.cli("server", "add", "big", "--engine", "vllm", "--model", "Q",
                  "--tp", "2", "--port", "1")
-        self.start()
-        code, text, _ = self.call("/api/state")
-        self.assertEqual(code, 200)
-        s = json.loads(text)
+        s = Board(self.root).snapshot()
         self.assertIn("mem", s["system"])
         self.assertEqual([(f["number"], f["title"], f["depth"], f["runs"])
                           for f in s["files"]],
                          [("1", "الجبر", 0, 1), ("1.1", "فرع", 1, 1)])
-        kinds = [(r["kind"], r["name"], r["status"]) for r in s["rows"]]
-        self.assertIn(("run", "p", "done"), kinds)
-        self.assertIn(("server", "big", "stopped"), kinds)
         run = [r for r in s["rows"] if r["kind"] == "run"][0]
         self.assertEqual([p["title"] for p in run["steps"]], ["الجبر", "فرع"])
         self.assertNotIn("record", run)
         srv = [r for r in s["rows"] if r["kind"] == "server"][0]
         self.assertEqual((srv["engine"], srv["settings"]), ("vllm", ["tp=2"]))
         self.assertNotIn("cfg", srv)
+        cells = row_cells(srv, "ar")
+        self.assertEqual((cells[1], cells[2], cells[3]),
+                         ("big", "■ متوقف", ":1"))
+        self.assertEqual(row_cells(run, "en")[3], "2/2")
+        pairs, lines = detail_lines(srv, "en")
+        self.assertIn(("Settings", "tp=2"), pairs)
+        self.assertTrue(lines[0].startswith("$ vllm serve Q"))
+        pairs, lines = detail_lines(run, "ar")
+        self.assertIn(("الخطوات", "2/2"), pairs)
+        self.assertIn("الجبر", lines[0])
 
     def test_keys_act_on_servers(self):
         helper = test_monitor.Board("stand_in")
@@ -111,36 +94,64 @@ class Dashboard(Base):
         state = self.root / "servers" / "sg"
         state.mkdir(parents=True)
         (state / "pid").write_text(str(proc.pid))
-        self.start()
-        code, text, _ = self.call("/api/action", {"server": "sg", "key": "f"})
-        self.assertEqual((code, json.loads(text)["message"]),
-                         (200, "flush sg: 200"))
-        code, text, _ = self.call("/api/action", {"server": "sg", "key": "t",
-                                                  "text": "mem=0.5"})
-        self.assertEqual(code, 200, text)
+        board = Board(self.root)
+        self.assertEqual(board.act("sg", "f"), (200, "flush sg: 200"))
+        code, msg = board.act("sg", "t", "mem=0.5")
+        self.assertEqual(code, 200, msg)
         cfg = json.loads((self.root / "servers.json").read_text())
         self.assertEqual(cfg["servers"]["sg"]["mem"], 0.5)
-        self.assertEqual(self.call("/api/action", {"server": "sg",
-                                                   "key": "t",
-                                                   "text": "mem=9"})[0], 409)
-        self.assertEqual(self.call("/api/action", {"server": "nope",
-                                                   "key": "f"})[0], 404)
-        self.assertEqual(self.call("/api/action", {"server": "sg",
-                                                   "key": "q"})[0], 400)
-        log = json.loads(self.call("/api/state")[1])["log"]
+        self.assertEqual(board.act("sg", "t", "mem=9")[0], 409)
+        self.assertEqual(board.act("nope", "f")[0], 404)
+        self.assertEqual(board.act("sg", "q")[0], 400)
+        log = board.snapshot()["log"]
         self.assertTrue(any(x["action"] == "board f" for x in log))
         self.assertTrue(any(x["action"] == "tune" for x in log))
-        code, text, _ = self.call("/api/action", {"server": "sg", "key": "x"})
-        self.assertEqual(code, 200, text)
+        self.assertEqual(board.act("sg", "x")[0], 200)
         proc.wait(timeout=20)
 
     def test_read_only(self):
         self.cli("server", "add", "big", "--engine", "vllm", "--model", "Q")
-        self.start(read_only=True)
-        code, text, _ = self.call("/api/action", {"server": "big",
-                                                  "key": "s"})
-        self.assertEqual(code, 403)
-        self.assertTrue(json.loads(self.call("/api/state")[1])["read_only"])
+        board = Board(self.root, read_only=True)
+        self.assertEqual(board.act("big", "s")[0], 403)
+        self.assertTrue(board.snapshot()["read_only"])
+
+
+@unittest.skipUnless(can_show(), "needs Tkinter and a display")
+class Window(Base):
+    def test_the_window(self):
+        from tawjihlib.dashboard import Window as W
+        self.cli("new", "الجبر")
+        self.fill("1", instructions="first")
+        self.cli("path", "p", "1")
+        self.cli("run", "p", "--input", "x", "--backend", "fake")
+        self.cli("server", "add", "big", "--engine", "vllm", "--model", "Q",
+                 "--port", "1")
+        w = W(Board(self.root), "ar", 0.5)
+        def close():
+            try:
+                w.root.destroy()
+            except tkinter.TclError:
+                pass                    # the test closed it already
+        self.addCleanup(close)
+        for _ in range(60):
+            w.root.update()
+            if w.state:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(w.state)
+        w.draw()
+        self.assertEqual(len(w.runs.get_children()), 2)
+        self.assertEqual(len(w.files.get_children()), 1)
+        self.assertEqual(w.root.title(), "توجيه · لوحة التحكم")
+        w.move(1)
+        self.assertTrue(w.sel_key.startswith("server:big"))
+        self.assertIn("vllm", w.det.get("1.0", "end"))
+        w.act("s")                                   # read: start fails
+        w.switch()
+        self.assertEqual(w.lang, "en")
+        self.assertEqual(w.root.title(), "tawjih · dashboard")
+        self.assertEqual(w.runs.heading("1")["text"], "Path / server")
+        w.root.destroy()
 
 
 if __name__ == "__main__":

@@ -1,29 +1,27 @@
-"""tawjih dashboard (لوحة): the board of `tawjih top` as a web page, served
-by Tawjih itself on this computer. Arabic (right to left) or English; the
+"""tawjih dashboard (لوحة): the board of `tawjih top` in a window of its
+own on this computer, drawn with Tkinter from Python's standard library: no
+browser, no server, no network. Arabic (right to left) or English; the
 processor, memory and each GPU's free memory; the project's model servers,
 its runs, jobs and files; the chosen run or server; and the servers'
 actions, with who did them. Everything on it is read from the project and
 the system. Its keys act as in `top`: s start, x stop, r restart, t tune,
 f flush, d the batch command.
 
-The page has no outside address: no script, font or style is fetched, so it
-works on a computer with no network. The address carries a token, as for
-`serve`; without it nothing is answered.
+Tk on Linux (X11) neither joins Arabic letters nor writes them right to
+left, so on X11 the board does both itself (shape() and visual()); on
+Windows and macOS the system does it.
 
 Part of Tawjih. Copyright (c) 2026 Mohammed Khalid Almodiny
 SPDX-License-Identifier: CC-BY-NC-SA-4.0
 """
 
 import json
-import os
-import secrets
-import sys
+import queue
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .core import Store, who
+from .core import Store, die, who
 from .monitor import (
     Project, System, server_action, server_use, watched,
 )
@@ -126,8 +124,11 @@ def _log(root, notes):
             rows.append({"time": x.get("time", ""), "action": x.get("action"),
                          "server": x.get("server"), "by": by.get("name")
                          or by.get("id") or "",
-                         "detail": " ".join(str(x[k]) for k in (
-                             "status", "path", "pid", "changes", "step")
+                         "detail": " ".join(
+                             " ".join(map(str, x[k])) if isinstance(
+                                 x[k], list) else str(x[k])
+                             for k in ("status", "path", "pid", "changes",
+                                       "step")
                              if x.get(k) not in (None, "", []))})
     rows += notes
     rows.sort(key=lambda x: x["time"])
@@ -138,12 +139,8 @@ class Board:
     """What the page shows, sampled at most once a second for all
     viewers, and the actions its keys ask for."""
 
-    def __init__(self, root, min_free=8000, read_only=False, lang=None):
+    def __init__(self, root, min_free=8000, read_only=False):
         self.root = str(Path(root).resolve())
-        self.lang = lang or "ar"
-        self.page = PAGE.replace("__LANG__", self.lang).replace(
-            "__DIR__", "rtl" if self.lang == "ar" else "ltr").replace(
-            "__FORCED__", "true" if lang else "false")
         self.min_free, self.read_only = min_free, read_only
         self.project, self.system = Project(self.root), System(self.root)
         self.lock = threading.Lock()
@@ -201,466 +198,804 @@ class Board:
         return (200 if not msg.startswith("error") else 409), msg
 
 
-def make_server(board, host, port, token):
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
+# ----------------------------------------------------------------- Arabic
+# The contextual forms of Arabic letters (Unicode's presentation forms B):
+# isolated, final, initial, medial; a letter with two forms joins only to
+# the letter before it.
+FORMS = {
+    "ء": (0xFE80,), "آ": (0xFE81, 0xFE82),
+    "أ": (0xFE83, 0xFE84), "ؤ": (0xFE85, 0xFE86),
+    "إ": (0xFE87, 0xFE88), "ئ": (0xFE89, 0xFE8A, 0xFE8B, 0xFE8C),
+    "ا": (0xFE8D, 0xFE8E), "ب": (0xFE8F, 0xFE90, 0xFE91, 0xFE92),
+    "ة": (0xFE93, 0xFE94), "ت": (0xFE95, 0xFE96, 0xFE97, 0xFE98),
+    "ث": (0xFE99, 0xFE9A, 0xFE9B, 0xFE9C),
+    "ج": (0xFE9D, 0xFE9E, 0xFE9F, 0xFEA0),
+    "ح": (0xFEA1, 0xFEA2, 0xFEA3, 0xFEA4),
+    "خ": (0xFEA5, 0xFEA6, 0xFEA7, 0xFEA8),
+    "د": (0xFEA9, 0xFEAA), "ذ": (0xFEAB, 0xFEAC),
+    "ر": (0xFEAD, 0xFEAE), "ز": (0xFEAF, 0xFEB0),
+    "س": (0xFEB1, 0xFEB2, 0xFEB3, 0xFEB4),
+    "ش": (0xFEB5, 0xFEB6, 0xFEB7, 0xFEB8),
+    "ص": (0xFEB9, 0xFEBA, 0xFEBB, 0xFEBC),
+    "ض": (0xFEBD, 0xFEBE, 0xFEBF, 0xFEC0),
+    "ط": (0xFEC1, 0xFEC2, 0xFEC3, 0xFEC4),
+    "ظ": (0xFEC5, 0xFEC6, 0xFEC7, 0xFEC8),
+    "ع": (0xFEC9, 0xFECA, 0xFECB, 0xFECC),
+    "غ": (0xFECD, 0xFECE, 0xFECF, 0xFED0),
+    "ف": (0xFED1, 0xFED2, 0xFED3, 0xFED4),
+    "ق": (0xFED5, 0xFED6, 0xFED7, 0xFED8),
+    "ك": (0xFED9, 0xFEDA, 0xFEDB, 0xFEDC),
+    "ل": (0xFEDD, 0xFEDE, 0xFEDF, 0xFEE0),
+    "م": (0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4),
+    "ن": (0xFEE5, 0xFEE6, 0xFEE7, 0xFEE8),
+    "ه": (0xFEE9, 0xFEEA, 0xFEEB, 0xFEEC),
+    "و": (0xFEED, 0xFEEE), "ى": (0xFEEF, 0xFEF0),
+    "ي": (0xFEF1, 0xFEF2, 0xFEF3, 0xFEF4),
+    "ـ": (0x0640, 0x0640, 0x0640, 0x0640),          # tatweel
+}
+LAM_ALEF = {"آ": (0xFEF5, 0xFEF6), "أ": (0xFEF7, 0xFEF8),
+            "إ": (0xFEF9, 0xFEFA), "ا": (0xFEFB, 0xFEFC)}
+MIRROR = {"(": ")", ")": "(", "[": "]", "]": "[", "{": "}", "}": "{",
+          "<": ">", ">": "<", "«": "»", "»": "«"}
 
-        def send(self, code, body, ctype="application/json"):
-            data = body if isinstance(body, bytes) else (
-                json.dumps(body, ensure_ascii=False).encode("utf-8")
-                if not isinstance(body, str) else body.encode("utf-8"))
-            self.send_response(code)
-            self.send_header("Content-Type", ctype + "; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy",
-                             "default-src 'none'; script-src 'unsafe-inline';"
-                             " style-src 'unsafe-inline'; connect-src 'self';"
-                             " img-src data:")
-            self.end_headers()
-            self.wfile.write(data)
 
-        def ok(self):
-            return secrets.compare_digest(
-                self.headers.get("Authorization", ""), "Bearer " + token)
+def _mark(ch):
+    """Arabic vowel marks and the like: they ride on the letter before."""
+    return "ً" <= ch <= "ٟ" or ch == "ٰ"
 
-        def do_GET(self):
-            path = self.path.split("?")[0]
-            if path in ("/", "/index.html"):
-                self.send(200, board.page, "text/html")
-            elif path != "/api/state":
-                self.send(404, {"error": "not found"})
-            elif not self.ok():
-                self.send(401, {"error": "missing or wrong token"})
-            else:
-                self.send(200, board.snapshot())
 
-        def do_POST(self):
-            if self.path.split("?")[0] != "/api/action":
-                self.send(404, {"error": "not found"})
-                return
-            if not self.ok():
-                self.send(401, {"error": "missing or wrong token"})
-                return
+def _arabic(ch):
+    return "؀" <= ch <= "ۿ" or "ﭐ" <= ch <= "﻿"
+
+
+def shape(text):
+    """Arabic letters in their joined forms (logical order kept)."""
+    out, i, n = [], 0, len(text)
+
+    def letter(j, step):
+        """The nearest letter before (step -1) or after (+1), past marks."""
+        j += step
+        while 0 <= j < n and _mark(text[j]):
+            j += step
+        return text[j] if 0 <= j < n else ""
+    while i < n:
+        ch = text[i]
+        forms = FORMS.get(ch)
+        if not forms:
+            out.append(ch)
+            i += 1
+            continue
+        prev = letter(i, -1)
+        joins_before = len(FORMS.get(prev, ())) == 4
+        if ch == "ل":                         # lam + alef: one sign
+            j = i + 1
+            while j < n and _mark(text[j]):
+                j += 1
+            if j < n and text[j] in LAM_ALEF:
+                lig = LAM_ALEF[text[j]]
+                out.append(chr(lig[1] if joins_before else lig[0]))
+                out.extend(text[i + 1:j])
+                i = j + 1
+                continue
+        joins_after = len(forms) == 4 and len(FORMS.get(letter(i, 1),
+                                                         ())) >= 2
+        if len(forms) == 1:
+            k = 0
+        elif len(forms) == 2:
+            k = 1 if joins_before else 0
+        else:
+            k = (3 if joins_after else 1) if joins_before else (
+                2 if joins_after else 0)
+        out.append(chr(forms[k]))
+        i += 1
+    return "".join(out)
+
+
+def visual(text, rtl=None):
+    """A line as it is drawn by a system that writes left to right: Arabic
+    runs reversed (marks kept on their letters, brackets mirrored), the
+    other runs as they are, and the runs in right-to-left order when the
+    line is Arabic (rtl None: the first strong letter decides)."""
+    if not any(_arabic(c) for c in text):
+        return text
+    text = shape(text)
+    if rtl is None:
+        first = next((c for c in text if _arabic(c) or c.isalpha()), "")
+        rtl = _arabic(first)
+    runs = []                                   # [is_arabic, [clusters]]
+    for ch in text:
+        if _mark(ch) and runs:
+            runs[-1][1][-1] += ch
+            continue
+        # strong: Arabic (True) or another letter or digit (False);
+        # anything else is neutral (None) and takes a side below
+        kind = True if _arabic(ch) else False if ch.isalnum() else None
+        if runs and runs[-1][0] is kind:
+            runs[-1][1].append(ch)
+        else:
+            runs.append([kind, [ch]])
+    # a neutral run between two runs of one kind belongs to that kind;
+    # otherwise to the line's direction
+    for k, r in enumerate(runs):
+        if r[0] is None:
+            before = runs[k - 1][0] if k else None
+            after = runs[k + 1][0] if k + 1 < len(runs) else None
+            r[0] = before if before == after and before is not None else rtl
+    merged = []
+    for kind, cl in runs:
+        if merged and merged[-1][0] == kind:
+            merged[-1][1].extend(cl)
+        else:
+            merged.append([kind, list(cl)])
+    pieces = []
+    for kind, cl in merged:
+        if kind:
+            pieces.append("".join(MIRROR.get(c, c) for c in reversed(cl)))
+        else:
+            pieces.append("".join(cl))
+    if rtl:
+        pieces.reverse()
+    return "".join(pieces)
+
+
+# ----------------------------------------------------------------- window
+WORDS = {
+    "ar": {"title": "توجيه · لوحة التحكم", "sys": "العتاد والذاكرة",
+           "srv": "الخوادم", "files": "الأشجار", "det": "التفاصيل",
+           "runs": "التشغيلات", "log": "سجل الأفعال",
+           "free": "حرة للاختيار التلقائي:", "none": "لا شيء",
+           "noGpu": "لا بطاقة: nvidia-smi غير موجود",
+           "noSrv": "لا خوادم بعد: tawjih server add NAME --engine vllm",
+           "choose": "اختر صفاً", "needSrv": "اختر خادماً أولاً",
+           "ro": "للعرض فقط", "ask": "KEY=VALUE ... (مثل mem=0.9):",
+           "sure": "هل تريد {0} الخادم {1}؟", "lang": "English",
+           "keys": "↑↓ تحديد   s تشغيل   x إيقاف   r إعادة   t ضبط   "
+                   "f تفريغ   d توزيع   +/- التحديث   L اللغة   q خروج",
+           "files_cols": ("الرقم", "العنوان", "مرات", "نجاح", "المتوسط"),
+           "runs_cols": ("PID", "المسار / الخادم", "الحالة", "الخطوة",
+                         "الزمن", "نداءات", "معالج/ذاكرة",
+                         "المزود/المحرك"),
+           "log_cols": ("الوقت", "الفعل", "الخادم", "من", "التفاصيل"),
+           "st": {"running": "يعمل", "done": "اكتمل", "failed": "فشل",
+                  "stopped": "متوقف", "partial": "جزئي",
+                  "waiting": "ينتظر", "skipped": "تُخطّي", "made": "أُعدّ",
+                  "submitted": "أُرسل", "collected": "جُمع"},
+           "l": {"status": "الحالة", "up": "يعمل منذ", "engine": "المحرك",
+                 "port": "المنفذ", "gpus": "البطاقات", "health": "الصحة",
+                 "model": "النموذج", "settings": "الإعدادات",
+                 "gpuMem": "ذاكرة البطاقات", "elapsed": "المدة",
+                 "steps": "الخطوات", "calls": "الاستدعاءات",
+                 "tokens": "الرموز", "backend": "المزود",
+                 "runtime": "بيئة التنفيذ", "x": "إيقاف",
+                 "r": "إعادة تشغيل"}},
+    "en": {"title": "tawjih · dashboard", "sys": "system & gpu",
+           "srv": "servers", "files": "trees", "det": "details",
+           "runs": "runs", "log": "actions",
+           "free": "free for auto:", "none": "none",
+           "noGpu": "no GPU: nvidia-smi is not here",
+           "noSrv": "no servers yet: tawjih server add NAME --engine vllm",
+           "choose": "choose a row", "needSrv": "choose a server first",
+           "ro": "read only", "ask": "KEY=VALUE ... (mem=0.9):",
+           "sure": "{0} the server {1}?", "lang": "العربية",
+           "keys": "↑↓ select   s start   x stop   r restart   t tune   "
+                   "f flush   d batch   +/- refresh   L language   q quit",
+           "files_cols": ("No.", "Title", "Runs", "OK", "Avg"),
+           "runs_cols": ("PID", "Path / server", "Status", "Step", "Time",
+                         "Calls", "CPU / RAM", "Backend / engine"),
+           "log_cols": ("Time", "Action", "Server", "By", "Detail"),
+           "st": {}, "l": {"status": "Status", "up": "Up",
+                           "engine": "Engine", "port": "Port",
+                           "gpus": "GPUs", "health": "Health",
+                           "model": "Model", "settings": "Settings",
+                           "gpuMem": "GPU memory", "elapsed": "Elapsed",
+                           "steps": "Steps", "calls": "Calls",
+                           "tokens": "Tokens", "backend": "Backend",
+                           "runtime": "Runtime", "x": "stop",
+                           "r": "restart"}},
+}
+# the columns' widths in pixels; the widest stretches with the window
+WIDTHS = {"files_cols": (110, 230, 50, 55, 65),
+          "runs_cols": (55, 135, 90, 65, 65, 70, 115, 105),
+          "log_cols": (75, 85, 80, 80, 300)}
+COLOURS = {"bg": "#16161e", "panel": "#1a1b26", "line": "#292e42",
+           "frame": "#414868", "text": "#c0caf5", "sub": "#a9b1d6",
+           "dim": "#565f89", "green": "#9ece6a", "cyan": "#7dcfff",
+           "blue": "#7aa2f7", "pink": "#f7768e", "yellow": "#e0af68",
+           "mauve": "#bb9af7"}
+ICON = {"running": "▶", "done": "✓", "failed": "✗", "stopped": "■",
+        "partial": "◐", "skipped": "–", "waiting": "·", "submitted": "◔",
+        "collected": "✓"}
+
+
+def _bytes(n):
+    if n is None:
+        return "—"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return ("%.0f %s" if unit == "B" else "%.1f %s") % (n, unit)
+        n /= 1024.0
+
+
+def _secs(s):
+    if s is None:
+        return ""
+    s = float(s)
+    if s < 60:
+        return "%.1fs" % s
+    if s < 3600:
+        return "%dm%02ds" % (s // 60, s % 60)
+    return "%dh%02dm" % (s // 3600, s % 3600 // 60)
+
+
+def row_cells(r, lang):
+    """The cells of a row of the runs table, in reading order."""
+    st = WORDS[lang]["st"].get(r["status"], r["status"])
+    state = "%s %s" % (ICON.get(r["status"], "·"), st)
+    if r["kind"] == "server":
+        use = " ".join(x for x in (
+            "%.0f%%" % r["cpu"] if r.get("cpu") is not None else "",
+            _bytes(r["rss"]) if r.get("rss") else "") if x)
+        return (str(r["pid"] or "srv"), r["name"], state, ":%s" % r["port"],
+                _secs(r["seconds"]), str(r["health"] or "—"), use,
+                r["engine"])
+    if r["kind"] == "job":
+        return ("job", r["name"], state, "%.0f%%" % r["pct"]
+                if r.get("pct") is not None else "", _secs(r["seconds"]),
+                "", "", r["runtime"])
+    use = " ".join(x for x in (
+        "%.0f%%" % r["cpu"] if r.get("cpu") is not None else "",
+        _bytes(r["rss"]) if r.get("rss") else "") if x)
+    return (str(r["pid"] or ""), r["name"], state, "%s/%s" % (
+        r["done"], r["total"]), _secs(r["seconds"]), str(r["calls"] or 0),
+        use, r["backend"])
+
+
+def detail_lines(r, lang):
+    """The chosen row as (label, value) pairs and then plain lines."""
+    w = WORDS[lang]["l"]
+    if r is None:
+        return [], [WORDS[lang]["choose"]]
+    if r["kind"] == "server":
+        pairs = [(w["status"], WORDS[lang]["st"].get(r["status"],
+                                                    r["status"])),
+                 (w["up"], _secs(r["seconds"]) or "—"),
+                 (w["engine"], r["engine"]), (w["port"], str(r["port"])),
+                 (w["gpus"], r["gpus"] or "—"),
+                 (w["health"], str(r["health"] or "—")),
+                 (w["model"], r["model"] or "—")]
+        if r.get("cpu") is not None:
+            pairs.append(("CPU", "%.1f%%" % r["cpu"]))
+        if r.get("rss"):
+            pairs.append(("RAM", _bytes(r["rss"])))
+        if r.get("gpu_mib") is not None:
+            pairs.append((w["gpuMem"], "%d MiB" % r["gpu_mib"]))
+        if r["settings"]:
+            pairs.append((w["settings"], " ".join(r["settings"])))
+        return pairs, ["$ " + r["command"]] + r["tail"]
+    if r["kind"] == "job":
+        return ([(w["runtime"], r["runtime"]),
+                 ("%", "%.0f%%" % r["pct"] if r.get("pct") is not None
+                  else "—")], ["$ " + r["command"]] + r["tail"])
+    pairs = [(w["elapsed"], _secs(r["seconds"])),
+             (w["steps"], "%s/%s" % (r["done"], r["total"])),
+             (w["calls"], str(r["calls"] or 0)),
+             (w["tokens"], "%s / %s" % (r["in"] or 0, r["out"] or 0)),
+             (w["backend"], r["backend"] or "—"),
+             (w["model"], r["model"] or "—")]
+    if r.get("cpu") is not None:
+        pairs.append(("CPU", "%.1f%%" % r["cpu"]))
+    if r.get("rss"):
+        pairs.append(("RAM", _bytes(r["rss"])))
+    lines = ["%s %s  %-10s %s  %s" % (
+        ICON.get(p["status"], "·"), p["step"], p["number"], p["title"],
+        _secs(p["seconds"])) for p in r["steps"]]
+    return pairs, lines
+
+
+class Window:
+    """The board in a Tk window. Data is read in a thread, so a slow server
+    never freezes the window; the window only draws."""
+
+    def __init__(self, board, lang="ar", every=2.0, tk=None):
+        if tk is None:
             try:
-                n = int(self.headers.get("Content-Length", 0))
-                req = json.loads(self.rfile.read(min(n, 65536)) or b"{}")
-            except ValueError:
-                self.send(400, {"error": "not JSON"})
-                return
-            code, msg = board.act(str(req.get("server", "")),
-                                  str(req.get("key", "")),
-                                  str(req.get("text", ""))[:500])
-            self.send(code, {"message": msg})
-    return ThreadingHTTPServer((host, port), Handler)
+                import tkinter as tk
+            except ImportError:
+                die("the dashboard needs Tkinter, which this Python does "
+                    "not have: on Linux install python3-tk (Debian, Ubuntu) "
+                    "or python3-tkinter (Fedora); Python from python.org "
+                    "has it on Windows and macOS. `tawjih top` shows the "
+                    "same board in the terminal")
+        from tkinter import messagebox, simpledialog, ttk
+        self.tk, self.ttk = tk, ttk
+        self.ask_yes, self.ask_text = messagebox.askyesno, \
+            simpledialog.askstring
+        self.board, self.lang, self.every = board, lang, every
+        self.state, self.sel_key, self.msg = None, None, ""
+        self.q = queue.Queue()
+        self.busy = False
+        self.root = tk.Tk()
+        self.x11 = self.root.tk.call("tk", "windowingsystem") == "x11"
+        self.root.configure(bg=COLOURS["bg"])
+        self.root.geometry("1360x820")
+        self._style()
+        self._build()
+        self._bind()
+        self.relabel()
+        self.root.after(50, self.poll)
+        self.root.after(80, self.fetch)
+
+    # ------------------------------------------------------------ helpers
+    def t(self, text, rtl=None):
+        """Text as Tk must be given it: on X11 Arabic is joined and turned
+        here; elsewhere the system does it."""
+        if self.x11:
+            return visual(text, rtl)
+        return text
+
+    def w(self, key):
+        return WORDS[self.lang][key]
+
+    def _style(self):
+        c = COLOURS
+        s = self.ttk.Style(self.root)
+        try:
+            s.theme_use("clam")
+        except self.tk.TclError:
+            pass        # another theme: the colours below still apply
+        s.configure("T.Treeview", background=c["panel"],
+                    fieldbackground=c["panel"], foreground=c["sub"],
+                    rowheight=22, borderwidth=0, font=("DejaVu Sans Mono",
+                                                       10))
+        s.configure("T.Treeview.Heading", background=c["bg"],
+                    foreground=c["dim"], relief="flat",
+                    font=("DejaVu Sans Mono", 9))
+        s.map("T.Treeview", background=[("selected", c["line"])],
+              foreground=[("selected", c["text"])])
+
+    def _frame(self, colour):
+        c = COLOURS
+        f = self.tk.LabelFrame(self.root, bg=c["panel"], fg=colour,
+                               highlightthickness=0, bd=1, relief="solid",
+                               font=("DejaVu Sans Mono", 10, "bold"),
+                               labelanchor="ne" if self.lang == "ar"
+                               else "nw")
+        f.configure(highlightbackground=colour)
+        return f
+
+    def _tree(self, parent, cols):
+        tv = self.ttk.Treeview(parent, columns=[str(i) for i in
+                                                range(len(cols))],
+                               show="headings", style="T.Treeview",
+                               selectmode="browse")
+        tv.pack(fill="both", expand=True, padx=4, pady=4)
+        for name, colour in (("ok", "green"), ("bad", "pink"),
+                             ("warn", "yellow"), ("srv", "mauve"),
+                             ("dim", "dim")):
+            tv.tag_configure(name, foreground=COLOURS[colour])
+        return tv
+
+    def _build(self):
+        c, tk = COLOURS, self.tk
+        self.f_sys = self._frame(c["green"])
+        self.sys = tk.Canvas(self.f_sys, bg=c["panel"], highlightthickness=0,
+                             height=150)
+        self.sys.pack(fill="both", expand=True, padx=4, pady=4)
+        self.f_srv = self._frame(c["cyan"])
+        self.srv = tk.Canvas(self.f_srv, bg=c["panel"], highlightthickness=0,
+                             height=60)
+        self.srv.pack(fill="both", expand=True, padx=4, pady=4)
+        self.f_files = self._frame(c["blue"])
+        self.files = self._tree(self.f_files, WORDS["en"]["files_cols"])
+        self.f_det = self._frame(c["cyan"])
+        self.det = tk.Text(self.f_det, bg=c["panel"], fg=c["text"], bd=0,
+                           height=12, wrap="none", highlightthickness=0,
+                           font=("DejaVu Sans Mono", 10))
+        self.det.pack(fill="both", expand=True, padx=6, pady=4)
+        for name, colour in (("lbl", "dim"), ("val", "text"),
+                             ("ok", "green"), ("sub", "sub")):
+            self.det.tag_configure(name, foreground=c[colour])
+        self.f_runs = self._frame(c["pink"])
+        self.runs = self._tree(self.f_runs, WORDS["en"]["runs_cols"])
+        self.f_log = self._frame(c["yellow"])
+        self.log = self._tree(self.f_log, WORDS["en"]["log_cols"])
+        self.foot = tk.Frame(self.root, bg=c["bg"])
+        self.keys = tk.Label(self.foot, bg=c["bg"], fg=c["dim"],
+                             font=("DejaVu Sans Mono", 10))
+        self.msgl = tk.Label(self.foot, bg=c["bg"], fg=c["yellow"],
+                             font=("DejaVu Sans Mono", 10))
+        self.langb = tk.Button(self.foot, bg=c["line"], fg=c["cyan"],
+                               activebackground=c["frame"], bd=0,
+                               command=self.switch, font=("DejaVu Sans Mono",
+                                                          10))
+        self.runs.bind("<<TreeviewSelect>>", self.chose)
+        self.srv.bind("<Button-1>", self.chip)
+
+    def layout(self):
+        """Two columns: system, servers and trees beside details, runs and
+        actions; their sides swap in Arabic."""
+        for f in (self.f_sys, self.f_srv, self.f_files, self.f_det,
+                  self.f_runs, self.f_log, self.foot):
+            f.grid_forget()
+        a, b = (1, 0) if self.lang == "ar" else (0, 1)
+        self.root.grid_columnconfigure(a, weight=5, uniform="c")
+        self.root.grid_columnconfigure(b, weight=7, uniform="c")
+        for r, wt in ((0, 0), (1, 0), (2, 1), (3, 2), (4, 1), (5, 0)):
+            self.root.grid_rowconfigure(r, weight=wt)
+        pad = dict(padx=6, pady=5, sticky="nsew")
+        self.f_sys.grid(row=0, column=a, rowspan=1, **pad)
+        self.f_srv.grid(row=1, column=a, **pad)
+        self.f_files.grid(row=2, column=a, rowspan=3, **pad)
+        self.f_det.grid(row=0, column=b, rowspan=2, **pad)
+        self.f_runs.grid(row=2, column=b, rowspan=2, **pad)
+        self.f_log.grid(row=4, column=b, **pad)
+        self.foot.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
+        side, other = ("right", "left") if self.lang == "ar" else \
+            ("left", "right")
+        for wdg in (self.keys, self.msgl, self.langb):
+            wdg.pack_forget()
+        self.keys.pack(side=side)
+        self.langb.pack(side=other, padx=4)
+        self.msgl.pack(side=other, padx=8)
+
+    def relabel(self):
+        ar = self.lang == "ar"
+        self.root.title(self.w("title"))
+        for f, key in ((self.f_sys, "sys"), (self.f_srv, "srv"),
+                       (self.f_files, "files"), (self.f_det, "det"),
+                       (self.f_runs, "runs"), (self.f_log, "log")):
+            f.configure(text=" %s " % self.t(self.w(key), ar),
+                        labelanchor="ne" if ar else "nw")
+        for tv, key in ((self.files, "files_cols"),
+                        (self.runs, "runs_cols"), (self.log, "log_cols")):
+            names = self.w(key)
+            n = len(names)
+            order = list(range(n))[::-1] if ar else list(range(n))
+            tv.configure(displaycolumns=[str(i) for i in order])
+            widths = WIDTHS[key]
+            for i, name in enumerate(names):
+                tv.heading(str(i), text=self.t(name, ar),
+                           anchor="e" if ar else "w")
+                tv.column(str(i), anchor="e" if ar else "w",
+                          width=widths[i], minwidth=40,
+                          stretch=i == widths.index(max(widths)))
+        self.keys.configure(text=self.t(self.w("keys"), ar))
+        self.langb.configure(text="[L] " + self.t(self.w("lang")))
+        self.layout()
+        self.draw()
+
+    def _bind(self):
+        r = self.root
+        r.bind("<Down>", lambda e: self.move(1))
+        r.bind("<Up>", lambda e: self.move(-1))
+        for k in "sxrtfd":
+            r.bind(k, lambda e, k=k: self.act(k))
+        r.bind("l", lambda e: self.switch())
+        r.bind("L", lambda e: self.switch())
+        r.bind("q", lambda e: r.destroy())
+        r.bind("+", lambda e: self.speed(-0.5))
+        r.bind("=", lambda e: self.speed(-0.5))
+        r.bind("-", lambda e: self.speed(0.5))
+
+    # --------------------------------------------------------------- data
+    def fetch(self):
+        """Read the board in a thread, then again after the interval."""
+        if not self.busy:
+            self.busy = True
+
+            def work():
+                try:
+                    self.q.put(("state", self.board.snapshot()))
+                except Exception as e:                  # shown, not raised
+                    self.q.put(("msg", "error: %s" % e))
+            threading.Thread(target=work, daemon=True).start()
+        self.root.after(int(self.every * 1000), self.fetch)
+
+    def poll(self):
+        try:
+            while True:
+                kind, value = self.q.get_nowait()
+                if kind == "state":
+                    self.busy = False
+                    self.state = value
+                    self.draw()
+                else:
+                    self.say(value)
+        except queue.Empty:
+            pass        # nothing new: look again shortly
+        self.root.after(100, self.poll)
+
+    def say(self, text):
+        self.msg = text
+        self.msgl.configure(text=self.t(text))
+
+    # ---------------------------------------------------------- drawing
+    def draw(self):
+        if self.state is None:
+            return
+        self.draw_sys()
+        self.draw_servers()
+        self.fill(self.files, [
+            (("  " * f["depth"] + f["number"], f["title"],
+              str(f["runs"] or "·"), "" if f["ok"] is None else
+              "%d%%" % f["ok"], _secs(f["avg"])),
+             "ok" if f["running"] else "" if f["machine"] else "dim",
+             f["number"]) for f in self.state["files"]])
+        rows = self.state["rows"]
+        self.fill(self.runs, [
+            (row_cells(r, self.lang), "srv" if r["kind"] == "server" else
+             "ok" if r["status"] == "running" else "bad"
+             if r["status"] == "failed" else "",
+             "%s:%s:%s" % (r["kind"], r["name"], r.get("pid") or
+                           r.get("id") or ""))
+            for r in rows])
+        self.fill(self.log, [
+            ((x["time"][11:] or x["time"], x["action"], x["server"],
+              x["by"], x["detail"]), "", "%d" % i)
+            for i, x in enumerate(self.state["log"])])
+        keys = [self._key(r) for r in rows]
+        if self.sel_key not in keys and keys:
+            self.sel_key = keys[0]
+        if self.sel_key in keys:
+            iid = self.sel_key
+            if self.runs.selection() != (iid,):
+                self.runs.selection_set(iid)
+        self.draw_detail()
+
+    def _key(self, r):
+        return "%s:%s:%s" % (r["kind"], r["name"], r.get("pid") or
+                             r.get("id") or "")
+
+    def fill(self, tv, items):
+        ar = self.lang == "ar"
+        old = set(tv.get_children())
+        new = []
+        for k, (cells, tag, iid) in enumerate(items):
+            iid = iid or str(k)
+            while iid in new:
+                iid += "+"
+            new.append(iid)
+            vals = [self.t(str(c), ar if j else None) for j, c in
+                    enumerate(cells)]
+            if iid in old:
+                tv.item(iid, values=vals, tags=(tag,) if tag else ())
+                tv.move(iid, "", k)
+            else:
+                tv.insert("", k, iid=iid, values=vals,
+                          tags=(tag,) if tag else ())
+        for iid in old - set(new):
+            tv.delete(iid)
+
+    def chosen(self):
+        if not self.state:
+            return None
+        for r in self.state["rows"]:
+            if self._key(r) == self.sel_key:
+                return r
+        return None
+
+    def draw_detail(self):
+        ar = self.lang == "ar"
+        pairs, lines = detail_lines(self.chosen(), self.lang)
+        d = self.det
+        d.configure(state="normal")
+        d.delete("1.0", "end")
+        d.tag_configure("dir", justify="right" if ar else "left")
+        # the pairs a few to a line, so none runs off the panel
+        room = max(40, d.winfo_width() // 8 - 4)
+        rows, cur = [], ""
+        for label, value in pairs:
+            part = "%s: %s" % (label, value)
+            if cur and len(cur) + 3 + len(part) > room:
+                rows.append(cur)
+                cur = part
+            else:
+                cur = cur + "   " + part if cur else part
+        if cur:
+            rows.append(cur)
+        for row in rows:
+            d.insert("end", self.t(row, ar) + "\n", ("val", "dir"))
+        d.insert("end", "\n")
+        for t in lines:            # commands and logs read left to right
+            d.insert("end", self.t(t) + "\n", ("sub",))
+        d.configure(state="disabled")
+
+    def bar(self, cv, x, y, w, pct, colour=None, n=24):
+        """A meter of small squares, green to red or one colour."""
+        pct = max(0.0, min(100.0, pct or 0.0))
+        lit = int(round(pct / 100.0 * n))
+        step = w / float(n)
+        for i in range(n):
+            if i < lit:
+                fill = colour or _grade(i / float(max(1, n - 1)))
+            else:
+                fill = COLOURS["line"]
+            cv.create_rectangle(x + i * step, y, x + i * step + step - 2,
+                                y + 10, fill=fill, width=0)
+
+    def draw_sys(self):
+        cv, c, s = self.sys, COLOURS, self.state["system"]
+        ar = self.lang == "ar"
+        cv.delete("all")
+        width = max(300, cv.winfo_width())
+        font = ("DejaVu Sans Mono", 10)
+        lx, bx, bw = 10, 110, width - 330
+        vx = width - 10
+
+        def line(y, label, pct, value, colour=None, lab_colour=None):
+            cv.create_text(lx, y + 5, text=label, anchor="w", font=font,
+                           fill=lab_colour or c["sub"])
+            self.bar(cv, bx, y, bw, pct, colour)
+            cv.create_text(vx, y + 5, text=value, anchor="e", font=font,
+                           fill=c["sub"])
+        y = 6
+        line(y, "CPU %s" % (s.get("cores") or ""), s.get("cpu"),
+             "—" if s.get("cpu") is None else "%.0f%%" % s["cpu"] + (
+                 "  LAV %s" % " ".join("%.2f" % x for x in s["load"])
+                 if s.get("load") else ""), lab_colour=c["cyan"])
+        m = s.get("mem") or {}
+        if m.get("total"):
+            y += 20
+            p = 100.0 * m["used"] / m["total"]
+            line(y, "RAM", p, "%s / %s  %.0f%%" % (_bytes(m["used"]),
+                                                   _bytes(m["total"]), p),
+                 c["pink"] if p > 85 else None, c["mauve"])
+        if s.get("disk"):
+            y += 20
+            k = s["disk"]
+            line(y, "Disk", 100.0 * k["used"] / k["total"],
+                 "%s free" % _bytes(k["free"]))
+        y += 26
+        gpus = s.get("gpus") or []
+        if not gpus:
+            cv.create_text(vx if ar else lx, y + 5, text=self.t(
+                self.w("noGpu"), ar), anchor="e" if ar else "w", font=font,
+                fill=c["dim"])
+            y += 20
+        for g in gpus:
+            low = g["free_mib"] is not None and \
+                g["free_mib"] < self.state["min_free"]
+            pct = 0 if g["free_mib"] is None else \
+                100.0 * g["free_mib"] / max(1, g["total_mib"])
+            line(y, "GPU %d" % g["index"], pct,
+                 "%s MiB free  %.0f%%" % (g["free_mib"], g["util"]),
+                 c["pink"] if low else c["green"])
+            y += 20
+        if gpus:
+            free = ",".join(str(i) for i in s["free_gpus"]) or \
+                self.w("none")
+            cv.create_text(vx if ar else lx, y + 5, text=self.t(
+                "%s %s  ≥ %d MiB" % (self.w("free"), free,
+                                     self.state["min_free"]), ar),
+                anchor="e" if ar else "w", font=font,
+                fill=c["green"] if s["free_gpus"] else c["pink"])
+            y += 20
+        cv.configure(height=y + 6)
+
+    def draw_servers(self):
+        cv, c = self.srv, COLOURS
+        ar = self.lang == "ar"
+        cv.delete("all")
+        self.chips = []
+        srv = [r for r in self.state["rows"] if r["kind"] == "server"]
+        font = ("DejaVu Sans Mono", 10)
+        width = max(300, cv.winfo_width())
+        if not srv:
+            cv.create_text(width - 8 if ar else 8, 14, text=self.t(
+                self.w("noSrv"), ar), anchor="e" if ar else "w", font=font,
+                fill=c["dim"])
+            return
+        x, y = (width - 8, 6) if ar else (8, 6)
+        for r in srv:
+            colour = (c["green"] if r["health"] == 200 else c["yellow"]) \
+                if r["pid"] else c["dim"]
+            label = "● %s  %s:%s" % (r["name"], r["engine"], r["port"])
+            item = cv.create_text(0, 0, text=label, anchor="w", font=font,
+                                  fill=colour)
+            x0, y0, x1, y1 = cv.bbox(item)
+            wid = x1 - x0 + 14
+            if (ar and x - wid < 8) or (not ar and x + wid > width - 8):
+                x, y = (width - 8 if ar else 8), y + 26
+            left = x - wid if ar else x
+            cv.create_rectangle(left, y, left + wid, y + 20,
+                                fill=c["line"], width=0)
+            cv.coords(item, left + 7, y + 10)
+            cv.tag_raise(item)
+            self.chips.append((left, y, left + wid, y + 20, self._key(r)))
+            x = left - 6 if ar else left + wid + 6
+        cv.configure(height=y + 26)
+
+    # ------------------------------------------------------------ actions
+    def chose(self, _e=None):
+        sel = self.runs.selection()
+        if sel:
+            self.sel_key = sel[0]
+            self.draw_detail()
+
+    def chip(self, e):
+        for x0, y0, x1, y1, key in getattr(self, "chips", []):
+            if x0 <= e.x <= x1 and y0 <= e.y <= y1:
+                self.sel_key = key
+                self.draw()
+
+    def move(self, step):
+        kids = list(self.runs.get_children())
+        if not kids:
+            return
+        i = kids.index(self.sel_key) if self.sel_key in kids else 0
+        self.sel_key = kids[max(0, min(len(kids) - 1, i + step))]
+        self.runs.selection_set(self.sel_key)
+        self.runs.see(self.sel_key)
+        self.draw_detail()
+
+    def speed(self, delta):
+        self.every = max(0.5, min(10.0, self.every + delta))
+        self.say("%dms" % int(self.every * 1000))
+
+    def switch(self):
+        self.lang = "en" if self.lang == "ar" else "ar"
+        self.relabel()
+
+    def act(self, key):
+        r = self.chosen()
+        if self.board.read_only:
+            return self.say(self.w("ro"))
+        if not r or r["kind"] != "server":
+            return self.say(self.w("needSrv"))
+        text = ""
+        if key in ("x", "r") and not self.ask_yes(
+                "tawjih", self.w("sure").format(self.w("l")[key],
+                                                r["name"]), parent=self.root):
+            return None
+        if key == "t":
+            text = self.ask_text("tawjih", "%s: %s" % (r["name"],
+                                                      self.w("ask")),
+                                 parent=self.root) or ""
+            if not text:
+                return None
+        self.say("…")
+
+        def work():
+            code, msg = self.board.act(r["name"], key, text)
+            self.q.put(("msg", msg))
+        threading.Thread(target=work, daemon=True).start()
+        return None
+
+    def run(self):
+        self.root.mainloop()
+
+
+def _grade(x):
+    a, b, c = (158, 206, 106), (224, 175, 104), (247, 118, 142)
+    lo, hi, t = (a, b, x / 0.5) if x < 0.5 else (b, c, (x - 0.5) / 0.5)
+    return "#%02x%02x%02x" % tuple(int(lo[i] + (hi[i] - lo[i]) * t)
+                                   for i in range(3))
 
 
 def cmd_dashboard(a):
-    """The board of `tawjih top` as a web page on this computer."""
+    """The board of `tawjih top` in a window of its own on this computer."""
     st = Store(a.project)
-    token = a.token or os.environ.get("TAWJIH_TOKEN") or \
-        secrets.token_urlsafe(18)
-    if a.host not in ("127.0.0.1", "localhost", "::1"):
-        print("warning: %s lets other computers reach the board; anyone "
-              "with the token can start and stop servers" % a.host,
-              file=sys.stderr)
-    board = Board(st.root, a.min_free, a.read_only, a.lang)
-    httpd = make_server(board, a.host, a.port, token)
-    port = httpd.server_address[1]
-    print("tawjih dashboard: http://%s:%d/#t=%s" % (
-        "127.0.0.1" if a.host in ("0.0.0.0", "::") else a.host, port, token))
-    print("the token is after #t= (the browser does not send that part to "
-          "a server); Ctrl-C stops the board%s" % (
-              "; read only" if a.read_only else ""))
-    sys.stdout.flush()
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass        # Ctrl-C is how the board is stopped
-    finally:
-        httpd.server_close()
+    board = Board(st.root, a.min_free, a.read_only)
+    Window(board, a.lang or "ar", a.interval).run()
     return 0
 
 
 def add_dashboard_parser(sub):
     s = sub.add_parser("dashboard", aliases=["لوحة"], help="the board of top "
-                       "as a web page on this computer, in Arabic or "
-                       "English, with no outside address")
-    s.add_argument("--host", default="127.0.0.1",
-                   help="address to listen on (default: this computer only)")
-    s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--token", help="the page's token (default: "
-                   "$TAWJIH_TOKEN, else a new one)")
+                       "in a window of its own on this computer (Tkinter), "
+                       "in Arabic or English, with no browser or network")
+    s.add_argument("--lang", choices=["ar", "en"], help="the board's "
+                   "language: ar (Arabic, right to left, the default) or en "
+                   "(English); L switches it")
     s.add_argument("--min-free", type=int, default=8000, metavar="MIB",
                    help="a GPU with less free memory is shown in red")
+    s.add_argument("--interval", type=float, default=2.0, metavar="S",
+                   help="seconds between refreshes (+ and - change it)")
     s.add_argument("--read-only", action="store_true",
                    help="show only: the keys that act on servers are off")
-    s.add_argument("--lang", choices=["ar", "en"],
-                   help="the board's language: ar (Arabic, right to left) "
-                   "or en (English); L switches it on the page (default: "
-                   "the browser's last choice, else ar)")
     s.set_defaults(fn=cmd_dashboard)
     return s
 
 
-PAGE = r"""<!doctype html>
-<html lang="__LANG__" dir="__DIR__">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tawjih · لوحة التحكم</title>
-<style>
-:root { --bg:#16161e; --panel:#1a1b26; --line:#292e42; --frame:#414868;
-  --text:#c0caf5; --sub:#a9b1d6; --dim:#565f89; --green:#9ece6a;
-  --cyan:#7dcfff; --blue:#7aa2f7; --pink:#f7768e; --yellow:#e0af68;
-  --mauve:#bb9af7; --orange:#ff9e64; }
-* { box-sizing:border-box; }
-html, body { margin:0; background:var(--bg); color:var(--text);
-  font:13px/1.45 ui-monospace, "DejaVu Sans Mono", Menlo, Consolas,
-  "Noto Sans Arabic", "Segoe UI", Tahoma, monospace; }
-body { min-height:100vh; display:flex; flex-direction:column; padding:10px;
-  gap:10px; }
-main { flex:1; display:grid; grid-template-columns:5fr 7fr; gap:12px;
-  min-height:0; }
-@media (max-width:900px) { main { grid-template-columns:1fr; } }
-.col { display:flex; flex-direction:column; gap:14px; min-width:0; }
-.box { position:relative; background:var(--panel); border:1px solid
-  var(--frame); border-radius:6px; padding:14px 12px 10px; min-width:0; }
-.box.g { border-color:var(--green); } .box.c { border-color:var(--cyan); }
-.box.b { border-color:var(--blue); } .box.p { border-color:var(--pink); }
-.box.y { border-color:#e0af6899; }
-.ttl { position:absolute; top:-0.7em; inset-inline-start:10px;
-  background:var(--bg); padding:0 6px; border-radius:3px; font-size:12px;
-  white-space:nowrap; }
-.ttl2 { position:absolute; top:-0.7em; inset-inline-end:10px;
-  background:var(--bg); padding:0 6px; border-radius:3px; font-size:12px; }
-.ltr { direction:ltr; unicode-bidi:isolate; }
-.row { display:flex; align-items:center; gap:8px; }
-.lbl { width:7.5em; flex:none; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; }
-.val { min-width:9em; text-align:end; color:var(--sub); }
-.bar { display:flex; gap:2px; direction:ltr; flex:1; }
-.bar i { display:inline-block; flex:1; max-width:7px; height:10px;
-  border-radius:1px; background:var(--line); }
-.sep { border-top:1px solid var(--line); margin:6px 0 4px; }
-table { width:100%; border-collapse:collapse; font-size:12px; }
-th { color:var(--dim); font-weight:normal; text-align:start; padding:2px 4px;
-  border-bottom:1px solid var(--line); }
-td { padding:2px 4px; border-bottom:1px solid #292e4255;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  max-width:22em; }
-td.n, th.n { text-align:end; }
-tr.sel td { background:var(--line); color:var(--text); font-weight:600; }
-tbody tr { cursor:pointer; } tbody tr:hover td { background:#24283b99; }
-.chips { display:flex; flex-wrap:wrap; gap:5px; }
-.chip { padding:1px 7px; border-radius:4px; background:#24283b;
-  font-size:11.5px; cursor:pointer; }
-.muted { color:var(--dim); } .ok { color:var(--green); }
-.bad { color:var(--pink); } .warn { color:var(--yellow); }
-.cy { color:var(--cyan); } .mv { color:var(--mauve); } .bl { color:var(--blue); }
-.scroll { overflow:auto; max-height:var(--h, 260px); }
-pre.tail { margin:4px 0 0; font:inherit; font-size:11.5px; color:var(--sub);
-  white-space:pre-wrap; direction:ltr; text-align:left; max-height:150px;
-  overflow:auto; }
-footer { display:flex; flex-wrap:wrap; justify-content:space-between;
-  gap:8px; color:var(--dim); font-size:12px; border-top:1px solid
-  var(--line); padding-top:6px; }
-footer .keys { display:flex; flex-wrap:wrap; gap:14px; }
-footer .k { cursor:pointer; } footer .k b { color:var(--text); }
-footer .k:hover { color:var(--text); }
-button { font:inherit; color:var(--cyan); background:#24283b; border:1px
-  solid var(--frame); border-radius:4px; padding:1px 10px; cursor:pointer; }
-#msg { color:var(--yellow); }
-.off { opacity:.45; pointer-events:none; }
-</style>
-</head>
-<body>
-<main>
- <div class="col">
-  <section class="box g"><div class="ttl" id="tSys"></div>
-   <div class="ttl2 muted ltr" id="tSys2"></div>
-   <div id="sys"></div><div class="sep"></div><div id="gpus"></div>
-   <div class="sep"></div><div id="free" class="row"></div></section>
-  <section class="box c"><div class="ttl" id="tSrv"></div>
-   <div class="ttl2 muted" id="tSrv2"></div><div id="servers"></div></section>
-  <section class="box b" style="flex:1"><div class="ttl" id="tFiles"></div>
-   <div class="ttl2 muted" id="tFiles2"></div>
-   <div class="scroll" style="--h:340px"><table id="files"></table></div>
-  </section>
- </div>
- <div class="col">
-  <section class="box c"><div class="ttl" id="tDet"></div>
-   <div class="ttl2" id="tDet2"></div><div id="detail"></div></section>
-  <section class="box p" style="flex:1"><div class="ttl" id="tRuns"></div>
-   <div class="ttl2 muted" id="tRuns2"></div>
-   <div class="scroll" style="--h:300px"><table id="runs"></table></div>
-  </section>
-  <section class="box y"><div class="ttl" id="tLog"></div>
-   <div class="scroll" style="--h:120px"><table id="log"></table></div>
-  </section>
- </div>
-</main>
-<footer>
- <div class="keys" id="keys"></div>
- <div class="row"><span id="msg"></span><span class="muted ltr" id="clock">
- </span><button id="lang"></button></div>
-</footer>
-<script>
-"use strict";
-const T = {
- ar: {sys:"العتاد والذاكرة", gpusTitle:"البطاقات", minFree:"الحد الأدنى",
-  free:"حرة للاختيار التلقائي:", none:"لا شيء", noGpu:"لا بطاقة: nvidia-smi غير موجود",
-  srv:"الخوادم", srvN:"خادم", noSrv:"لا خوادم بعد: tawjih server add NAME --engine vllm --model M",
-  files:"الأشجار", filesN:"ملف", runs:"التشغيلات", live:"حي", shown:"معروض",
-  log:"سجل الأفعال", noLog:"لم يُفعل شيء بعد", det:"التفاصيل", nothing:"اختر صفاً",
-  cols:{no:"الرقم", title:"العنوان", runs:"مرات", ok:"نجاح", avg:"المتوسط",
-   pid:"PID", path:"المسار / الخادم", status:"الحالة", step:"الخطوة",
-   time:"الزمن", calls:"الاستدعاءات", use:"المعالج / الذاكرة", backend:"المزوّد / المحرك",
-   at:"الوقت", act:"الفعل", srv:"الخادم", by:"من", detail:"التفاصيل"},
-  st:{running:"يعمل", done:"اكتمل", failed:"فشل", stopped:"متوقف", partial:"جزئي",
-   waiting:"ينتظر", skipped:"تُخطّي", made:"أُعدّ", submitted:"أُرسل", collected:"جُمع"},
-  l:{status:"الحالة", up:"يعمل منذ", engine:"المحرك", port:"المنفذ", gpus:"البطاقات",
-   health:"الصحة", model:"النموذج", settings:"الإعدادات", gpuMem:"ذاكرة البطاقات",
-   elapsed:"المدة", steps:"الخطوات", calls:"الاستدعاءات", tokens:"الرموز",
-   retries:"إعادات", fallbacks:"بدائل", cache:"الذاكرة المؤقتة", backend:"المزوّد",
-   runtime:"بيئة التنفيذ", started:"بدأ", step:"الخطوة"},
-  k:{sel:"تحديد", s:"تشغيل", x:"إيقاف", r:"إعادة تشغيل", t:"ضبط", f:"تفريغ السياق",
-   d:"أمر التوزيع", refresh:"التحديث"},
-  ask:"KEY=VALUE ... (مثل mem=0.9 schedule-policy=lpm):", sure:"متأكد من {0} {1}؟",
-  needSrv:"اختر خادماً (↑↓) أولاً", ro:"للعرض فقط", tok:"لا رمز في العنوان: افتح الرابط الذي طبعه tawjih dashboard",
-  langBtn:"English", up:"يعمل منذ"},
- en: {sys:"system & gpu", gpusTitle:"GPUs", minFree:"min free",
-  free:"free for auto:", none:"none", noGpu:"no GPU: nvidia-smi is not here",
-  srv:"servers", srvN:"server", noSrv:"no servers yet: tawjih server add NAME --engine vllm --model M",
-  files:"trees", filesN:"files", runs:"runs", live:"live", shown:"shown",
-  log:"actions", noLog:"nothing done yet", det:"details", nothing:"choose a row",
-  cols:{no:"No.", title:"Title", runs:"Runs", ok:"OK", avg:"Avg",
-   pid:"PID", path:"Path / server", status:"Status", step:"Step",
-   time:"Time", calls:"Calls", use:"CPU / RAM", backend:"Backend / engine",
-   at:"Time", act:"Action", srv:"Server", by:"By", detail:"Detail"},
-  st:{running:"running", done:"done", failed:"failed", stopped:"stopped", partial:"partial",
-   waiting:"waiting", skipped:"skipped", made:"made", submitted:"submitted", collected:"collected"},
-  l:{status:"Status", up:"Up", engine:"Engine", port:"Port", gpus:"GPUs",
-   health:"Health", model:"Model", settings:"Settings", gpuMem:"GPU memory",
-   elapsed:"Elapsed", steps:"Steps", calls:"Calls", tokens:"Tokens",
-   retries:"Retries", fallbacks:"Fallbacks", cache:"Cache", backend:"Backend",
-   runtime:"Runtime", started:"Started", step:"Step"},
-  k:{sel:"select", s:"start", x:"stop", r:"restart", t:"tune", f:"flush",
-   d:"batch command", refresh:"refresh"},
-  ask:"KEY=VALUE ... (mem=0.9 schedule-policy=lpm):", sure:"{0} {1}: are you sure?",
-  needSrv:"choose a server (↑↓) first", ro:"read only", tok:"no token in the address: open the link tawjih dashboard printed",
-  langBtn:"العربية", up:"Up"}
-};
-// the language chosen when the board was started (--lang) comes first;
-// without it, the one this browser chose last with L
-const LANG0 = "__LANG__", FORCED = __FORCED__;
-let lang = LANG0, S = null, sel = 0, every = 2000, timer = null, msgT = 0;
-if (!FORCED) { try { lang = localStorage.getItem("tawjih.lang") || LANG0; } catch (e) {} }
-const token = (location.hash.match(/t=([^&]+)/) || [])[1] || "";
-const $ = id => document.getElementById(id);
-const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
-  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const L = () => T[lang];
-const bytes = n => { if (n == null) return "—"; const u = ["B","KiB","MiB","GiB","TiB"];
-  let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return (i ? n.toFixed(n < 10 ? 2 : 1) : n.toFixed(0)) + " " + u[i]; };
-const secs = s => { if (s == null) return ""; s = Number(s);
-  if (s < 60) return s.toFixed(1) + "s"; if (s < 3600) return Math.floor(s/60) + "m" +
-  String(Math.floor(s%60)).padStart(2,"0") + "s"; return Math.floor(s/3600) + "h" +
-  String(Math.floor(s%3600/60)).padStart(2,"0") + "m"; };
-const grade = x => { const a=[158,206,106], b=[224,175,104], c=[247,118,142];
-  const [lo, hi, t] = x < .5 ? [a, b, x/.5] : [b, c, (x-.5)/.5];
-  return "rgb(" + lo.map((v,i) => Math.round(v + (hi[i]-v)*t)).join(",") + ")"; };
-function bar(pct, n, solid) { n = n || 16; const f = Math.round(Math.max(0, Math.min(100, pct || 0)) / 100 * n);
-  let h = '<span class="bar">'; for (let i = 0; i < n; i++)
-    h += i < f ? '<i style="background:' + (solid || grade(i / (n - 1))) + '"></i>' : "<i></i>";
-  return h + "</span>"; }
-const icon = s => ({running:"▶", done:"✓", failed:"✗", stopped:"■", partial:"◐",
-  skipped:"–", waiting:"·", submitted:"◔", collected:"✓"}[s] || "·");
-const cls = s => ({running:"ok", done:"ok", collected:"ok", failed:"bad",
-  stopped:"warn", partial:"warn"}[s] || "muted");
-const st = s => (L().st[s] || s);
-
-function sysPanel() {
-  const s = S.system, l = L();
-  $("tSys").innerHTML = '<span class="ok">' + esc(l.sys) + '</span> <span class="muted ltr">cpu · ram · nvidia-smi</span>';
-  $("tSys2").textContent = (s.name || "") + (s.cores ? " · " + s.cores + "c" : "");
-  const m = s.mem || {}, rows = [];
-  rows.push('<div class="row ltr"><span class="lbl cy">CPU</span>' + bar(s.cpu, 18) +
-    '<span class="val">' + (s.cpu == null ? "—" : s.cpu.toFixed(0) + "%") +
-    (s.load ? ' <span class="muted">LAV ' + s.load.map(x => x.toFixed(2)).join(" ") + "</span>" : "") + "</span></div>");
-  if (m.total) { const p = 100 * m.used / m.total;
-    rows.push('<div class="row ltr"><span class="lbl mv">RAM</span>' + bar(p, 18, p > 85 ? "var(--pink)" : null) +
-      '<span class="val">' + bytes(m.used) + " / " + bytes(m.total) + ' <span class="muted">' + p.toFixed(0) + "%</span></span></div>"); }
-  if (s.disk) { const p = 100 * s.disk.used / s.disk.total;
-    rows.push('<div class="row ltr"><span class="lbl">Disk</span>' + bar(p, 18) +
-      '<span class="val">' + bytes(s.disk.free) + ' <span class="muted">free</span></span></div>'); }
-  $("sys").innerHTML = rows.join("");
-  const g = s.gpus || [];
-  $("gpus").innerHTML = g.length ? g.map(x => { const low = x.free_mib != null && x.free_mib < S.min_free;
-    const p = x.free_mib == null ? 0 : 100 * x.free_mib / Math.max(1, x.total_mib);
-    return '<div class="row ltr"><span class="lbl">GPU ' + x.index + ' <span class="muted">' + esc(x.name) + "</span></span>" +
-      bar(p, 18, low ? "var(--pink)" : "var(--green)") + '<span class="val ' + (low ? "bad" : "") + '">' +
-      (x.free_mib == null ? "—" : x.free_mib + " MiB") + ' <span class="muted">' + x.util.toFixed(0) + "%</span></span></div>"; }).join("")
-    : '<div class="muted">' + esc(L().noGpu) + "</div>";
-  $("free").innerHTML = g.length ? '<span class="muted">' + esc(l.free) + '</span> <b class="ltr ' +
-    (s.free_gpus.length ? "ok" : "bad") + '">' + (s.free_gpus.length ? s.free_gpus.join(",") : esc(l.none)) +
-    '</b> <span class="muted ltr">≥ ' + S.min_free + " MiB</span>" : "";
-}
-function serversPanel() {
-  const l = L(), srv = S.rows.filter(r => r.kind === "server");
-  $("tSrv").innerHTML = '<span class="cy">' + esc(l.srv) + '</span> <span class="muted ltr">tawjih server</span>';
-  $("tSrv2").textContent = srv.length + " " + l.srvN;
-  $("servers").innerHTML = srv.length ? '<div class="chips ltr">' + srv.map(r =>
-    '<span class="chip ' + (r.pid ? (r.health === 200 ? "ok" : "warn") : "muted") + '" data-name="' + esc(r.name) +
-    '">● ' + esc(r.name) + ' <span class="muted">' + esc(r.engine) + ":" + esc(r.port) + "</span></span>").join("") + "</div>"
-    : '<div class="muted ltr">' + esc(l.noSrv) + "</div>";
-  document.querySelectorAll("#servers .chip").forEach(c => c.onclick = () => {
-    const i = S.rows.findIndex(r => r.kind === "server" && r.name === c.dataset.name);
-    if (i >= 0) { sel = i; draw(); } });
-}
-function filesPanel() {
-  const l = L(), c = l.cols, f = S.files;
-  $("tFiles").innerHTML = '<span class="bl">' + esc(l.files) + "</span>";
-  $("tFiles2").textContent = f.length + " " + l.filesN;
-  $("files").innerHTML = "<thead><tr><th>" + c.no + "</th><th>" + c.title + '</th><th class="n">' + c.runs +
-    '</th><th class="n">' + c.ok + '</th><th class="n">' + c.avg + "</th></tr></thead><tbody>" +
-    f.map(x => "<tr><td class=\"ltr muted\">" + (x.running ? '<span class="ok">▶</span> ' : "") + "&nbsp;".repeat(2 * x.depth) +
-      esc(x.number) + "</td><td" + (x.running ? ' class="ok"' : x.machine ? "" : ' class="muted"') + ">" + esc(x.title) +
-      '</td><td class="n ltr">' + (x.runs || "·") + '</td><td class="n ltr ' + (x.ok == null ? "" : x.ok >= 90 ? "ok" : x.ok >= 50 ? "warn" : "bad") +
-      '">' + (x.ok == null ? "" : x.ok + "%") + '</td><td class="n ltr">' + (x.avg == null ? "" : secs(x.avg)) + "</td></tr>").join("") + "</tbody>";
-}
-function runsPanel() {
-  const l = L(), c = l.cols, rows = S.rows;
-  const live = rows.filter(r => r.kind === "run" && r.live && r.status === "running").length;
-  $("tRuns").innerHTML = '<span class="bad">' + esc(l.runs) + '</span> <span class="' + (live ? "ok" : "muted") + '">' + live + " " + esc(l.live) + "</span>";
-  $("tRuns2").textContent = rows.length + " " + l.shown;
-  $("runs").innerHTML = "<thead><tr><th>" + c.pid + "</th><th>" + c.path + "</th><th>" + c.status + '</th><th class="n">' + c.step +
-    '</th><th class="n">' + c.time + '</th><th class="n">' + c.calls + '</th><th class="n">' + c.use + "</th><th>" + c.backend +
-    "</th></tr></thead><tbody>" + rows.map((r, i) => {
-      let pid, step, calls, use, back;
-      if (r.kind === "server") { pid = r.pid || "srv"; step = ":" + r.port; calls = r.health || "—";
-        use = [r.cpu == null ? "" : r.cpu.toFixed(0) + "%", r.rss ? bytes(r.rss) : ""].filter(Boolean).join(" "); back = r.engine; }
-      else if (r.kind === "job") { pid = "job"; step = r.pct == null ? "" : r.pct.toFixed(0) + "%"; calls = ""; use = ""; back = r.runtime; }
-      else { pid = r.pid || ""; step = r.done + "/" + r.total; calls = r.calls;
-        use = [r.cpu == null ? "" : r.cpu.toFixed(0) + "%", r.rss ? bytes(r.rss) : ""].filter(Boolean).join(" "); back = r.backend; }
-      return '<tr data-i="' + i + '"' + (i === sel ? ' class="sel"' : "") + '><td class="ltr ' + (r.kind === "server" ? "mv" : "muted") + '">' + esc(pid) +
-        '</td><td class="ltr">' + esc(r.name) + '</td><td class="' + cls(r.status) + '">' + icon(r.status) + " " + esc(st(r.status)) +
-        '</td><td class="n ltr">' + esc(step) + '</td><td class="n ltr">' + secs(r.seconds) + '</td><td class="n ltr ' +
-        (r.kind === "server" && r.health === 200 ? "ok" : "") + '">' + esc(calls) + '</td><td class="n ltr muted">' + esc(use) +
-        '</td><td class="ltr mv">' + esc(back) + "</td></tr>"; }).join("") + "</tbody>";
-  document.querySelectorAll("#runs tbody tr").forEach(tr => tr.onclick = () => { sel = Number(tr.dataset.i); draw(); });
-}
-function kv(k, v, c) { return '<span style="white-space:nowrap"><span class="muted">' + esc(k) + ':</span> <span class="ltr ' + (c || "") + '">' + esc(v) + "</span></span>"; }
-function detailPanel() {
-  const l = L().l, r = S.rows[sel];
-  $("tDet").innerHTML = '<span class="cy">' + esc(L().det) + "</span>";
-  if (!r) { $("tDet2").textContent = ""; $("detail").innerHTML = '<div class="muted">' + esc(L().nothing) + "</div>"; return; }
-  $("tDet").innerHTML = '<b class="cy ltr">' + esc((r.pid ? r.pid + " " : "") + r.name) + '</b> <span class="mv">' +
-    esc(r.kind === "server" ? L().srvN + " · " + r.engine : r.kind === "job" ? "job · " + r.runtime : (r.trees || []).join(" · ")) + "</span>";
-  $("tDet2").innerHTML = '<span class="' + cls(r.status) + '">' + icon(r.status) + " " + esc(st(r.status)) + "</span>";
-  let h = "";
-  if (r.kind === "server") {
-    h += '<div class="chips" style="gap:16px">' + kv(l.up, r.seconds ? secs(r.seconds) : "—") + kv(l.engine, r.engine) + kv(l.port, r.port) +
-      kv(l.gpus, r.gpus || "—") + kv(l.health, r.health || "—", r.health === 200 ? "ok" : r.pid ? "bad" : "") + "</div>";
-    h += '<div class="chips" style="gap:16px;margin-top:4px">' + kv(l.model, r.model || "—") +
-      (r.cpu != null ? kv("CPU", r.cpu.toFixed(1) + "%") : "") + (r.rss ? kv("RAM", bytes(r.rss)) : "") +
-      (r.gpu_mib != null ? kv(l.gpuMem, r.gpu_mib + " MiB") : "") + "</div>";
-    if (r.settings.length) h += '<div style="margin-top:4px">' + kv(l.settings, r.settings.join(" ")) + "</div>";
-    h += '<pre class="tail">$ ' + esc(r.command) + "\n" + esc(r.tail.join("\n")) + "</pre>";
-  } else if (r.kind === "job") {
-    h += '<div class="chips" style="gap:16px">' + kv(l.runtime, r.runtime) + kv(l.started, r.started || "—") +
-      (r.pct != null ? kv("%", r.pct.toFixed(0) + "%") : "") + "</div>";
-    if (r.pct != null) h += '<div class="row" style="margin-top:4px">' + bar(r.pct, 30) + "</div>";
-    h += '<pre class="tail">$ ' + esc(r.command) + "\n" + esc(r.tail.join("\n")) + "</pre>";
-  } else {
-    h += '<div class="chips" style="gap:16px">' + kv(l.elapsed, secs(r.seconds)) + kv(l.steps, r.done + "/" + r.total) +
-      kv(l.calls, r.calls) + kv(l.tokens, (r.in || 0) + " / " + (r.out || 0)) + kv(l.retries, r.retries) +
-      kv(l.fallbacks, r.fallbacks) + kv(l.cache, r.cache) + "</div>";
-    h += '<div class="chips" style="gap:16px;margin-top:4px">' + kv(l.backend, r.backend || "—") + kv(l.model, r.model || "—") +
-      (r.cpu != null ? kv("CPU", r.cpu.toFixed(1) + "%") : "") + (r.rss ? kv("RAM", bytes(r.rss)) : "") + "</div>";
-    const long = Math.max(0.001, ...r.steps.map(p => p.seconds || 0));
-    h += '<table style="margin-top:6px"><thead><tr><th>#</th><th>' + esc(L().cols.no) + "</th><th>" + esc(L().cols.title) +
-      "</th><th>" + esc(L().cols.time) + '</th><th class="n"></th></tr></thead><tbody>' + r.steps.map(p =>
-        '<tr><td class="' + cls(p.status) + '">' + icon(p.status) + " " + esc(p.step) + '</td><td class="ltr muted">' + esc(p.number) +
-        "</td><td" + (p.status === "running" ? ' class="ok"' : "") + ">" + esc(p.title) + "</td><td>" +
-        (p.seconds ? bar(100 * p.seconds / long, 14) : "") + '</td><td class="n ltr">' + secs(p.seconds) + "</td></tr>").join("") + "</tbody></table>";
-  }
-  $("detail").innerHTML = h;
-}
-function logPanel() {
-  const l = L(), c = l.cols;
-  $("tLog").innerHTML = '<span class="warn">' + esc(l.log) + '</span> <span class="muted ltr">history/servers-*.jsonl</span>';
-  $("log").innerHTML = S.log.length ? "<thead><tr><th>" + c.at + "</th><th>" + c.act + "</th><th>" + c.srv + "</th><th>" + c.by +
-    "</th><th>" + c.detail + "</th></tr></thead><tbody>" + S.log.map(x => '<tr><td class="ltr muted">' + esc(x.time.slice(11) || x.time) +
-    '</td><td class="ltr cy">' + esc(x.action) + '</td><td class="ltr">' + esc(x.server) + "</td><td>" + esc(x.by) +
-    '</td><td class="ltr muted">' + esc(x.detail) + "</td></tr>").join("") + "</tbody>"
-    : '<tbody><tr><td class="muted">' + esc(l.noLog) + "</td></tr></tbody>";
-}
-function keysBar() {
-  const k = L().k, ro = S && S.read_only;
-  const item = (key, label, off) => '<span class="k' + (off ? " off" : "") + '" data-k="' + key + '"><b class="ltr">' + key + "</b> " + esc(label) + "</span>";
-  $("keys").innerHTML = item("↑↓", k.sel) + item("s", k.s, ro) + item("x", k.x, ro) + item("r", k.r, ro) + item("t", k.t, ro) +
-    item("f", k.f, ro) + item("d", k.d, ro) + '<span class="k"><b class="ltr" data-k="+">+</b>/<b class="ltr" data-k="-">-</b> ' +
-    esc(k.refresh) + ' <span class="ltr">' + every + "ms</span></span>" + (ro ? '<span class="warn">' + esc(L().ro) + "</span>" : "");
-  document.querySelectorAll("#keys [data-k]").forEach(e => e.onclick = ev => { ev.stopPropagation(); key(e.dataset.k); });
-}
-function draw() {
-  document.documentElement.lang = lang; document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
-  $("lang").textContent = "[L] " + L().langBtn; document.title = "tawjih · " + (lang === "ar" ? "لوحة التحكم" : "dashboard");
-  if (!S) { keysBar(); return; }
-  sel = Math.max(0, Math.min(sel, S.rows.length - 1));
-  sysPanel(); serversPanel(); filesPanel(); runsPanel(); detailPanel(); logPanel(); keysBar();
-  $("clock").textContent = S.time;
-}
-function say(text) { $("msg").textContent = text; msgT = Date.now(); }
-async function load() {
-  if (!token) { say(L().tok); return; }
-  try {
-    const res = await fetch("/api/state", {headers: {Authorization: "Bearer " + token}});
-    if (res.status === 401) { say(L().tok); return; }
-    S = await res.json(); draw();
-    if (msgT && Date.now() - msgT > 8000) { $("msg").textContent = ""; msgT = 0; }
-  } catch (e) { say(String(e)); }
-}
-async function act(k, text) {
-  const r = S && S.rows[sel];
-  if (!r || r.kind !== "server") { say(L().needSrv); return; }
-  if ((k === "x" || k === "r") && !confirm(L().sure.replace("{0}", L().k[k]).replace("{1}", r.name))) return;
-  if (k === "t") { text = prompt(r.name + ": " + L().ask, ""); if (!text) return; }
-  say("…");
-  try {
-    const res = await fetch("/api/action", {method: "POST", headers: {Authorization: "Bearer " + token,
-      "Content-Type": "application/json"}, body: JSON.stringify({server: r.name, key: k, text: text || ""})});
-    const j = await res.json(); say(j.message || j.error || res.status);
-  } catch (e) { say(String(e)); }
-  load();
-}
-function key(k) {
-  if (k === "↑↓" || k === "down") { sel = Math.min((S ? S.rows.length : 1) - 1, sel + 1); draw(); }
-  else if (k === "up") { sel = Math.max(0, sel - 1); draw(); }
-  else if (k === "+") { every = Math.max(500, every - 500); start(); keysBar(); }
-  else if (k === "-") { every = Math.min(10000, every + 500); start(); keysBar(); }
-  else if (k === "l") { lang = lang === "ar" ? "en" : "ar"; try { localStorage.setItem("tawjih.lang", lang); } catch (e) {} draw(); }
-  else if ("sxrtfd".includes(k) && k.length === 1) { if (!(S && S.read_only)) act(k); }
-}
-function start() { if (timer) clearInterval(timer); timer = setInterval(load, every); }
-document.addEventListener("keydown", e => {
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const m = {ArrowDown: "down", ArrowUp: "up"}[e.key];
-  if (m) { e.preventDefault(); key(m); return; }
-  const k = e.key.toLowerCase();
-  if (["+", "-", "=", "l", "s", "x", "r", "t", "f", "d"].includes(k)) { e.preventDefault(); key(k === "=" ? "+" : k); }
-});
-$("lang").onclick = () => key("l");
-draw(); load(); start();
-</script>
-</body>
-</html>
-"""
-
-
-__all__ = ['Board', 'PAGE', 'add_dashboard_parser', 'cmd_dashboard',
-           'make_server']
+__all__ = ['Board', 'Window', 'add_dashboard_parser', 'cmd_dashboard',
+           'detail_lines', 'row_cells', 'shape', 'visual']
