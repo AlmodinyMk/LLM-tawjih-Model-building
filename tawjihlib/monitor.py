@@ -232,12 +232,10 @@ class System:
         if now - self.gpu_t >= 2.0:
             self.gpu_t = now
             try:
-                out = subprocess.run(
-                    ["nvidia-smi",
-                     "--query-gpu=index,name,utilization.gpu,memory.used,"
-                     "memory.total,memory.free",
-                     "--format=csv,noheader,nounits"], capture_output=True,
-                    text=True, timeout=3).stdout
+                out = subprocess.run(["nvidia-smi", GPU_QUERY,
+                                      "--format=csv,noheader,nounits"],
+                                     capture_output=True, text=True,
+                                     timeout=3).stdout
                 self.gpu = [gpu_row(line) for line in
                             out.strip().splitlines()]
             except (OSError, ValueError, subprocess.SubprocessError):
@@ -306,6 +304,10 @@ class System:
                      "tx_total": net[1]} if net else None),
                 "gpu": self._gpus(now), "procs": procs,
                 "history": list(self.hist)}
+
+
+GPU_QUERY = ("--query-gpu=index,name,utilization.gpu,memory.used,memory.total,"
+             "memory.free")
 
 
 def gpu_row(line):
