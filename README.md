@@ -553,7 +553,12 @@ on macOS the CPU comes from the load average and memory is not shown.
 In Arabic the two columns change sides; whether the letters also run
 right to left is the terminal's own choice.
 
-![tawjih top: the processor, memory, the trees with each file's runs, the step running now, and the runs](docs/images/top.png)
+![tawjih top: the processor, memory, the trees with each file's runs, the step running now, and the runs with a model server among them](docs/images/top.png)
+
+![tawjih top with a model server chosen: its health, settings, CPU and RAM, and the end of its log](docs/images/top-server.png)
+
+The server in these pictures is a stand-in, and this computer has no GPU,
+so no GPU bars show.
 
 ## Commands
 
