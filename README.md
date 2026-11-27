@@ -647,7 +647,8 @@ this computer has none.
 | `generate NAME (--start REF --end REF \| --goal TEXT --backend B) [--scope REF]` | propose a path; `generate NAME --accept [--replace]` saves it |
 | `tangle [--branch REF \| --path NAME] [-o FILE]` | export the code sides as Python functions, one per step |
 | `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code] [--human-approval always\|run\|never]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
-| `provider list\|add\|set\|policy\|rm\|default\|fallback\|test [NAME] ...` | named providers (`set` changes one that exists), retries and fallback chains; see [AI providers](#ai-providers) |
+| `provider list\|add\|set\|policy\|rm\|default\|fallback\|test\|breaker [NAME] ...` | named providers (`set` changes one that exists), retries, rate limits (`--rate`), breakers (`--breaker`) and fallback chains; see [AI providers](#ai-providers) |
+| `health [--local] [--json]` | one report: the policy, each provider (key, answer, breaker), each model server, the GPUs, the disk, the installed libraries |
 | `runtime list\|add\|rm\|default\|check\|jobs\|status\|logs\|cancel\|collect` | where long jobs run, and the project's jobs; see [Runtimes](#runtimes-where-jobs-run) |
 | `arch create\|derive\|list\|show\|validate\|set\|diff\|components\|mutate\|export\|build\|rank` | language-model architectures as three-faced files; see [The architecture lab](#the-architecture-lab) |
 | `policy show\|set\|reset` | the project's own limits, which only restrict; see [The project's policy](#the-projects-policy) |
@@ -1521,6 +1522,55 @@ server: `top_p=0.9`, `chat_template_kwargs={"enable_thinking": false}`).
 Live tests:
 `TAWJIH_LIVE_TESTS=1 TAWJIH_LIVE_PROJECT=folder python -m unittest
 tests.test_live`.
+
+**Rate limits, breakers and a health report.** Three things keep a long
+run going when a provider is busy or down:
+
+```
+tawjih.py provider set cloud --rate 60/min       # wait rather than get a 429
+tawjih.py provider set local --breaker 5/60      # 5 failures: skip it 60 s
+tawjih.py provider breaker                       # which are open; --reset
+tawjih.py health                                 # everything a run needs
+```
+
+- **`--rate N/UNIT`** (`2/s`, `60/min`, `1000/h`, `10000/day`): a call waits
+  until fewer than N calls were made in the last window. The steps of a run
+  share the count. Separate commands running at the same time do not see
+  each other's calls.
+- **`--breaker FAILURES[/SECONDS]`:** after that many failed calls in a row
+  (each after its retries) the provider is not called for SECONDS (60 by
+  default), and its fallback answers at once. When the time is over, one
+  call is let through: if it works the breaker closes, if not it opens
+  again. The state is kept in `history/breakers.json`, so it holds across
+  runs; `provider breaker NAME --reset` closes it by hand.
+- **`tawjih health`** (`صحة`) checks, in one report:
+  - the policy;
+  - each provider: its key, whether the policy allows it, whether it
+    answers (asked for its list of models, which costs nothing), whether
+    it has the model named, and its breaker;
+  - each model server, the GPUs and the disk;
+  - which libraries of the nine layers are installed, with their versions.
+
+  It ends with 1 when something fails. `--local` asks nothing outside this
+  computer; `--json` is for scripts.
+
+**Testing failures: `--chaos`.** Retries, fallbacks and breakers are only
+worth something if they work when it matters. `run --chaos RULE` (and
+`path ... --chaos`) makes a model call fail or wait on purpose:
+
+```
+tawjih.py run solve --chaos fail@provider:local       # local fails: does cloud answer?
+tawjih.py run solve --chaos fail=429@1.2              # step 1.2 is refused, on every provider
+tawjih.py run solve --chaos slow=3s@step:1            # the first step waits 3 s
+tawjih.py run solve --chaos slow=500ms@*              # every call
+```
+
+A rule names a step by its number, id, title or `step:N` (its place in the
+run), a provider by `provider:NAME`, or every call by `*`. `fail` takes an
+HTTP status (503 by default, so the provider's retries and fallback act).
+The run record and each step's usage list the rules, so such a run is never
+taken for a real one, and `--resume` does not reuse kept answers while a
+rule is given.
 
 ## The project's policy
 

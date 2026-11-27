@@ -265,7 +265,182 @@ DEFAULT_POLICY = {"timeout": 600, "retries": 2,
                   "backoff": "exponential", "backoff_seconds": 2.0}
 PROVIDER_KEYS = ("kind", "base_url", "model", "api_key_env", "timeout",
                  "retries", "retry_status", "backoff", "backoff_seconds",
-                 "num_ctx", "options")
+                 "num_ctx", "options", "rate", "breaker")
+
+
+# ------------------------------------------------------------- rate limits
+RATE_UNITS = {"s": 1, "sec": 1, "second": 1, "m": 60, "min": 60,
+              "minute": 60, "h": 3600, "hour": 3600, "d": 86400,
+              "day": 86400}
+
+
+def parse_rate(text):
+    """'60/min' -> (60, 60.0): at most N calls in each window of seconds.
+    Units: s, min, h, day (and their long names)."""
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d*)\s*([a-z]+)\s*",
+                     str(text or "").lower())
+    if not m or int(m.group(1)) < 1 or m.group(3) not in RATE_UNITS:
+        raise ValueError("a rate is N/UNIT, e.g. 60/min, 2/s, 1000/h, "
+                         "10000/day; got %r" % (text,))
+    return int(m.group(1)), float(int(m.group(2) or 1) *
+                                  RATE_UNITS[m.group(3)])
+
+
+class _Limiter:
+    """A sliding window per provider: a call waits until fewer than N
+    calls were made in the last window. Exact within one process (the
+    steps of a run share it); separate processes do not see each other."""
+    def __init__(self):
+        self.lock, self.calls = threading.Lock(), {}
+
+    def wait(self, name, rate):
+        n, period = parse_rate(rate)
+        waited = 0.0
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                q = [t for t in self.calls.get(name, []) if t > now - period]
+                if len(q) < n:
+                    q.append(now)
+                    self.calls[name] = q
+                    return waited
+                pause = q[0] + period - now
+                self.calls[name] = q
+            if not waited:
+                print("  %s: %s reached; waiting %.1f s" % (name, rate, pause),
+                      file=sys.stderr)
+            time.sleep(min(pause, 5.0) + 0.001)
+            waited += min(pause, 5.0) + 0.001
+
+
+LIMITER = _Limiter()
+
+
+# ---------------------------------------------------------- circuit breakers
+BREAKER_COOLDOWN = 60.0
+_breaker_lock = threading.Lock()
+
+
+def breaker_settings(cfg):
+    """(failures, cooldown seconds) from a provider's "breaker", or None.
+    It takes a number of failures (cooldown 60 s) or {"failures": N,
+    "cooldown": SECONDS}."""
+    b = cfg.get("breaker")
+    if not b:
+        return None
+    if isinstance(b, dict):
+        return int(b.get("failures", 5)), float(b.get("cooldown",
+                                                      BREAKER_COOLDOWN))
+    return int(b), BREAKER_COOLDOWN
+
+
+def breakers_file(root):
+    return Path(root) / "history" / "breakers.json"
+
+
+_breakers_mem = {}             # without a project
+
+
+def load_breakers(root):
+    if not root:
+        return _breakers_mem
+    try:
+        data = json.loads(breakers_file(root).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_breakers(root, data):
+    if not root:
+        return
+    f = breakers_file(root)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                   encoding="utf-8")
+    os.replace(tmp, f)
+
+
+def breaker_open(root, name):
+    """Seconds left while the provider's breaker is open, else 0. When the
+    cooldown is over one call is let through: if it fails, it opens again."""
+    st = load_breakers(root).get(name) or {}
+    return max(0.0, float(st.get("open_until", 0)) - time.time())
+
+
+def breaker_note(root, name, cfg, ok):
+    """Count a provider's failure (after its retries) or reset on success;
+    open the breaker after the failures set in a row."""
+    bs = breaker_settings(cfg)
+    with _breaker_lock:
+        data = load_breakers(root)
+        st = data.get(name) or {}
+        if ok:
+            if not st:
+                return
+            data.pop(name, None)
+            _save_breakers(root, data)
+            return
+        if not bs:
+            return
+        failures, cooldown = bs
+        st["failures"] = int(st.get("failures", 0)) + 1
+        st["last"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if st["failures"] >= failures:
+            st["open_until"] = time.time() + cooldown
+            st["opened"] = st["last"]
+            print("  %s: %d failures in a row; its breaker is open for %.0f s"
+                  % (name, st["failures"], cooldown), file=sys.stderr)
+        data[name] = st
+        _save_breakers(root, data)
+
+
+def breaker_reset(root, name=None):
+    """Close one breaker, or all; returns the names closed."""
+    with _breaker_lock:
+        data = load_breakers(root)
+        names = [name] if name else sorted(data)
+        gone = [n for n in names if data.pop(n, None) is not None]
+        _save_breakers(root, data)
+    return gone
+
+
+# ------------------------------------------------------------------- chaos
+CHAOS = []                     # rules for this process (run --chaos)
+_step = threading.local()      # the step whose model is called
+
+
+def parse_chaos(spec):
+    """'fail@1.2', 'fail=429@1.2', 'slow=3s@1.2', 'fail@provider:NAME',
+    'slow=500ms@*': a failure (an HTTP status, 503 by default, so that
+    retries and fallbacks act) or a delay before a step's or a provider's
+    model calls."""
+    m = re.fullmatch(r"\s*(fail|slow)(?:=([0-9.]+)(ms|s)?)?\s*@\s*(.+?)\s*",
+                     spec or "")
+    if not m:
+        raise ValueError("chaos is fail[=STATUS]@TARGET or slow=SECONDS@TARGET "
+                         "(TARGET: a step's number, id or title, "
+                         "provider:NAME, or *); got %r" % (spec,))
+    what, val, unit, target = m.groups()
+    rule = {"what": what, "target": target, "spec": spec.strip()}
+    if what == "fail":
+        if unit or (val and "." in val):
+            raise ValueError("fail takes an HTTP status: fail=429@%s" % target)
+        rule["status"] = int(val or 503)
+    else:
+        if not val:
+            raise ValueError("slow takes a time: slow=3s@%s" % target)
+        rule["seconds"] = float(val) / (1000.0 if unit == "ms" else 1.0)
+    return rule
+
+
+def _chaos_for(provider):
+    names = getattr(_step, "names", None) or set()
+    for r in CHAOS:
+        t = r["target"]
+        if t == "*" or t == "provider:" + provider or t in names:
+            yield r
 
 
 # ---------------------------------------------------------------- providers
@@ -459,9 +634,19 @@ def call_model(store_root, backend, prompt, model="", fallback=True):
     _usage.last = None
     t0 = time.monotonic()
     failures, answer, used, attempts = [], None, None, 0
+    chaos, skipped = [], []
     for k, (name, cfg) in enumerate(chain):
         policy = dict(DEFAULT_POLICY, **{x: cfg[x] for x in DEFAULT_POLICY
                                          if x in cfg})
+        left = breaker_open(store_root, name) if breaker_settings(cfg) else 0
+        if left:
+            skipped.append(name)
+            failures.append("%s: breaker open (%.0f s left)" % (name, left))
+            print("  %s: breaker open for %.0f s more; not called" % (
+                name, left), file=sys.stderr)
+            if k + 1 < len(chain):
+                print("  trying %s" % chain[k + 1][0], file=sys.stderr)
+            continue
         # the step's model on its own provider; a fallback's own model first
         m = (model or cfg.get("model", "")) if k == 0 else \
             (cfg.get("model") or model)
@@ -469,6 +654,15 @@ def call_model(store_root, backend, prompt, model="", fallback=True):
             attempts += 1
             _conf.cfg = cfg
             try:
+                if cfg.get("rate"):
+                    LIMITER.wait(name, cfg["rate"])
+                for r in _chaos_for(name):
+                    chaos.append(r["spec"])
+                    if r["what"] == "slow":
+                        time.sleep(r["seconds"])
+                    else:
+                        raise ProviderError("chaos: an injected failure "
+                                            "(%s)" % r["spec"], r["status"])
                 answer = BACKENDS[cfg["kind"]](sent, model=m) or ""
                 used = name
                 break
@@ -485,20 +679,28 @@ def call_model(store_root, backend, prompt, model="", fallback=True):
                 break
             finally:
                 _conf.cfg = None
+        if breaker_settings(cfg):
+            breaker_note(store_root, name, cfg, bool(used))
         if used:
             break
         if k + 1 < len(chain):
-            print("  %s failed; trying %s" % (name, chain[k + 1][0]),
-                  file=sys.stderr)
+            why = failures[-1].split(": ", 1)[-1][:120] if failures else ""
+            print("  %s failed%s; trying %s" % (
+                name, " (%s)" % why if why else "", chain[k + 1][0]),
+                file=sys.stderr)
     if used is None:
         err = ProviderError("every provider failed: " + " | ".join(failures))
-        err.attempts = attempts
+        err.attempts, err.chaos = attempts, chaos
         raise err
     usage = dict(getattr(_usage, "last", None) or {},
                  seconds=round(time.monotonic() - t0, 3),
                  chars_in=len(sent), chars_out=len(answer),
                  redacted=len(mapping), provider=used, attempts=attempts,
                  sent=sent, answer=answer)   # as they crossed the network
+    if chaos:
+        usage["chaos"] = chaos
+    if skipped:
+        usage["breaker_skipped"] = skipped
     if mapping:
         answer = Redactor.unmask(answer, mapping)
     return answer, usage
@@ -538,6 +740,21 @@ def _is_local(url):
         ".localhost")
 
 
+def provider_url(cfg):
+    """The address a network provider is called at: its base_url, else the
+    environment's, else the service's own."""
+    kind = cfg.get("kind")
+    if kind not in NETWORK_KINDS:
+        return ""
+    return cfg.get("base_url") or {
+        "ollama": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+        "openai": os.environ.get("TAWJIH_BASE_URL",
+                                 "https://api.openai.com/v1"),
+        "anthropic": os.environ.get("ANTHROPIC_BASE_URL",
+                                    "https://api.anthropic.com"),
+        "gemini": os.environ.get("GEMINI_BASE_URL", GEMINI_URL)}[kind]
+
+
 def check_network(root, chain):
     """Refuse providers the project's policy does not allow."""
     allow = load_policy(root)["allow_network"]
@@ -550,13 +767,7 @@ def check_network(root, chain):
         if allow is False:
             die("the project's policy (%s) allows no network provider; %s "
                 "is one" % (POLICY_FILE, name))
-        url = cfg.get("base_url") or {
-            "ollama": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-            "openai": os.environ.get("TAWJIH_BASE_URL",
-                                     "https://api.openai.com/v1"),
-            "anthropic": os.environ.get("ANTHROPIC_BASE_URL",
-                                        "https://api.anthropic.com"),
-            "gemini": os.environ.get("GEMINI_BASE_URL", GEMINI_URL)}[kind]
+        url = provider_url(cfg)
         if not _is_local(url):
             die("the project's policy (%s) allows only providers on this "
                 "computer; %s is at %s" % (POLICY_FILE, name, url))
@@ -571,5 +782,8 @@ __all__ = [
     '_model', '_note_usage', '_post', '_usage', 'backend_anthropic',
     'backend_gemini',
     'backend_dry', 'backend_manual', 'backend_ollama', 'backend_openai',
-    'call_model', 'use_model',
+    'call_model', 'use_model', 'CHAOS', 'LIMITER', 'RATE_UNITS',
+    'breaker_note', 'breaker_open', 'breaker_reset', 'breaker_settings',
+    'breakers_file', 'load_breakers', 'parse_chaos', 'parse_rate', '_step',
+    'provider_url',
 ]

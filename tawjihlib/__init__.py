@@ -6,7 +6,7 @@ them: core, providers, tracing, engine, commands, library, manage, outputs, eval
 
 from importlib import import_module as _import
 
-MODULES = ("core", "providers", "tracing", "engine", "commands", "library", "manage", "outputs", "evaluate", "governance", "runtimes", "serving", "arch", "script", "mcpserver", "home", "monitor", "dashboard", "cli")  # noqa: E501
+MODULES = ("core", "providers", "tracing", "engine", "commands", "library", "manage", "outputs", "evaluate", "governance", "runtimes", "serving", "arch", "script", "mcpserver", "home", "monitor", "dashboard", "health", "cli")  # noqa: E501
 for _name in MODULES:
     _m = _import("%s.%s" % (__name__, _name))
     globals().update({_k: getattr(_m, _k) for _k in _m.__all__})

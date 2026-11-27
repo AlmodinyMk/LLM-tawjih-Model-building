@@ -26,7 +26,9 @@ from .core import (
 )
 from .providers import (
     BACKENDS, DEFAULT_POLICY, POLICY_DEFAULT, POLICY_FILE, POLICY_KEYS,
-    ProviderError, call_model, load_policy, load_providers, providers_file,
+    ProviderError, breaker_open, breaker_reset, breaker_settings,
+    call_model, load_breakers, load_policy, load_providers, parse_rate,
+    providers_file,
 )
 from .engine import (
     CodeTimeout, SANDBOX_LIMITS, machine_side, run_code, run_flow,
@@ -1418,6 +1420,11 @@ def _provider_line(name, cfg, data):
     bits.append("retries %s, %s backoff %ss, timeout %ss" % (
         pol["retries"], pol["backoff"], pol["backoff_seconds"],
         pol["timeout"]))
+    if cfg.get("rate"):
+        bits.append("rate " + cfg["rate"])
+    bs = breaker_settings(cfg)
+    if bs:
+        bits.append("breaker %d failures / %.0f s" % bs)
     if data["fallback"].get(name):
         bits.append("then " + " -> ".join(data["fallback"][name]))
     return "  ".join(bits)
@@ -1440,6 +1447,32 @@ def cmd_provider(a):
                                  data))
         if not data["default"]:
             print("default: dry (set one with: provider default NAME)")
+        return 0
+    if a.action == "breaker":
+        if a.reset:
+            gone = breaker_reset(st.root, a.name)
+            print("closed: %s" % (", ".join(gone) if gone else "nothing "
+                                  "was open or counting"))
+            return 0
+        state = load_breakers(st.root)
+        names = [a.name] if a.name else sorted(
+            set(state) | {n for n, c in provs.items()
+                          if breaker_settings(c)})
+        if not names:
+            print("no breakers (provider set NAME --breaker 5/60)")
+            return 0
+        for n in names:
+            bs = breaker_settings(provs.get(n) or {})
+            x = state.get(n) or {}
+            left = breaker_open(st.root, n)
+            half = not left and bs and x.get("failures", 0) >= bs[0]
+            print("%-16s %-9s %s%s" % (
+                n, "OPEN" if left else "half-open" if half else "closed",
+                "%d/%s failures" % (x.get("failures", 0),
+                                    bs[0] if bs else "?"),
+                ("; %.0f s left (opened %s)" % (left, x.get("opened")))
+                if left else (", last %s" % x["last"] if x.get("last")
+                              else "")))
         return 0
     if not a.name:
         die("provider %s needs a NAME" % a.action)
@@ -1485,6 +1518,25 @@ def cmd_provider(a):
                 die("--retry-status takes numbers: 429,500,502,503,504")
         if (a.retries or 0) < 0 or (a.timeout is not None and a.timeout <= 0):
             die("retries must be 0 or more, and timeout more than 0")
+        if a.rate is not None:
+            if a.rate.strip().lower() in ("", "none", "0"):
+                cfg.pop("rate", None)
+            else:
+                try:
+                    parse_rate(a.rate)
+                except ValueError as e:
+                    die(str(e))
+                cfg["rate"] = a.rate.strip()
+        if a.breaker is not None:
+            m = re.fullmatch(r"\s*(\d+)\s*(?:/\s*([0-9.]+)\s*s?)?\s*",
+                             a.breaker)
+            if not m:
+                die("--breaker takes FAILURES or FAILURES/SECONDS: 5 or 5/60")
+            if int(m.group(1)) == 0:
+                cfg.pop("breaker", None)
+            else:
+                cfg["breaker"] = {"failures": int(m.group(1)),
+                                  "cooldown": float(m.group(2) or 60)}
         if a.num_ctx is not None:
             if a.num_ctx < 0:
                 die("--num-ctx takes a number of tokens (0 removes it)")

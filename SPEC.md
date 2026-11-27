@@ -157,6 +157,45 @@ fallback gets its own model, else the step's. When every provider fails, the
 step fails as for any model call (and its `fallback:` file runs). Usage
 records `provider` and `attempts`.
 
+`rate` (`"N/UNIT"`, UNIT `s`, `min`, `h` or `day`, optionally with a count
+of them: `5/10s`) holds each call of that provider until fewer than N calls
+were made in the last window. The window is kept per process: the steps of
+a run share it, separate processes do not.
+
+`breaker` (`N`, or `{"failures": N, "cooldown": SECONDS}`, cooldown 60)
+counts the provider's failed calls in a row, each after its retries, in
+`history/breakers.json`. At N it opens: until `open_until` the provider is
+skipped in every chain (a failure `breaker open` that moves on to the next
+provider; usage lists it in `breaker_skipped`). After the cooldown one call
+goes through: success removes the entry, failure opens it again for the
+cooldown. `provider breaker [NAME] [--reset]` shows the entries (closed,
+OPEN, half-open) or removes them.
+
+`--chaos RULE` (on `run` and `path`, repeatable) injects trouble before a
+model call, ahead of the provider's own call: `fail[=STATUS]@TARGET` raises
+a provider error with STATUS (503 by default), which is retried, counted by
+breakers and moved past in chains like a real one; `slow=Ns|Nms@TARGET`
+waits first. TARGET is a step's number, id or title, `step:N` (its place in
+the run), `provider:NAME`, or `*`. The run record has `chaos` (the rules)
+and each step's usage the rules that acted; `--resume` reuses no kept
+answer while rules are given. The rules hold for that command only.
+
+`tawjih health [--local] [--json]` (`صحة`) reports, with `ok`, `warn`,
+`FAIL` or `-` on each line:
+- the policy, and whether redaction is on;
+- each provider, as above. Its key variable is checked; a key is required
+  for `anthropic`, `gemini`, and remote `openai`. The policy is checked
+  too. The provider's model list is asked for (`/api/tags`, `/models`,
+  `/v1/models`, `models?key=`), and the model it names must be among them
+  for `ollama` and `openai`. Its rate and breaker are shown. `--local`
+  skips addresses not on this computer;
+- each server's health and process;
+- the GPUs from `nvidia-smi`, the project disk's free space (`warn` under
+  5 GiB), and Python;
+- the libraries of the nine layers that can be imported, with versions.
+
+It exits 1 when a line is `FAIL`.
+
 `options` is an object sent to the server as it is: for `ollama` in the
 request's `options` (`temperature`, `num_predict` ...), for `openai`,
 `anthropic` and `gemini` in the request itself (`top_p`, `max_tokens`,

@@ -21,8 +21,8 @@ from .core import (
     conform, die, inside, who,
 )
 from .providers import (
-    POLICY_FILE, backend_kind, call_model, default_backend, load_policy,
-    load_providers,
+    CHAOS, POLICY_FILE, _step, backend_kind, call_model, default_backend,
+    load_policy, load_providers,
 )
 from .tracing import Tracer, check_allowed, sink, wanted
 
@@ -618,6 +618,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
               "max_workers": max_workers, "on_failure": on_failure,
               "round": list(round_of) if round_of else None,
               "pid": os.getpid(), "t0": time.time()}
+    if CHAOS:       # a run with injected failures is never taken for real
+        record["chaos"] = [r["spec"] for r in CHAOS]
     tracer = None
     if wanted(trace):
         where = sink()
@@ -801,7 +803,7 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                      if use_cache else None)
             kept = None
             if resume and cfile is not None and cfile.is_file() \
-                    and p["id"] not in redo:
+                    and p["id"] not in redo and not CHAOS:
                 try:
                     kept = json.loads(cfile.read_text(encoding="utf-8-sig"))["answer"]
                 except (ValueError, KeyError, TypeError):
@@ -829,6 +831,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                                "rejected\n" + problem + "\nAnswer again, "
                                "following the instructions exactly.")
                     t_call = time.time()
+                    _step.names = {str(p.get("number")), n.id, n.title,
+                                   "step:%s" % p.get("step")}
                     try:
                         out, usage = call_model(store.root, step_backend,
                                                 ask, step_model)
@@ -840,6 +844,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                                               t_call, time.time(), str(e),
                                               attempt + 1)
                         raise StepFailure("model call", e)
+                    finally:
+                        _step.names = None
                     if tracer:
                         tracer.generation(p["step"], step_model, usage,
                                           t_call, time.time(), None,
@@ -854,6 +860,9 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                     pu["calls"] += 1
                     for k in ("in", "out", "seconds"):
                         pu[k] = round(pu[k] + usage.get(k, 0), 3)
+                    for k in ("chaos", "breaker_skipped"):
+                        if usage.get(k):
+                            pu.setdefault(k, []).extend(usage[k])
                     if usage.get("served"):
                         pu["served"] = usage["served"]
                         with lock:
