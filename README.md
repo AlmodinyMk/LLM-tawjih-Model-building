@@ -509,11 +509,15 @@ because terminals do not lay out right-to-left text reliably.
 the manner of btop: the computer's performance beside the runs of paths
 over the files of the trees.
 
-- **cpu**: a graph of the last minutes, each core, the load average.
+- **cpu**: a graph of the last minutes, the processor's name, each core
+  (C0, C1, …), the load average. With `nvidia-smi`, how busy each GPU is
+  (GPU0, GPU1, …) beside the cores, and which GPUs these are
+  (`4× A100-SXM4-80GB`).
 - **mem · disk · net**: memory, the free space of the project's disk, the
   network, and the CPU and memory of the runs going now. With `nvidia-smi`,
-  each GPU's free memory as a bar, red under `--min-free` MiB (8000 by
-  default), and which GPUs `--gpus auto` could take now.
+  each GPU's memory (VRAM0, VRAM1, …): a bar of what is used and what is
+  free, red under `--min-free` MiB (8000 by default), and which GPUs
+  `--gpus auto` could take now.
 - **trees**: every file on its tree lines, with how often it ran, how
   often it succeeded and how long it takes on average; ▶ marks a file
   running now.
@@ -568,7 +572,9 @@ and 2.
 computer. It is drawn by Tawjih itself with Tkinter, which comes with
 Python: no browser, no web server, no port and no network. It shows:
 
-- the processor, memory and each GPU's free memory;
+- what the computer has: the processor's name and each GPU's model;
+- the processor and each core, memory, the disk, each GPU's memory (VRAM)
+  and how busy each GPU is;
 - the model servers, the trees with each file's runs, and the runs;
 - the chosen run with its steps, or the chosen server with its health,
   settings, CPU, RAM and log;

@@ -310,6 +310,14 @@ GPU_QUERY = ("--query-gpu=index,name,utilization.gpu,memory.used,memory.total,"
              "memory.free")
 
 
+def gpu_model(name):
+    """A GPU's model without its maker's name: A100-SXM4-80GB."""
+    for maker in ("NVIDIA ", "AMD ", "Intel "):
+        if name.startswith(maker):
+            return name[len(maker):]
+    return name
+
+
 def gpu_row(line):
     """One line of nvidia-smi: index, name, use %, used, total, free MiB."""
     idx, name, util, used, total, free = [x.strip() for x in line.split(",")]
@@ -722,24 +730,45 @@ def cpu_panel(d, s, w, h, interval, lang="en"):
     side.append([("CPU ", "text", True)] + d.meter(s["cpu"], mw) +
                  [(_rjust("%s%%" % ("—" if s["cpu"] is None else
                                     "%.0f" % s["cpu"]), 6), "text")])
-    cores = s["cores"]
-    room = inner - 3
-    if cores and room > 0:
-        cols = 1 if len(cores) <= room else 2
-        cw = rp // cols
-        bw = max(2, cw - 10)
-        per = (len(cores) + cols - 1) // cols
-        for r in range(min(per, room)):
+    # each core, then how busy each GPU is (its memory is in mem): one
+    # column if they fit, else the cores and the GPUs in columns of their own
+    cores = [("C%d" % i, v) for i, v in enumerate(s["cores"] or [])]
+    gpus = [("GPU%d" % g.get("index", i), g["util"])
+            for i, g in enumerate(s.get("gpu") or [])]
+    kinds = {}
+    for i, g in enumerate(s.get("gpu") or []):
+        kinds.setdefault(gpu_model(g["name"]), []).append(
+            str(g.get("index", i)))
+    room = inner - 3 - (1 if kinds else 0)
+    if (cores or gpus) and room > 0:
+        if len(cores) + len(gpus) <= room:
+            columns = [cores + gpus]
+        else:
+            columns = [grp[k:k + room] for grp in (cores, gpus)
+                       for k in range(0, len(grp), room)]
+        fit = max(1, rp // 14)
+        hidden = sum(len(c) for c in columns[fit:])
+        columns = columns[:fit]
+        cw = rp // len(columns)
+        lw = max(len(x[0]) for c in columns for x in c) + 1
+        bw = max(2, cw - lw - 6)
+        for r in range(max(len(c) for c in columns)):
             line = []
-            for cidx in range(cols):
-                i = r + cidx * per
-                if i < len(cores):
-                    line += [(_ljust("C%d" % i, 4), "sub")] + d.meter(
-                        cores[i], bw) + [(_rjust("%.0f%%" % cores[i], 5),
-                                          "dim"), (" ", None)]
+            for c in columns:
+                if r < len(c):
+                    name, v = c[r]
+                    line += [(_ljust(name, lw), "sub")] + d.meter(
+                        v, bw) + [(_rjust("%.0f%%" % v, 5), "dim"),
+                                  (" ", None)]
+                else:
+                    line += [(" " * cw, None)]
             side.append(line)
-        if per > room:
-            side.append([("… %d more" % (len(cores) - room * cols), "dim")])
+        if hidden:
+            side.append([("… %d more" % hidden, "dim")])
+    if kinds and len(side) < inner - 1:     # which GPUs these are
+        side.append([(_cut("  ".join(
+            "%d× %s" % (len(ix), k) if len(ix) > 1 else "%s (GPU%s)" % (
+                k, ix[0]) for k, ix in kinds.items()), rp), "sub")])
     if s["load"]:
         side += [[]] * max(0, inner - len(side) - 1)
         side.append([("LAV: ", "sub"), (" ".join("%.2f" % x for x in
@@ -786,21 +815,22 @@ def mem_panel(d, s, project, w, min_free=8000, lang="en"):
                      [(_rjust(fmt_bytes(k["free"]), 11), "text"),
                       (_rjust("free", 5), "dim")])
     gpus = s["gpu"] or []
-    for g in gpus:
-        # free memory, red below --min-free, and how busy it is
+    for i, g in enumerate(gpus):
+        # each GPU's memory as Disk: used, and what is free (red below
+        # --min-free); how busy each GPU is shows with the cores
+        name = _ljust("VRAM%d" % g.get("index", i), 6)
         free = g.get("free")
+        pct = 100.0 * g["used"] / max(1, g["total"])
         if free is None:
-            lines.append([(_ljust("GPU", 6), "sub")] + d.meter(
-                g["util"], bw) + [(_rjust(fmt_bytes(g["used"]), 11),
-                                   "text"),
-                                  (_rjust("%.0f%%" % g["util"], 5), "dim")])
+            lines.append([(name, "sub")] + d.meter(pct, bw) + [
+                (_rjust(fmt_bytes(g["used"]), 11), "text"),
+                (_rjust("used", 5), "dim")])
             continue
-        pct = 100.0 * free / max(1, g["total"])
         low = free / 2 ** 20 < min_free
-        lines.append([(_ljust("GPU%d" % g.get("index", 0), 6), "sub")] +
-                     d.meter(pct, bw, "red" if low else "green") +
+        lines.append([(name, "sub")] + d.meter(pct, bw, "red" if low
+                                                else None) +
                      [(_rjust(fmt_bytes(free), 11), "red" if low else
-                       "text"), (_rjust("%.0f%%" % g["util"], 5), "dim")])
+                       "text"), (_rjust("free", 5), "dim")])
     if gpus and gpus[0].get("free") is not None:
         ok = [str(g.get("index", i)) for i, g in enumerate(gpus)
               if g["free"] / 2 ** 20 >= min_free]
@@ -1138,6 +1168,9 @@ def render(sysinfo, project, store, w, h, sel=0, scroll=None, interval=2.0,
     d = Draw(paint or Paint(None), fancy)
     w, h = max(60, w), max(18, h)
     h1 = max(6, min(12, int(h * 0.3)))
+    nc, ng = len(sysinfo.get("cores") or []), len(sysinfo.get("gpu") or [])
+    if ng:      # room for every GPU beside the cores, if the screen has it
+        h1 = max(h1, min(max(nc, ng) + 6, h - 14))
     rest = h - h1
     wl = max(32, int(w * 0.40))
     wr = w - wl
@@ -1457,5 +1490,5 @@ def cmd_top(a):
 
 
 __all__ = ['Draw', 'Keys', 'Project', 'System', 'alive', 'cmd_top',
-           'fmt_bytes', 'fmt_secs', 'gpu_row', 'render', 'server_action',
+           'fmt_bytes', 'fmt_secs', 'gpu_model', 'gpu_row', 'render', 'server_action',
            'server_use', 'snapshot_json', 'summary', 'watched']

@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .core import Store, die, who
 from .monitor import (
-    Project, System, server_action, server_use, watched,
+    Project, System, gpu_model, server_action, server_use, watched,
 )
 
 LOG_LINES = 14
@@ -157,6 +157,7 @@ class Board:
             gpus = [{"index": g.get("index", i), "name": g["name"],
                      "util": g["util"], "total_mib": round(g["total"] /
                                                            2 ** 20),
+                     "used_mib": round(g["used"] / 2 ** 20),
                      "free_mib": round(g["free"] / 2 ** 20)
                      if g.get("free") is not None else None}
                     for i, g in enumerate(s.get("gpu") or [])]
@@ -343,7 +344,7 @@ WORDS = {
     "ar": {"title": "توجيه · لوحة التحكم", "sys": "العتاد والذاكرة",
            "srv": "الخوادم", "files": "الأشجار", "det": "التفاصيل",
            "runs": "التشغيلات", "log": "سجل الأفعال",
-           "free": "حرة للاختيار التلقائي:", "none": "لا شيء",
+           "free": "للاختيار التلقائي (حرة {1} MiB فأكثر): {0}", "none": "لا شيء",
            "noGpu": "لا بطاقة: nvidia-smi غير موجود",
            "noSrv": "لا خوادم بعد: tawjih server add NAME --engine vllm",
            "choose": "اختر صفاً", "needSrv": "اختر خادماً أولاً",
@@ -371,7 +372,7 @@ WORDS = {
     "en": {"title": "tawjih · dashboard", "sys": "system & gpu",
            "srv": "servers", "files": "trees", "det": "details",
            "runs": "runs", "log": "actions",
-           "free": "free for auto:", "none": "none",
+           "free": "free for auto: {0}  ≥ {1} MiB", "none": "none",
            "noGpu": "no GPU: nvidia-smi is not here",
            "noSrv": "no servers yet: tawjih server add NAME --engine vllm",
            "choose": "choose a row", "needSrv": "choose a server first",
@@ -589,7 +590,7 @@ class Window:
         self.files = self._tree(self.f_files, WORDS["en"]["files_cols"])
         self.f_det = self._frame(c["cyan"])
         self.det = tk.Text(self.f_det, bg=c["panel"], fg=c["text"], bd=0,
-                           height=12, wrap="none", highlightthickness=0,
+                           height=9, wrap="none", highlightthickness=0,
                            font=("DejaVu Sans Mono", 10))
         self.det.pack(fill="both", expand=True, padx=6, pady=4)
         for name, colour in (("lbl", "dim"), ("val", "text"),
@@ -620,14 +621,16 @@ class Window:
         a, b = (1, 0) if self.lang == "ar" else (0, 1)
         self.root.grid_columnconfigure(a, weight=5, uniform="c")
         self.root.grid_columnconfigure(b, weight=7, uniform="c")
-        for r, wt in ((0, 0), (1, 0), (2, 1), (3, 2), (4, 1), (5, 0)):
+        # rows shared so that a tall system panel (many cores and GPUs)
+        # leaves the details their own height and gives the runs the rest
+        for r, wt in ((0, 0), (1, 2), (2, 0), (3, 2), (4, 1), (5, 0)):
             self.root.grid_rowconfigure(r, weight=wt)
         pad = dict(padx=6, pady=5, sticky="nsew")
-        self.f_sys.grid(row=0, column=a, rowspan=1, **pad)
-        self.f_srv.grid(row=1, column=a, **pad)
-        self.f_files.grid(row=2, column=a, rowspan=3, **pad)
-        self.f_det.grid(row=0, column=b, rowspan=2, **pad)
-        self.f_runs.grid(row=2, column=b, rowspan=2, **pad)
+        self.f_sys.grid(row=0, column=a, rowspan=2, **pad)
+        self.f_srv.grid(row=2, column=a, **pad)
+        self.f_files.grid(row=3, column=a, rowspan=2, **pad)
+        self.f_det.grid(row=0, column=b, **pad)
+        self.f_runs.grid(row=1, column=b, rowspan=3, **pad)
         self.f_log.grid(row=4, column=b, **pad)
         self.foot.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
         side, other = ("right", "left") if self.lang == "ar" else \
@@ -831,45 +834,82 @@ class Window:
             self.bar(cv, bx, y, bw, pct, colour)
             cv.create_text(vx, y + 5, text=value, anchor="e", font=font,
                            fill=c["sub"])
+        def grid(y, items, colour=None):
+            """Many small bars: one column up to four, then two or four."""
+            n = len(items)
+            cols = 1 if n <= 4 else 2 if n <= 16 else 4
+            rows = (n + cols - 1) // cols
+            cw = (width - 20) // cols
+            for k, (label, pct, value) in enumerate(items):
+                cx, cy = lx + (k // rows) * cw, y + (k % rows) * 20
+                if cols == 1:
+                    line(cy, label, pct, value, colour)
+                    continue
+                cv.create_text(cx, cy + 5, text=label, anchor="w",
+                               font=font, fill=c["sub"])
+                self.bar(cv, cx + 60, cy, cw - 120, pct, colour)
+                cv.create_text(cx + cw - 10, cy + 5, text=value,
+                               anchor="e", font=font, fill=c["sub"])
+            return y + rows * 20
+
+        def pc(v):
+            return "—" if v is None else "%.0f%%" % v
         y = 6
+        kinds = {}
+        for g in s.get("gpus") or []:
+            kinds.setdefault(gpu_model(g["name"]), []).append(str(g["index"]))
+        what = [s.get("name") or "CPU"] + [
+            "%s× %s (%s)" % (len(ix), k, ",".join(ix)) if len(ix) > 1 else
+            "%s (%s)" % (k, ix[0]) for k, ix in kinds.items()]
+        cv.create_text(lx, y + 5, text="  ·  ".join(what), anchor="w",
+                       font=font, fill=c["text"])
+        y += 22
         line(y, "CPU %s" % (s.get("cores") or ""), s.get("cpu"),
-             "—" if s.get("cpu") is None else "%.0f%%" % s["cpu"] + (
+             pc(s.get("cpu")) + (
                  "  LAV %s" % " ".join("%.2f" % x for x in s["load"])
                  if s.get("load") else ""), lab_colour=c["cyan"])
+        y += 20
+        y = grid(y, [("CPU %d" % i, v, pc(v))
+                     for i, v in enumerate(s.get("per_core") or [])])
         m = s.get("mem") or {}
         if m.get("total"):
-            y += 20
             p = 100.0 * m["used"] / m["total"]
             line(y, "RAM", p, "%s / %s  %.0f%%" % (_bytes(m["used"]),
                                                    _bytes(m["total"]), p),
                  c["pink"] if p > 85 else None, c["mauve"])
-        if s.get("disk"):
             y += 20
+        if s.get("disk"):
             k = s["disk"]
             line(y, "Disk", 100.0 * k["used"] / k["total"],
                  "%s free" % _bytes(k["free"]))
-        y += 26
+            y += 20
+        y += 6
         gpus = s.get("gpus") or []
         if not gpus:
             cv.create_text(vx if ar else lx, y + 5, text=self.t(
                 self.w("noGpu"), ar), anchor="e" if ar else "w", font=font,
                 fill=c["dim"])
             y += 20
-        for g in gpus:
+        for g in gpus:          # memory: used, and free (red below the limit)
             low = g["free_mib"] is not None and \
                 g["free_mib"] < self.state["min_free"]
-            pct = 0 if g["free_mib"] is None else \
-                100.0 * g["free_mib"] / max(1, g["total_mib"])
-            line(y, "GPU %d" % g["index"], pct,
-                 "%s MiB free  %.0f%%" % (g["free_mib"], g["util"]),
-                 c["pink"] if low else c["green"])
+            pct = 100.0 * g["used_mib"] / max(1, g["total_mib"])
+            line(y, "VRAM %d" % g["index"], pct,
+                 "%s free / %s" % (
+                     "—" if g["free_mib"] is None else
+                     _bytes(g["free_mib"] * 2 ** 20),
+                     _bytes(g["total_mib"] * 2 ** 20)),
+                 c["pink"] if low else None, c["pink"] if low else None)
             y += 20
+        if gpus:                # how busy each GPU is
+            y = grid(y + 6, [("GPU %d" % g["index"], g["util"],
+                              "%s  %s" % (gpu_model(g["name"]), pc(g["util"])))
+                             for g in gpus])
         if gpus:
             free = ",".join(str(i) for i in s["free_gpus"]) or \
                 self.w("none")
             cv.create_text(vx if ar else lx, y + 5, text=self.t(
-                "%s %s  ≥ %d MiB" % (self.w("free"), free,
-                                     self.state["min_free"]), ar),
+                self.w("free").format(free, self.state["min_free"]), ar),
                 anchor="e" if ar else "w", font=font,
                 fill=c["green"] if s["free_gpus"] else c["pink"])
             y += 20

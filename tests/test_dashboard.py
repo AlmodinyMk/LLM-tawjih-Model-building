@@ -156,5 +156,57 @@ class Window(Base):
         w.root.destroy()
 
 
+FOUR_GPUS = """#!/bin/sh
+cat <<X
+0, NVIDIA A100-SXM4-80GB, 92, 71230, 81920, 10690
+1, NVIDIA A100-SXM4-80GB, 35, 30112, 81920, 51808
+2, NVIDIA A100-SXM4-80GB, 0, 512, 81920, 81408
+3, NVIDIA A100-SXM4-80GB, 88, 77002, 81920, 4918
+X
+"""
+
+
+@unittest.skipIf(os.name == "nt", "the stand-in nvidia-smi is a shell script")
+class Counters(Base):
+    """Each core, RAM, each GPU's memory (VRAM N) and use (GPU N), and
+    which GPUs they are, from a stand-in nvidia-smi with four GPUs."""
+
+    def setUp(self):
+        super().setUp()
+        bin_ = Path(self.root) / "bin"
+        bin_.mkdir()
+        smi = bin_ / "nvidia-smi"
+        smi.write_text(FOUR_GPUS, encoding="utf-8")
+        smi.chmod(0o755)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = str(bin_) + os.pathsep + old
+        self.addCleanup(os.environ.__setitem__, "PATH", old)
+
+    def test_board(self):
+        from tawjihlib.monitor import gpu_model
+        s = Board(self.root, min_free=8000).snapshot()["system"]
+        self.assertEqual([(g["index"], g["util"], g["used_mib"],
+                           g["free_mib"]) for g in s["gpus"]],
+                         [(0, 92, 71230, 10690), (1, 35, 30112, 51808),
+                          (2, 0, 512, 81408), (3, 88, 77002, 4918)])
+        self.assertEqual(s["free_gpus"], [0, 1, 2])
+        self.assertEqual(gpu_model(s["gpus"][0]["name"]), "A100-SXM4-80GB")
+        self.assertIsNotNone(s["mem"])
+
+    def test_top(self):
+        from tawjihlib.monitor import Project, System, render, watched
+        proj, sysm = Project(self.root), System(self.root)
+        snap = proj.snapshot()
+        info = sysm.sample(watched(snap))
+        text = "\n".join(render(info, snap, proj.tree(), 128, 40,
+                                 fancy=False)[0])
+        for i in range(4):
+            self.assertIn("VRAM%d" % i, text)
+            self.assertIn("GPU%d" % i, text)
+        for i in range(len(info["cores"] or [])):
+            self.assertIn("C%d " % i, text)
+        self.assertIn("4× A100-SXM4-80GB", text)
+
+
 if __name__ == "__main__":
     unittest.main()
