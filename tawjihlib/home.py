@@ -113,6 +113,20 @@ CARDS = [
         ("whoami", "identity", "whoami set --name NAME",
          "Your id and name in records: who ran, approved, reviewed."),
     ]),
+    ("Models and servers", False, [
+        ("server", "engines", "server add NAME --engine vllm --model M",
+         "Start, watch and stop vLLM, SGLang, Ollama, llama.cpp and more."),
+        ("server bench", "measure", "server bench NAME --from-file REF",
+         "Time per request and tokens a second, with your own file."),
+        ("batch", "spread", "batch NAME --inputs-dir DIR --backends A,B",
+         "A folder of inputs shared among servers, one per GPU."),
+        ("IF tokens", "size", "path NAME 1 TO 2 IF tokens > 16000 ELSE 3",
+         "Route by the size of a step's output; Arabic الرموز."),
+        ("USING", "per step", "path NAME 1 USING big TO 2",
+         "A step goes to the provider USING names, others elsewhere."),
+        ("--kind gemini", "Google", "provider add NAME --kind gemini",
+         "Google's Gemini API, the key in GEMINI_API_KEY."),
+    ]),
     ("Architectures and jobs", False, [
         ("arch", "design", "arch create TITLE --preset tiny",
          "A model architecture as a three-faced file: hypothesis, spec, "
@@ -230,10 +244,29 @@ TOPICS = {
          "and GPU beside the runs of paths: the step running now, the time "
          "each step took, calls, tokens, retries; and each file of the trees "
          "with its runs, success and average time. Arabic: مراقبة."),
-        ("Keys", "up and down choose a run, PgUp and PgDn move the trees, + "
-         "and - change the refresh time, q quits."),
+        ("Keys", "up and down choose a row, PgUp and PgDn move the trees, + "
+         "and - change the refresh time, L switches Arabic and English, q "
+         "quits. On a server: s start, x stop and r restart (twice), t "
+         "tune, f empty its cache, d the batch command."),
+        ("GPUs and servers", "tawjih top --min-free 16000\nEach GPU's free "
+         "memory, red below the limit, and the GPUs --gpus auto could take; "
+         "each model server with its health, CPU, RAM and GPU memory."),
         ("Without a screen", "tawjih top --once\ntawjih top --json\nOne "
          "frame, or the same facts as JSON for a script."),
+    ]),
+    "servers": ("Model servers", [
+        ("Add and start", "tawjih.py server add big --engine vllm --model M "
+         "--gpus auto --tp 2 --provider\ntawjih.py server start big --wait "
+         "600\nTen engines and any command; a setting an engine does not "
+         "take is refused, and --pass gives it its own arguments."),
+        ("Watch and change", "tawjih.py server status big\ntawjih.py server "
+         "tune big --set mem=0.85 --restart\nHealth, models, metrics and "
+         "logs; settings by name, applied when it starts again."),
+        ("Measure and share", "tawjih.py server bench big --from-file 1.1 "
+         "--requests 16 --concurrency 4\ntawjih.py batch route --inputs-dir "
+         "prompts --backends g0,g1\nThe time per request and tokens a "
+         "second on this computer; a folder of inputs shared among "
+         "servers."),
     ]),
     "langfuse": ("Traces in Langfuse", [
         ("Where", "LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_HOST "
