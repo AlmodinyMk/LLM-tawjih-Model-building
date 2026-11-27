@@ -1000,8 +1000,9 @@ process no longer exists belongs to a run that was stopped. `tawjih top`
 reads these files, the records in `history/`, `models/jobs/` and the
 project's servers (`servers.json`, `servers/NAME/`; each server's health
 asked at most every 5 seconds, and the CPU, memory and GPU memory of its
-process group: it and what it started), and each GPU's free memory from
-`nvidia-smi` (red under `--min-free` MiB, default 8000; the GPUs at or above
+process group: it and what it started), and each GPU's model, use and
+memory from `nvidia-smi` (its use beside the cores as GPU0, GPU1, …; its
+memory as VRAM0, VRAM1, … with what is free, red under `--min-free` MiB, default 8000; the GPUs at or above
 it are those `--gpus auto` could take). It writes nothing unless a key
 asks: on a chosen server `s` starts it, `x` stops and `r` restarts it
 (each pressed twice), `t` reads `KEY=VALUE ...` on the last line and tunes
@@ -1019,8 +1020,9 @@ computer. There is no browser, HTTP server, port or connection: the window
 reads the project and the computer as `top` does, and only a server's
 health check talks to that server.
 
-Panels: the system (CPU, memory, disk, each GPU's free memory; the GPUs at
-or above `--min-free`), the servers, the trees with each file's runs, the
+Panels: the system (the processor's name and each GPU's model; CPU and each
+core, memory, disk, each GPU's memory as VRAM N and its use as GPU N; the
+GPUs at or above `--min-free`), the servers, the trees with each file's runs, the
 runs (and jobs and servers), the details of the chosen row (a run's steps,
 or a server's health, settings, CPU, RAM, command and log) and the last
 servers' actions. The data is read in a thread at most once a second and
