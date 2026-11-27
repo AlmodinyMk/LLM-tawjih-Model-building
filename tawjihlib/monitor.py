@@ -1365,7 +1365,8 @@ def cmd_top(a):
         None if colour == "never" else "true")
     fancy = _fancy() and not getattr(a, "ascii", False)
     interval = max(0.25, float(getattr(a, "interval", 2.0) or 2.0))
-    lang = "ar" if getattr(a, "arabic", False) else "en"
+    lang = getattr(a, "lang", None) or (
+        "ar" if getattr(a, "arabic", False) else "en")
     min_free = getattr(a, "min_free", 8000)
     sysm, proj = System(root), Project(root)
     once = getattr(a, "once", False) or not sys.stdout.isatty()
@@ -1457,4 +1458,4 @@ def cmd_top(a):
 
 __all__ = ['Draw', 'Keys', 'Project', 'System', 'alive', 'cmd_top',
            'fmt_bytes', 'fmt_secs', 'gpu_row', 'render', 'server_action',
-           'snapshot_json', 'summary']
+           'server_use', 'snapshot_json', 'summary', 'watched']

@@ -59,6 +59,7 @@ from .script import (
 )
 from .arch import cmd_arch
 from .serving import add_batch_parser, add_server_parser
+from .dashboard import add_dashboard_parser
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .monitor import cmd_top
@@ -320,8 +321,11 @@ def build_parser():
     s.add_argument("--min-free", type=int, default=8000, metavar="MIB",
                    help="a GPU with less free memory is shown in red and "
                    "left out of the GPUs free for --gpus auto (default 8000)")
+    s.add_argument("--lang", choices=["ar", "en"],
+                   help="the board's language: ar (Arabic) or en (English, "
+                   "the default); L switches it")
     s.add_argument("--arabic", action="store_true",
-                   help="start in Arabic (L switches)")
+                   help="the same as --lang ar")
     s.set_defaults(fn=cmd_top)
 
     s = sub.add_parser("observe", aliases=["langfuse"],
@@ -1203,6 +1207,7 @@ def build_parser():
 
     add_server_parser(sub)
     add_batch_parser(sub)
+    add_dashboard_parser(sub)
 
     s = sub.add_parser("provider", help="named providers (providers.json): "
                        "address, model, key variable, retries, default, "

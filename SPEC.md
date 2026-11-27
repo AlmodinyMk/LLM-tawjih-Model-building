@@ -1,4 +1,4 @@
-# Tawjih specification (0.16.0)
+# Tawjih specification (0.17.0)
 
 This is the contract the program and the tests follow.
 
@@ -1008,8 +1008,38 @@ asks: on a chosen server `s` starts it, `x` stops and `r` restarts it
 it as `server tune`, `f` empties SGLang's cache (`POST /flush_cache`), `d`
 shows the `batch` command for the running servers that are providers;
 each is noted in `history/servers-DATE.jsonl` with `by`. `L` switches
-English and Arabic (`--arabic` starts in Arabic): Arabic words, the two
+English and Arabic (`--lang ar` starts in Arabic): Arabic words, the two
 columns swapped. `top --json` lists the servers too.
+
+## Dashboard
+
+`tawjih dashboard [--lang ar|en] [--min-free MIB] [--interval S]
+[--read-only]` (`لوحة`) shows the board of `top` in a Tkinter window on this
+computer. There is no browser, HTTP server, port or connection: the window
+reads the project and the computer as `top` does, and only a server's
+health check talks to that server.
+
+Panels: the system (CPU, memory, disk, each GPU's free memory; the GPUs at
+or above `--min-free`), the servers, the trees with each file's runs, the
+runs (and jobs and servers), the details of the chosen row (a run's steps,
+or a server's health, settings, CPU, RAM, command and log) and the last
+servers' actions. The data is read in a thread at most once a second and
+every `--interval` seconds (2 by default; `+`/`-` change it).
+
+Keys: `↑↓` choose; `s`, `x`, `r`, `t`, `f`, `d` act on the chosen server as
+in `top` (`x` and `r` ask first; `t` asks for `KEY=VALUE ...`); `L` switches
+the language; `q` quits. Each action is noted in
+`history/servers-DATE.jsonl` with `by`. With `--read-only` no key acts.
+
+The window is Arabic (right to left, the columns mirrored) or English;
+`--lang` chooses it at the start, Arabic by default. Where Tk does not
+shape text (`tk windowingsystem` is `x11`), the board joins Arabic letters
+itself (Arabic Presentation Forms-B, lam-alef ligatures) and orders each
+line right to left: Arabic runs reversed with brackets mirrored, Latin
+letters and digits kept left to right, neutral characters taking the
+direction of their neighbours. Without `tkinter` the command stops with
+the package to install (`python3-tk`, `python3-tkinter`). `top` takes
+`--lang ar|en` too (English by default; `--arabic` is `--lang ar`).
 
 ## Traces
 

@@ -15,7 +15,7 @@ Runs on your computer with Ollama, or with any OpenAI-compatible or
 Anthropic provider. Python, standard library only; Linux and Windows.
 [العربية](README.ar.md)
 
-> **Status: 0.16.0, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.17.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
@@ -530,7 +530,7 @@ over the files of the trees.
   its log.
 
 Up and down choose a row, PgUp and PgDn move the trees, + and - change the
-refresh time, L switches between English and Arabic (`--arabic` starts in
+refresh time, L switches between English and Arabic (`--lang ar` starts in
 Arabic), q quits. On a server:
 
 | Key | Does |
@@ -559,6 +559,51 @@ right to left is the terminal's own choice.
 
 The server in these pictures is a stand-in, and this computer has no GPU,
 so no GPU bars show.
+
+### The board in a window: `tawjih dashboard`
+
+`tawjih dashboard` (Arabic `لوحة`) opens the same board in a window on this
+computer. It is drawn by Tawjih itself with Tkinter, which comes with
+Python: no browser, no web server, no port and no network. It shows:
+
+- the processor, memory and each GPU's free memory;
+- the model servers, the trees with each file's runs, and the runs;
+- the chosen run with its steps, or the chosen server with its health,
+  settings, CPU, RAM and log;
+- the servers' actions with who did them.
+
+The window runs in Arabic, right to left, or English. The keys are the same
+as in `top`: `↑↓` choose, `s` start, `x` stop, `r` restart, `t` tune,
+`f` flush, `d` batch, `+`/`-` refresh speed, `L` language, `q` quit. `x` and
+`r` ask before they act, and `t` asks for `KEY=VALUE`.
+
+```
+tawjih dashboard                  # the window, in Arabic
+tawjih dashboard --lang en        # start in English (--lang ar: Arabic)
+tawjih dashboard --read-only      # show only: no key acts on a server
+tawjih dashboard --interval 5     # refresh every 5 seconds
+```
+
+`--lang ar` or `--lang en` chooses the language when the board starts
+(Arabic without it), and `L` switches it at any time. `top` takes `--lang`
+too (English by default; `--arabic` is the same as `--lang ar`).
+
+- **Nothing from outside.** The window reads the project's files and the
+  computer itself; it opens no connection. Only a server's health check
+  talks to that server, as in `top`.
+- **Arabic on Linux.** Tk on Linux (X11) neither joins Arabic letters nor
+  lays them right to left, so the board does both itself: letters take
+  their joined forms (with lam-alef), and each line is ordered right to
+  left with English words and numbers kept in place. On Windows and macOS
+  Tk does this, and the board leaves it to Tk.
+- **Tkinter.** It is part of Python, but some Linux systems ship it
+  apart: `sudo apt install python3-tk` (Debian, Ubuntu) or
+  `sudo dnf install python3-tkinter` (Fedora). Without it, the board says
+  so; `tawjih top` shows the same in the terminal.
+
+![tawjih dashboard in Arabic, right to left](docs/images/dashboard-ar.png)
+
+![tawjih dashboard in English](docs/images/dashboard-en.png)
 
 ## Commands
 

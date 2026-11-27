@@ -135,6 +135,8 @@ CARDS = [
          "Built with transformers; parameters checked against the count."),
         ("top", "watch", "top",
          "Runs, files and the computer live, like btop; q quits."),
+        ("dashboard", "window", "dashboard",
+         "The same board in a window here, Arabic or English, offline."),
         ("--trace", "Langfuse", "run NAME --input TEXT --trace",
          "Each run as a trace in Langfuse or any OpenTelemetry tool."),
         ("runtime", "jobs", "runtime add NAME --kind ssh --host H",

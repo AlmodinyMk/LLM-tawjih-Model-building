@@ -2,7 +2,7 @@
 
 **Repository:** `AlmodinyMk/LLM-tawjih-Model-building`  
 **Package:** `tawjih` (PyPI)  
-**Current Version:** `v0.16.0` (Pre-1.0 Experimental)  
+**Current Version:** `v0.17.0` (Pre-1.0 Experimental)  
 **Specification:** [`SPEC.md`](./SPEC.md)  
 
 ---
@@ -17,7 +17,7 @@ Before freezing the specification for **`v1.0.0`** and submitting the software f
 
 ## 2. System Context & Current Verification Status
 
-To ensure transparent evaluation, reviewers should note the exact boundaries of what has and has not been verified in `v0.16.0`:
+To ensure transparent evaluation, reviewers should note the exact boundaries of what has and has not been verified in `v0.17.0`:
 
 * **Verified:**
   * Core file model, tree hierarchy (up to 6 levels), SHA-256 machine-side digesting, and staleness detection.
@@ -25,6 +25,7 @@ To ensure transparent evaluation, reviewers should note the exact boundaries of 
   * Schema validation (`contract`), process-level code isolation (`sandbox`), restrictive project policies (`policy`), pre-flight redaction (`redact`), caching (`--resume`), and lineage tracing (`trace`).
   * Automated unit and workflow test suites (`tests/`) passing on both **Linux** and **Windows** with an in-process stand-in model and a local HTTP stand-in for an OpenAI-compatible server; live provider tests (`tests/test_live.py`) are skipped unless `TAWJIH_LIVE_TESTS=1`.
   * Since `v0.16.0`: identities in run, approval and review records (`whoami`); durable MCP runs with idempotency keys, tested with a real stdio client killed mid-run against a stand-in model held on a signal; `eval --repeat N --min-pass K`; the MoE router's load-balancing loss checked on a real Mixtral build.
+  * Since `v0.17.0`: model servers (`tawjih server`: ten engines and any command, health, tuning, benchmarks), `batch` across servers, size conditions and a provider per step in paths, provider options with Ollama's `num_ctx`, the Gemini provider, training pass-through (`--train-arg`, `--model-arg`, `--gpus`, `script`), and the board of `top` with servers, GPU free memory, CPU and RAM, also as a native Tkinter window (`dashboard`, Arabic or English). Engines, `nvidia-smi` and `lmdeploy` were exercised against stand-ins only.
   * Every change is analysed with CodeQL, the path language, contracts, examples and redaction are fuzzed (ClusterFuzzLite with Atheris on pull requests, random inputs in the tests), and releases are signed with Sigstore.
 * **Not Yet Verified (Open Milestones for `v1.0.0`):**
   * End-to-end integration benchmarks against live commercial and local LLM providers (e.g., live Ollama instances, OpenAI-compatible APIs, Anthropic) under non-deterministic generation variance.
