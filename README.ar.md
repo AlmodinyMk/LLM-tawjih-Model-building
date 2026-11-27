@@ -588,6 +588,7 @@ tawjih dashboard --interval 5     # التحديث كل 5 ثوانٍ
 | `do` | جمل إدارة بالعربية أو الإنجليزية تُترجم إلى أوامر (انظر «جمل الإدارة») |
 | `provider list\|add\|set\|policy\|rm\|default\|fallback\|test\|breaker [NAME] ...` | المزوّدون المسمّون (`set` يعدّل مزوّداً موجوداً) وإعادة المحاولة وحدود المعدّل (`--rate`) والقواطع (`--breaker`) والسلاسل البديلة واختبارها (انظر «المزوّدون») |
 | `health [--local] [--json]` | تقرير واحد: السياسة، وكل مزوّد (المفتاح والإجابة والقاطع)، وكل خادم نماذج، والبطاقات، والقرص، والمكتبات المثبّتة |
+| `k8s manifest\|apply\|status\|logs\|scale\|rollback\|forward\|delete [NAME]` / `ansible playbook\|run NAME` | خادم نماذج على Kubernetes (عبر kubectl) أو خدمة systemd على أجهزتك (عبر ansible-playbook)؛ والتغيير يحتاج `--yes` (انظر «على عنقود أو على أجهزتك») |
 | `runtime` | أين تعمل المهام الطويلة، ومهام المشروع (انظر «بيئات التنفيذ») |
 | `arch` | معماريات النماذج اللغوية كملفات ثلاثية الوجوه (انظر «مختبر المعماريات») |
 | `policy` | حدود المشروع لنفسه، وهي تضيّق فقط (انظر «سياسة المشروع») |
@@ -1263,6 +1264,59 @@ tawjih batch route --inputs-dir prompts --backends g0,g1 --out answers
 
 أسطر التشغيل هذه مكتوبة من وثائق كل محرك؛ واختُبرت هنا بخادم بديل، لا بالمحركات
 نفسها.
+
+### على عنقود أو على أجهزتك: `k8s` و`ansible`
+
+الخادم نفسه في `servers.json` يمكن أن يعمل على عنقود Kubernetes أو خدمةً على
+أجهزة لك. يكتب توجيه ما تقرؤه هاتان الأداتان، ويشغّل `kubectl` و`ansible-playbook`
+كما هما مثبّتتان هنا؛ ولا يحلّ محلّهما، وما وراء حياة خادم النموذج شأنهما.
+
+```
+tawjih k8s manifest big -o big.yaml            # Deployment وService
+tawjih k8s apply big                           # يفحصه العنقود، ولا يتغيّر شيء
+tawjih k8s apply big --yes --namespace ml      # يُطبَّق
+tawjih k8s status                              # النسخ الجاهزة، والحاويات، وإعاداتها، وسبب الانتظار
+tawjih k8s logs big --lines 200
+tawjih k8s scale big --replicas 4 --yes
+tawjih k8s rollback big --yes                  # النسخة السابقة
+tawjih k8s forward big                         # خادم العنقود على هذا الجهاز
+tawjih k8s delete big --yes
+
+tawjih ansible playbook big --install -o big.yml
+tawjih ansible run big --hosts gpu1,ops@gpu2   # ansible-playbook --check --diff
+tawjih ansible run big --hosts gpu1,ops@gpu2 --yes --listen 0.0.0.0
+tawjih ansible run big -i hosts.ini --state restarted --yes
+```
+
+- **ملف العنقود.** يُبنى من إعدادات الخادم:
+  - صورة المحرك (`--image` لـ `custom` أو غيرها)؛
+  - سطر تشغيله مستمعاً على `0.0.0.0`؛
+  - `nvidia.com/gpu` بعدد `--gpus` (أو `--gpus N`)؛
+  - فحص جاهزية على عنوان صحته؛
+  - `/dev/shm` في الذاكرة؛
+  - مجلد النموذج بـ `--claim PVC`.
+
+  ولا يدخله المفتاح أبداً: يأتي من Secret، وأول الملف يقول كيف يُصنع.
+- **ملف Ansible.** على كل جهاز:
+  - يثبّت المحرك بـ `pip` (`--install`)؛
+  - يكتب وحدة systemd تجد المحرك في PATH الجهاز؛
+  - يضع المفتاح في `/etc/tawjih/NAME.env` من المتغير نفسه على هذا الجهاز (بصلاحية
+    0600، وخارج ما يطبعه Ansible)؛
+  - يشغّل الخدمة أو يعيد تشغيلها (أو يوقفها بـ `--state stopped`)؛
+  - ينتظر حتى يجيب عنوان الصحة.
+
+  و`--hosts` يكتب `servers/ansible/hosts.ini`، و`-i` يأخذ قائمتك.
+- **السؤال أولاً.** لا يتغيّر شيء دون `--yes`. ومن دونه يفحص العنقود `k8s apply`
+  (`--dry-run=server`)، ويشغّل `ansible run` بـ `--check --diff`، وتقول `scale`
+  و`rollback` و`delete` ما كانت ستفعله.
+- **السجل والحدود.** يُسجَّل كل تغيير في `history/servers-DATE.jsonl` مع من فعله.
+  والسياسة التي لا تسمح بالشبكة (`--allow-network false` أو `local`) ترفض هذه
+  الأوامر، إلا كتابة الملفين. و`KUBECTL` و`ANSIBLE_PLAYBOOK` يعطيان مسار الأداتين.
+
+فُحص ملف Ansible بـ ansible-core هنا (`--syntax-check`، وتشغيل `--check` على هذا
+الجهاز حتى خطوة systemd التي لا تقدر عليها حاوية بلا systemd). ويُقرأ ملف العنقود
+بـ PyYAML فيعود الكائنات نفسها. ولم يُستعمل أيٌّ منهما على عنقود حقيقي أو أجهزة
+حقيقية.
 
 ## نوافذ سطح المكتب، لمستخدمي لينكس
 

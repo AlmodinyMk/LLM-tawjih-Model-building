@@ -61,6 +61,7 @@ from .arch import cmd_arch
 from .serving import add_batch_parser, add_server_parser
 from .dashboard import add_dashboard_parser
 from .health import add_health_parser
+from .clusters import add_cluster_parsers
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .monitor import cmd_top
@@ -1226,6 +1227,7 @@ def build_parser():
     add_batch_parser(sub)
     add_dashboard_parser(sub)
     add_health_parser(sub)
+    add_cluster_parsers(sub)
 
     s = sub.add_parser("provider", help="named providers (providers.json): "
                        "address, model, key variable, retries, default, "

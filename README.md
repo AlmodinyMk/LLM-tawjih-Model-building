@@ -649,6 +649,7 @@ this computer has none.
 | `mcp [--allow-write] [--allow-run --backend B [--model M]] [--allow-code] [--human-approval always\|run\|never]` | an MCP server for AI assistants on this project (see [AI assistants](#ai-assistants-the-mcp-server)) |
 | `provider list\|add\|set\|policy\|rm\|default\|fallback\|test\|breaker [NAME] ...` | named providers (`set` changes one that exists), retries, rate limits (`--rate`), breakers (`--breaker`) and fallback chains; see [AI providers](#ai-providers) |
 | `health [--local] [--json]` | one report: the policy, each provider (key, answer, breaker), each model server, the GPUs, the disk, the installed libraries |
+| `k8s manifest\|apply\|status\|logs\|scale\|rollback\|forward\|delete [NAME]` / `ansible playbook\|run NAME` | a model server on Kubernetes (through kubectl) or as a systemd service on your machines (through ansible-playbook); changes need `--yes`; see [On a cluster or on your own machines](#on-a-cluster-or-on-your-own-machines-k8s-and-ansible) |
 | `runtime list\|add\|rm\|default\|check\|jobs\|status\|logs\|cancel\|collect` | where long jobs run, and the project's jobs; see [Runtimes](#runtimes-where-jobs-run) |
 | `arch create\|derive\|list\|show\|validate\|set\|diff\|components\|mutate\|export\|build\|rank` | language-model architectures as three-faced files; see [The architecture lab](#the-architecture-lab) |
 | `policy show\|set\|reset` | the project's own limits, which only restrict; see [The project's policy](#the-projects-policy) |
@@ -1389,6 +1390,65 @@ ordinary run with its record, its answer in `answers/NAME.out`, and
 
 These command lines follow each engine's documentation; they were tested
 here with a stand-in server, not with the engines themselves.
+
+### On a cluster or on your own machines: `k8s` and `ansible`
+
+The same server in `servers.json` can run on a Kubernetes cluster or as a
+service on machines of your own. Tawjih writes what those tools read and
+runs `kubectl` and `ansible-playbook` as they are installed here; it does
+not replace them, and anything beyond a model server's life is theirs.
+
+```
+tawjih k8s manifest big -o big.yaml            # a Deployment and a Service
+tawjih k8s apply big                           # checked by the cluster, nothing changed
+tawjih k8s apply big --yes --namespace ml      # applied
+tawjih k8s status                              # ready replicas, pods, restarts, why waiting
+tawjih k8s logs big --lines 200
+tawjih k8s scale big --replicas 4 --yes
+tawjih k8s rollback big --yes                  # the version before
+tawjih k8s forward big                         # the cluster's server on this computer
+tawjih k8s delete big --yes
+
+tawjih ansible playbook big --install -o big.yml
+tawjih ansible run big --hosts gpu1,ops@gpu2   # ansible-playbook --check --diff
+tawjih ansible run big --hosts gpu1,ops@gpu2 --yes --listen 0.0.0.0
+tawjih ansible run big -i hosts.ini --state restarted --yes
+```
+
+- **The manifest.** It is made from the server's settings:
+  - the engine's image (`--image` for `custom` or another);
+  - its command line listening on `0.0.0.0`;
+  - `nvidia.com/gpu` as many as its `--gpus` (or `--gpus N`);
+  - a readiness check on its health address;
+  - `/dev/shm` in memory;
+  - a model volume with `--claim PVC`.
+
+  The key never goes into it: it comes from a Secret, and the manifest's
+  first lines say how to make it.
+- **The playbook.** On each host it:
+  - installs the engine with `pip` (`--install`);
+  - writes a systemd unit that finds the engine on the host's PATH;
+  - puts the key in `/etc/tawjih/NAME.env`, from the same variable on
+    this computer (mode 0600, kept out of Ansible's output);
+  - starts or restarts the service (or stops it, with `--state stopped`);
+  - waits until the health address answers.
+
+  `--hosts` writes `servers/ansible/hosts.ini`; `-i` takes your own
+  inventory.
+- **Asking first.** Nothing changes without `--yes`. Without it, `k8s apply`
+  is checked by the cluster (`--dry-run=server`), `ansible run` runs
+  `--check --diff`, and `scale`, `rollback` and `delete` say what they
+  would do.
+- **Records and limits.** Each change is noted in
+  `history/servers-DATE.jsonl` with who made it. A policy that does not
+  allow the network (`--allow-network false` or `local`) refuses these
+  commands, except writing a manifest or a playbook. `KUBECTL` and
+  `ANSIBLE_PLAYBOOK` give the tools' paths.
+
+The playbook was checked with ansible-core here (`--syntax-check`, and a
+`--check` run on this machine up to the systemd step, which a container
+without systemd cannot do). The manifest reads back as the same objects
+with PyYAML. Neither was used on a real cluster or a real fleet.
 
 ## Desktop windows, for Linux users
 
