@@ -20,7 +20,7 @@ Anthropic provider. Python, standard library only; Linux and Windows.
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
 
-![The home screen: the sprout logo, the project at a glance and the commands as cards](docs/images/home-screen.png)
+![The home screen: the sprout logo, the project at a glance and the commands as cards](docs/images/home-screen-0.17.png)
 
 ## What it gives you
 
@@ -501,7 +501,7 @@ Colours appear on terminals that show them (Windows Terminal, most Linux
 and macOS terminals); `NO_COLOR` turns them off. The screen is in English,
 because terminals do not lay out right-to-left text reliably.
 
-![The home screen](docs/images/home-screen.png)
+![The home screen](docs/images/home-screen-0.17.png)
 
 ## Watching runs: `tawjih top`
 
@@ -557,13 +557,13 @@ on macOS the CPU comes from the load average and memory is not shown.
 In Arabic the two columns change sides; whether the letters also run
 right to left is the terminal's own choice.
 
-![tawjih top: the processor, memory, the trees with each file's runs, the step running now, and the runs with a model server among them](docs/images/top.png)
+![tawjih top: each core and each GPU's use (GPU0 to GPU3) with their model, memory and each GPU's memory (VRAM0 to VRAM3), the trees with each file's runs, the step running now, and the runs with a model server among them](docs/images/top-0.17.png)
 
-![tawjih top with a model server chosen: its health, settings, CPU and RAM, and the end of its log](docs/images/top-server.png)
+![tawjih top with a model server chosen: its health, settings, CPU, RAM and GPU memory, and the end of its log](docs/images/top-server-0.17.png)
 
 The server in these pictures is a stand-in, and the four GPUs come from a
-stand-in for `nvidia-smi`: this computer has none. GPU 3 is red because
-its free memory is below `--min-free`, so `--gpus auto` would take 0, 1
+stand-in for `nvidia-smi`: this computer has none. VRAM3 is red because
+GPU 3's free memory is below `--min-free`, so `--gpus auto` would take 0, 1
 and 2.
 
 ### The board in a window: `tawjih dashboard`
@@ -609,9 +609,9 @@ too (English by default; `--arabic` is the same as `--lang ar`).
   `sudo dnf install python3-tkinter` (Fedora). Without it, the board says
   so; `tawjih top` shows the same in the terminal.
 
-![tawjih dashboard in Arabic, right to left](docs/images/dashboard-ar.png)
+![tawjih dashboard in Arabic, right to left: the processor and GPU models, each core, RAM, VRAM 0 to 3, GPU 0 to 3, the servers, trees, runs and actions](docs/images/dashboard-ar-0.17.png)
 
-![tawjih dashboard in English](docs/images/dashboard-en.png)
+![tawjih dashboard in English: the same counters, with a run's steps in the details](docs/images/dashboard-en-0.17.png)
 
 The four GPUs in these pictures come from a stand-in for `nvidia-smi`;
 this computer has none.
