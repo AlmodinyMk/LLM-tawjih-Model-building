@@ -317,6 +317,11 @@ def build_parser():
                    help="plain characters for fonts without box drawing")
     s.add_argument("--color", choices=("auto", "always", "never"),
                    default="auto")
+    s.add_argument("--min-free", type=int, default=8000, metavar="MIB",
+                   help="a GPU with less free memory is shown in red and "
+                   "left out of the GPUs free for --gpus auto (default 8000)")
+    s.add_argument("--arabic", action="store_true",
+                   help="start in Arabic (L switches)")
     s.set_defaults(fn=cmd_top)
 
     s = sub.add_parser("observe", aliases=["langfuse"],

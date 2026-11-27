@@ -1684,9 +1684,21 @@ def kill_tree(pid):
                            capture_output=True, timeout=30)
         else:
             import signal
-            os.killpg(int(pid), signal.SIGTERM)
+            signal_tree(int(pid), signal.SIGTERM)
     except (OSError, ValueError, subprocess.SubprocessError):
         pass    # already ended, or not ours to stop: nothing more to do
+
+
+def signal_tree(pid, sig):
+    """A signal to a process's group when it leads one (Tawjih starts its
+    workers and servers in sessions of their own), else to it alone."""
+    try:
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, sig)
+            return
+    except OSError:
+        pass        # no group to read: signal the process itself
+    os.kill(pid, sig)
 
 
 def spawn_detached(argv, cwd=None, log=None, env=None):
@@ -1845,7 +1857,7 @@ def who_label(by):
 
 
 __all__ = [
-    'NAME_RE', 'inside', 'path_file', 'alive', 'key_values', 'kill_tree', 'spawn_detached', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
+    'NAME_RE', 'inside', 'path_file', 'alive', 'key_values', 'kill_tree', 'signal_tree', 'spawn_detached', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
     'first_identity', 'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',

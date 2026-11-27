@@ -997,8 +997,19 @@ partial or failed). Each step carries `status` (`waiting`, `running`,
 `started_at` (seconds since the epoch) and `seconds` (its wall time). The
 record carries `pid`, `t0` and, at the end, `seconds`. A live file whose
 process no longer exists belongs to a run that was stopped. `tawjih top`
-reads these files, the records in `history/` and `models/jobs/`; it
-writes nothing.
+reads these files, the records in `history/`, `models/jobs/` and the
+project's servers (`servers.json`, `servers/NAME/`; each server's health
+asked at most every 5 seconds, and the CPU, memory and GPU memory of its
+process group: it and what it started), and each GPU's free memory from
+`nvidia-smi` (red under `--min-free` MiB, default 8000; the GPUs at or above
+it are those `--gpus auto` could take). It writes nothing unless a key
+asks: on a chosen server `s` starts it, `x` stops and `r` restarts it
+(each pressed twice), `t` reads `KEY=VALUE ...` on the last line and tunes
+it as `server tune`, `f` empties SGLang's cache (`POST /flush_cache`), `d`
+shows the `batch` command for the running servers that are providers;
+each is noted in `history/servers-DATE.jsonl` with `by`. `L` switches
+English and Arabic (`--arabic` starts in Arabic): Arabic words, the two
+columns swapped. `top --json` lists the servers too.
 
 ## Traces
 

@@ -1,8 +1,10 @@
 """tawjih top (مراقبة): a live board, like btop, of the runs of paths over
 the files of the trees beside the computer's performance: CPU, memory,
-disk, network and GPU. It reads history/live/ (written by runs as
-they go), history/ (finished runs), models/jobs/ (runtime jobs) and the
-system, and changes nothing.
+disk, network and GPU (with each GPU's free memory). It reads history/live/
+(written by runs as they go), history/ (finished runs), models/jobs/
+(runtime jobs), the project's model servers (servers.json) and the system.
+It changes nothing unless a key asks it to: on a server, s starts it,
+x stops it (pressed twice), t tunes it and f empties its cache.
 
 Copyright (c) 2026 Mohammed Khalid Almodiny
 SPDX-License-Identifier: CC-BY-NC-SA-4.0
@@ -18,8 +20,29 @@ from collections import deque
 from pathlib import Path
 
 from .commands import _fancy, display_width, tree_lines
-from .core import Store, alive
+from .core import Die, Store, alive, key_values
 from .home import C, Paint
+from .serving import (
+    ENGINES as srv_ENGINES,
+    _auth as srv__auth,
+    _get as srv__get,
+    _note as srv__note,
+    check_server as srv_check_server,
+    command as srv_command,
+    gpu_memory as srv_gpu_memory,
+    group_pids as srv_group_pids,
+    health_path as srv_health_path,
+    load_servers as srv_load_servers,
+    read_pid as srv_read_pid,
+    save_servers as srv_save_servers,
+    show_command as srv_show_command,
+    start as srv_start,
+    state_dir as srv_state_dir,
+    stop as srv_stop,
+    tail as srv_tail,
+    tune as srv_tune,
+    url as srv_url,
+)
 
 M = dict(C, red=(243, 139, 168), teal=(148, 226, 213), sky=(137, 220, 235),
          mauve=(203, 166, 247), pink=(245, 194, 231), base=(30, 30, 46))
@@ -31,6 +54,27 @@ ICONS = {"running": ("▶", ">", "green"), "done": ("✓", "+", "green"),
          "partial": ("◐", "~", "yellow"), "made": ("·", ".", "dim"),
          "submitted": ("◔", "o", "sky"), "collected": ("✓", "+", "teal"),
          "failed to start": ("✗", "x", "red")}
+
+# The board's words in Arabic (L): the boxes are drawn in the same places,
+# their sides swapped, and the terminal shows the Arabic letters; whether
+# it also writes them right to left is the terminal's own choice.
+AR = {"cpu": "المعالج", "mem": "الذاكرة", "trees": "الأشجار",
+      "runs": "التشغيلات", "run": "تشغيل", "server": "خادم",
+      "Status: ": "الحالة: ", "Elapsed: ": "المدة: ", "Steps: ": "الخطوات: ",
+      "Calls: ": "الاستدعاءات: ", "Backend: ": "المزوّد: ",
+      "Model: ": "النموذج: ", "Engine: ": "المحرك: ", "Port: ": "المنفذ: ",
+      "GPUs: ": "البطاقات: ", "Health: ": "الصحة: ", "Up: ": "يعمل منذ: ",
+      "Settings: ": "الإعدادات: ", "GPU memory: ": "ذاكرة البطاقات: ",
+      "free for auto: ": "حرة للاختيار التلقائي: ", "none": "لا شيء",
+      "Path": "المسار", "Status": "الحالة", "Step": "الخطوة",
+      "Time": "الزمن", "Calls": "الاستدعاءات", "Tokens": "الرموز",
+      "live": "حي", "shown": "معروض", "running": "يعمل",
+      "stopped": "متوقف", "free": "حر", "no runs yet": "لا تشغيل بعد"}
+
+
+def tr(text, lang):
+    """A label in the board's language."""
+    return AR.get(text, text) if lang == "ar" else text
 
 
 # ------------------------------------------------------------------ formats
@@ -189,17 +233,13 @@ class System:
             self.gpu_t = now
             try:
                 out = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=name,utilization.gpu,"
-                     "memory.used,memory.total", "--format=csv,noheader,"
-                     "nounits"], capture_output=True, text=True,
-                    timeout=3).stdout
-                self.gpu = []
-                for line in out.strip().splitlines():
-                    name, util, used, total = [x.strip()
-                                               for x in line.split(",")]
-                    self.gpu.append({"name": name, "util": float(util),
-                                     "used": float(used) * 2 ** 20,
-                                     "total": float(total) * 2 ** 20})
+                    ["nvidia-smi",
+                     "--query-gpu=index,name,utilization.gpu,memory.used,"
+                     "memory.total,memory.free",
+                     "--format=csv,noheader,nounits"], capture_output=True,
+                    text=True, timeout=3).stdout
+                self.gpu = [gpu_row(line) for line in
+                            out.strip().splitlines()]
             except (OSError, ValueError, subprocess.SubprocessError):
                 self.gpu = None
         return self.gpu
@@ -266,6 +306,14 @@ class System:
                      "tx_total": net[1]} if net else None),
                 "gpu": self._gpus(now), "procs": procs,
                 "history": list(self.hist)}
+
+
+def gpu_row(line):
+    """One line of nvidia-smi: index, name, use %, used, total, free MiB."""
+    idx, name, util, used, total, free = [x.strip() for x in line.split(",")]
+    return {"index": int(idx), "name": name, "util": float(util),
+            "used": float(used) * 2 ** 20, "total": float(total) * 2 ** 20,
+            "free": float(free) * 2 ** 20}
 
 
 # ----------------------------------------------------------------- project
@@ -421,6 +469,50 @@ class Project:
                         "record": rec})
         return list(reversed(out))
 
+    def servers(self):
+        """The project's model servers: running or not, their health
+        (asked at most every 5 seconds, half a second each), the GPU
+        memory of their processes and the end of their log."""
+        try:
+            data = srv_load_servers(self.root)["servers"]
+        except (Die, SystemExit):
+            return []
+        cache = getattr(self, "_srv", {})
+        now = time.monotonic()
+        out = []
+        for name in sorted(data):
+            cfg = data[name]
+            if cfg.get("engine") not in srv_ENGINES:
+                continue
+            pid = srv_read_pid(self.root, name)
+            hit = cache.get(name)
+            if hit and now - hit[0] < 5 and hit[1] == pid:
+                health, mib = hit[2], hit[3]
+            else:
+                code, _ = srv__get(srv_url(cfg, srv_health_path(
+                    cfg)), timeout=0.5)
+                health = code
+                mib = srv_gpu_memory(srv_group_pids(pid)) \
+                    if pid else None
+                cache[name] = (now, pid, health, mib)
+            started = self._json(srv_state_dir(self.root, name) /
+                                 "started.json") or {}
+            t0 = _when(started.get("started")) if pid else None
+            log = srv_state_dir(self.root, name) / "log.txt"
+            tail = [x.rstrip("\n") for x in srv_tail(log, 40)
+                    .splitlines()] if log.is_file() else []
+            out.append({"kind": "server", "name": name, "cfg": cfg,
+                        "pid": pid, "pids": sorted(srv_group_pids(pid))
+                        if pid else [], "status": "running" if pid else
+                        "stopped", "engine": cfg["engine"],
+                        "port": cfg.get("port"), "health": health,
+                        "gpu_mib": mib, "seconds": (time.time() - t0)
+                        if t0 else None, "tail": tail,
+                        "command": srv_show_command(
+                            *srv_command(cfg))})
+        self._srv = cache
+        return out
+
     def snapshot(self):
         recs = self.records()
         live = self.live()
@@ -443,11 +535,14 @@ class Project:
                     p.get("usage") or {}).get("seconds", 0)
                 s["last"] = st
         jobs = self.jobs()
+        servers = self.servers()
         rows = live + [j for j in jobs if j["status"] in (
-            "running", "submitted")] + recent + [
-            j for j in jobs if j["status"] not in ("running", "submitted")]
+            "running", "submitted")] + [
+            x for x in servers if x["pid"]] + recent + [
+            j for j in jobs if j["status"] not in ("running", "submitted")] \
+            + [x for x in servers if not x["pid"]]
         return {"rows": rows, "live": live, "recent": recent, "jobs": jobs,
-                "stats": stats}
+                "servers": servers, "stats": stats}
 
 
 # ---------------------------------------------------------------- drawing
@@ -614,7 +709,7 @@ def _ljust(text, w):
 
 
 # ----------------------------------------------------------------- panels
-def cpu_panel(d, s, w, h, interval):
+def cpu_panel(d, s, w, h, interval, lang="en"):
     inner = h - 2
     rp = max(20, min(34, w // 3))
     gw = w - 2 - rp - 1
@@ -656,12 +751,12 @@ def cpu_panel(d, s, w, h, interval):
             text = g[0][0]
             g = [(up, "sub"), (text[len(up):], g[0][1])]
         lines.append(g + [(" ", None)] + (side[i] if i < len(side) else []))
-    return d.box("cpu", lines, w, h, colour=FRAMES["cpu"],
+    return d.box(tr("cpu", lang), lines, w, h, colour=FRAMES["cpu"],
                  right=[(time.strftime("%H:%M:%S"), "text"), ("  ", None),
                         ("%dms" % int(interval * 1000), "dim")])
 
 
-def mem_panel(d, s, project, w):
+def mem_panel(d, s, project, w, min_free=8000, lang="en"):
     iw = w - 2
     bw = max(4, iw - 26)
     lines = []
@@ -688,10 +783,30 @@ def mem_panel(d, s, project, w):
         lines.append([(_ljust("Disk", 6), "sub")] + d.meter(pct, bw) +
                      [(_rjust(fmt_bytes(k["free"]), 11), "text"),
                       (_rjust("free", 5), "dim")])
-    for g in s["gpu"] or []:
-        lines.append([(_ljust("GPU", 6), "sub")] + d.meter(g["util"], bw) +
-                     [(_rjust(fmt_bytes(g["used"]), 11), "text"),
-                      (_rjust("%.0f%%" % g["util"], 5), "dim")])
+    gpus = s["gpu"] or []
+    for g in gpus:
+        # free memory, red below --min-free, and how busy it is
+        free = g.get("free")
+        if free is None:
+            lines.append([(_ljust("GPU", 6), "sub")] + d.meter(
+                g["util"], bw) + [(_rjust(fmt_bytes(g["used"]), 11),
+                                   "text"),
+                                  (_rjust("%.0f%%" % g["util"], 5), "dim")])
+            continue
+        pct = 100.0 * free / max(1, g["total"])
+        low = free / 2 ** 20 < min_free
+        lines.append([(_ljust("GPU%d" % g.get("index", 0), 6), "sub")] +
+                     d.meter(pct, bw, "red" if low else "green") +
+                     [(_rjust(fmt_bytes(free), 11), "red" if low else
+                       "text"), (_rjust("%.0f%%" % g["util"], 5), "dim")])
+    if gpus and gpus[0].get("free") is not None:
+        ok = [str(g.get("index", i)) for i, g in enumerate(gpus)
+              if g["free"] / 2 ** 20 >= min_free]
+        lines.append([(tr("free for auto: ", lang), "sub"),
+                      (",".join(ok) or tr("none", lang),
+                       "green" if ok else "red"),
+                      ("  ≥ %d MiB" % min_free if d.fancy else
+                       "  >= %d MiB" % min_free, "dim")])
     n = s["net"]
     if n:
         lines.append([("Net ", "sub"), ("▼ " if d.fancy else "v ", "green"),
@@ -712,11 +827,11 @@ def mem_panel(d, s, project, w):
     return lines
 
 
-def trees_panel(d, store, stats, w, h, scroll, error=""):
+def trees_panel(d, store, stats, w, h, scroll, error="", lang="en"):
     iw = w - 2
     rows = []
     if store is None:
-        return d.box("trees", [[("not a Tawjih project here%s" % (
+        return d.box(tr("trees", lang), [[("not a Tawjih project here%s" % (
             ": " + error if error else ""), "dim")]], w, h,
             colour=FRAMES["trees"]), 0
     nodes = []
@@ -727,7 +842,7 @@ def trees_panel(d, store, stats, w, h, scroll, error=""):
             walk(n.id)
     walk("")
     if not nodes:
-        return d.box("trees", [[("no files yet", "dim")]], w, h,
+        return d.box(tr("trees", lang), [[("no files yet", "dim")]], w, h,
                      colour=FRAMES["trees"]), 0
     pre = tree_lines([(n.id, n.parent if n.parent in store.nodes else "")
                       for n in nodes], d.fancy)
@@ -779,7 +894,7 @@ def trees_panel(d, store, stats, w, h, scroll, error=""):
     scroll = max(0, min(scroll, len(rows) - room))
     body = [head] + [r[1] for r in rows[scroll:scroll + room]]
     ran = sum(1 for n in nodes if stats.get(n.id, {}).get("runs"))
-    return d.box("trees", body, w, h, colour=FRAMES["trees"],
+    return d.box(tr("trees", lang), body, w, h, colour=FRAMES["trees"],
                  left=[("%d files" % len(nodes), "dim")],
                  right=[("%d ran" % ran, "sub")],
                  bottom=[("%d-%d of %d" % (scroll + 1, min(
@@ -788,8 +903,67 @@ def trees_panel(d, store, stats, w, h, scroll, error=""):
                  if len(rows) > room else ()), scroll
 
 
-def detail_panel(d, s, row, w, h):
+def server_use(row, procs):
+    """CPU % and memory of a server's processes (it and what it started),
+    from the last sample; (None, None) when not read."""
+    got = [procs[p] for p in row.get("pids") or [] if p in procs]
+    if not got:
+        return None, None
+    cpu = [g["cpu"] for g in got if g.get("cpu") is not None]
+    return (sum(cpu) if cpu else None), sum(g.get("rss") or 0 for g in got)
+
+
+def server_panel(d, row, w, h, lang="en", procs=None):
+    """The chosen server: what it runs, where, its health, the CPU, memory
+    and GPU memory it takes, and its log."""
+    ic, col = icon(row["status"], d.fancy)
+    cfg = row["cfg"]
+    T = (lambda x: tr(x, lang))
+    health = row["health"]
+    lines = [[(T("Status: "), "sub"), (ic + " " + T(row["status"]), col,
+                                       True),
+              ("   PID ", "sub"), (str(row["pid"] or "—"), "text"),
+              ("   " + T("Up: "), "sub"), (fmt_secs(row["seconds"])
+                                           if row["seconds"] else "—",
+                                           "text")],
+             [(T("Engine: "), "sub"), (row["engine"], "text"),
+              ("   " + T("Port: "), "sub"), (str(row["port"]), "text"),
+              ("   " + T("GPUs: "), "sub"), (str(cfg.get("gpus") or "—"),
+                                             "text"),
+              ("   " + T("Health: "), "sub"),
+              (str(health) if health else "—",
+               "green" if health == 200 else "red" if row["pid"]
+               else "dim")],
+             [(T("Model: "), "sub"), (cfg.get("model") or "—", "text")]]
+    sets = ["%s=%s" % (k, cfg[k]) for k in ("tp", "pp", "context", "mem",
+                                             "kv_cache") if cfg.get(k)]
+    sets += ["%s=%s" % (k, v if isinstance(v, str) else json.dumps(v))
+             for k, v in (cfg.get("args") or {}).items()]
+    if sets:
+        lines.append([(T("Settings: "), "sub"), (" ".join(sets), "text")])
+    cpu, rss = server_use(row, procs or {})
+    use = []
+    if cpu is not None:
+        use += [("CPU ", "sub"), ("%.1f%%" % cpu, "text"), ("   ", None)]
+    if rss:
+        use += [("RAM ", "sub"), (fmt_bytes(rss), "text"), ("   ", None)]
+    if row["gpu_mib"] is not None:
+        use += [(T("GPU memory: "), "sub"), ("%d MiB" % row["gpu_mib"],
+                                             "text")]
+    if use:
+        lines.append(use)
+    lines.append([("$ " + row["command"], "dim")])
+    for t in row["tail"][-max(0, h - 2 - len(lines)):]:
+        lines.append([(t, "text")])
+    return d.box(T("server") + " " + row["name"], lines, w, h,
+                 colour=FRAMES["run"], left=[(row["engine"], "accent")],
+                 right=[(ic + " " + T(row["status"]), col)])
+
+
+def detail_panel(d, s, row, w, h, lang="en"):
     iw = w - 2
+    if row is not None and row["kind"] == "server":
+        return server_panel(d, row, w, h, lang, s.get("procs"))
     if row is None:
         return d.box("run", [[("no run yet: tawjih run PATH --input "
                                "TEXT", "dim")]], w, h, colour=FRAMES["run"])
@@ -870,21 +1044,40 @@ def detail_panel(d, s, row, w, h):
                  right=[(ic + " " + row["status"], col)])
 
 
-def runs_panel(d, rows, sel, w, h, interval):
+def runs_panel(d, rows, sel, w, h, interval, lang="en", msg="",
+               procs=None):
     iw = w - 2
+    T = (lambda x: tr(x, lang))
     nw = max(8, iw - 6 - 1 - 10 - 7 - 8 - 6 - 13 - 2 - 10)
-    head = [(_rjust("PID", 6), "dim"), (" ", None), (_ljust("Path", nw),
+    head = [(_rjust("PID", 6), "dim"), (" ", None), (_ljust(T("Path"), nw),
                                                      "dim"),
-            (_ljust("Status", 10), "dim"), (_rjust("Step", 7), "dim"),
-            (_rjust("Time", 8), "dim"), (_rjust("Calls", 6), "dim"),
-            (_rjust("Tokens", 13), "dim"), ("  ", None),
+            (_ljust(T("Status"), 10), "dim"), (_rjust(T("Step"), 7), "dim"),
+            (_rjust(T("Time"), 8), "dim"), (_rjust(T("Calls"), 6), "dim"),
+            (_rjust(T("Tokens"), 13), "dim"), ("  ", None),
             (_ljust("Backend", 10), "dim")]
     lines = [head]
     room = h - 3
     first = max(0, min(sel - room // 2, len(rows) - room))
     for i, r in enumerate(rows[first:first + room], first):
         ic, col = icon(r["status"], d.fancy)
-        if r["kind"] == "job":
+        if r["kind"] == "server":
+            hc = r["health"]
+            cpu, rss = server_use(r, procs or {})
+            use = " ".join(x for x in (
+                "%.0f%%" % cpu if cpu is not None else "",
+                fmt_bytes(rss) if rss else "") if x)
+            segs = [(_rjust(str(r["pid"]) if r["pid"] else "srv", 6),
+                     "mauve"), (" ", None),
+                    (_ljust(r["name"], nw), "text", bool(r["pid"])),
+                    (_ljust(ic + " " + T(r["status"]), 10), col),
+                    (_rjust(":%s" % r["port"], 7), "sub"),
+                    (_rjust(fmt_secs(r["seconds"]) if r["seconds"] else "",
+                            8), "text"),
+                    (_rjust(str(hc) if hc else "—", 6),
+                     "green" if hc == 200 else "dim"),
+                    (_rjust(use, 13), "sub"), ("  ", None),
+                    (_ljust(r["engine"], 10), "sub")]
+        elif r["kind"] == "job":
             segs = [(_rjust("job", 6), "sky"), (" ", None),
                     (_ljust(r["name"], nw), "text"),
                     (_ljust(ic + " " + r["status"], 10), col),
@@ -910,14 +1103,25 @@ def runs_panel(d, rows, sel, w, h, interval):
         else:
             lines.append(segs)
     if not rows:
-        lines.append([("no runs yet", "dim")])
+        lines.append([(T("no runs yet"), "dim")])
     live = sum(1 for r in rows if r.get("live") and r["status"] == "running")
-    return d.box("runs", lines, w, h, colour=FRAMES["runs"],
-                 left=[("%d live" % live, "green" if live else "dim")],
-                 right=[("%d shown" % len(rows), "dim")],
-                 bottom=[("↑↓ select" if d.fancy else "up/down select",
-                          "sub"), ("  PgUp PgDn trees  +/- %dms  q quit"
-                                   % int(interval * 1000), "dim")])
+    chosen = rows[sel] if rows and 0 <= sel < len(rows) else None
+    if msg:
+        bottom = [(msg, "yellow")]
+    elif chosen and chosen["kind"] == "server":
+        bottom = [("s start  x stop  t tune  f flush  d batch", "sub"),
+                  ("  L %s  +/- %dms  q" % ("EN" if lang == "ar" else "ع",
+                                            int(interval * 1000)), "dim")]
+    else:
+        bottom = [("↑↓ select" if d.fancy else "up/down select", "sub"),
+                  ("  PgUp PgDn trees  L %s  +/- %dms  q quit" % (
+                      "EN" if lang == "ar" else "ع",
+                      int(interval * 1000)), "dim")]
+    return d.box(T("runs"), lines, w, h, colour=FRAMES["runs"],
+                 left=[("%d %s" % (live, T("live")),
+                        "green" if live else "dim")],
+                 right=[("%d %s" % (len(rows), T("shown")), "dim")],
+                 bottom=bottom)
 
 
 def side_by_side(a, b):
@@ -925,20 +1129,22 @@ def side_by_side(a, b):
 
 
 def render(sysinfo, project, store, w, h, sel=0, scroll=None, interval=2.0,
-           paint=None, fancy=True, error=""):
-    """The board as h lines of width w. Returns (lines, tree scroll)."""
+           paint=None, fancy=True, error="", lang="en", min_free=8000,
+           msg=""):
+    """The board as h lines of width w. Returns (lines, tree scroll).
+    lang "ar": Arabic words, and the two columns swapped."""
     d = Draw(paint or Paint(None), fancy)
     w, h = max(60, w), max(18, h)
     h1 = max(6, min(12, int(h * 0.3)))
     rest = h - h1
     wl = max(32, int(w * 0.40))
     wr = w - wl
-    mem = mem_panel(d, sysinfo, project, wl)
+    mem = mem_panel(d, sysinfo, project, wl, min_free, lang)
     h2 = min(len(mem) + 2, max(4, rest - 5))
-    left = d.box("mem", mem, wl, h2, colour=FRAMES["mem"],
+    left = d.box(tr("mem", lang), mem, wl, h2, colour=FRAMES["mem"],
                  left=[("disk", "sub"), ("·", "dim"), ("net", "sub")])
     tree, scroll = trees_panel(d, store, project["stats"] if project else {},
-                               wl, rest - h2, scroll, error)
+                               wl, rest - h2, scroll, error, lang)
     left += tree
     rows = project["rows"] if project else []
     sel = max(0, min(sel, len(rows) - 1))
@@ -946,9 +1152,12 @@ def render(sysinfo, project, store, w, h, sel=0, scroll=None, interval=2.0,
     nsteps = len((row or {}).get("record", {}).get("steps") or []) \
         if row and row["kind"] == "run" else len((row or {}).get("tail", []))
     h3 = max(8, min(nsteps + 7, int(rest * 0.62)))
-    right = detail_panel(d, sysinfo, row, wr, h3) + \
-        runs_panel(d, rows, sel, wr, rest - h3, interval)
-    lines = cpu_panel(d, sysinfo, w, h1, interval) + side_by_side(left, right)
+    right = detail_panel(d, sysinfo, row, wr, h3, lang) + \
+        runs_panel(d, rows, sel, wr, rest - h3, interval, lang, msg,
+                   sysinfo.get("procs"))
+    cols = side_by_side(right, left) if lang == "ar" else \
+        side_by_side(left, right)
+    lines = cpu_panel(d, sysinfo, w, h1, interval, lang) + cols
     return lines, scroll
 
 
@@ -977,6 +1186,25 @@ class Keys:
              "\x1b": "q", "\x03": "q"}
     WIN = {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home"}
 
+    def line(self, prompt, row):
+        """A line typed on the board's last row (Enter ends it, an empty
+        line or Esc gives up)."""
+        out = sys.stdout
+        out.write("\033[%d;1H\033[0m\033[2K%s\033[?25h" % (row, prompt))
+        out.flush()
+        if self.old is not None:
+            import termios
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+        try:
+            text = sys.stdin.readline().strip()
+        finally:
+            if self.old is not None:
+                import tty
+                tty.setcbreak(self.fd)
+            out.write("\033[?25l\033[2J")
+            out.flush()
+        return "" if text.startswith("\x1b") else text
+
     def get(self, timeout):
         if os.name == "nt":
             import msvcrt
@@ -1000,6 +1228,84 @@ class Keys:
         return self.NAMES.get(ch, ch[:1].lower())
 
 
+# ----------------------------------------------------------------- actions
+FLUSH = {"sglang": "/flush_cache"}      # engines with a known cache flush
+
+
+def _quiet(fn, *args):
+    """Run a server command without drawing over the board: its last line
+    of output, or its error, becomes the board's message."""
+    import contextlib
+    import io
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            fn(*args)
+    except (Die, SystemExit) as e:
+        return "error: " + str(getattr(e, "msg", e))
+    lines = [x for x in buf.getvalue().splitlines() if x.strip()]
+    return lines[-1] if lines else "done"
+
+
+def server_action(root, row, key, ask=None):
+    """What a key does to the chosen server; returns the message."""
+    name, cfg = row["name"], row["cfg"]
+    if key == "s":
+        if row["pid"]:
+            return "%s is already running" % name
+        return _quiet(srv_start, root, name, cfg, 0)
+    if key == "x":
+        return _quiet(srv_stop, root, name)
+    if key == "r":
+        def restart():
+            srv_stop(root, name)
+            srv_start(root, name, cfg, 0)
+        return _quiet(restart)
+    if key == "f":
+        path = FLUSH.get(cfg["engine"])
+        if not path:
+            return ("%s has no known way to empty its cache here; try: "
+                    "tawjih server api %s POST /PATH" % (cfg["engine"], name))
+        if not row["pid"]:
+            return "%s is not running" % name
+        code, text = srv__get(srv_url(cfg, path), "POST", "{}",
+                                  srv__auth(cfg), timeout=10)
+        srv__note(root, "api", name, method="POST", path=path,
+                      status=code)
+        return "flush %s: %s" % (name, code or text)
+    if key == "t":
+        text = ask("tune %s, KEY=VALUE ... (mem=0.9 schedule-policy=lpm): "
+                   % name) if ask else ""
+        if not text:
+            return "tune: nothing changed"
+
+        def apply():
+            data = srv_load_servers(root)
+            new, done = srv_tune(data["servers"][name],
+                                     key_values(text.split(), "tune"))
+            srv_check_server(new)
+            data["servers"][name] = new
+            srv_save_servers(root, data)
+            srv__note(root, "tune", name, changes=done)
+            print("%s: %s%s" % (name, ", ".join(done),
+                                "; r restarts it to apply them"
+                                if row["pid"] else ""))
+        return _quiet(apply)
+    if key == "d":
+        from .providers import load_providers
+        provs = load_providers(root).get("providers") or {}
+        running = [r for r in (Project(root).servers()) if r["pid"]]
+        names = [n for n, pc in provs.items() for r in running
+                 if (pc.get("base_url") or "").startswith(srv_url(
+                     r["cfg"], ""))]
+        if not names:
+            return ("batch needs running servers that are providers: "
+                    "tawjih server provider NAME")
+        return "tawjih batch PATH --inputs-dir DIR --backends " + \
+            ",".join(sorted(set(names)))
+    return ""
+
+
 def _enable_vt():
     if os.name == "nt":
         try:
@@ -1013,13 +1319,21 @@ def _enable_vt():
             pass
 
 
+def watched(snap):
+    """The processes whose CPU and memory the board shows: the live runs,
+    and each running server with what it started."""
+    return [r["pid"] for r in snap["live"] if r.get("pid")] + [
+        p for x in snap.get("servers") or [] for p in x.get("pids") or []]
+
+
 def snapshot_json(root):
     sysm = System(root)
     proj = Project(root)
-    sysm.sample()
+    snap = proj.snapshot()
+    sysm.sample(watched(snap))
     time.sleep(0.3)
     snap = proj.snapshot()
-    s = sysm.sample([r["pid"] for r in snap["live"] if r.get("pid")])
+    s = sysm.sample(watched(snap))
     s.pop("history", None)
 
     def clean(r):
@@ -1027,13 +1341,19 @@ def snapshot_json(root):
     return {"system": s, "live": [clean(r) for r in snap["live"]],
             "recent": [clean(r) for r in snap["recent"]],
             "jobs": [clean(j) for j in snap["jobs"]],
+            "servers": [dict({k: v for k, v in x.items() if k not in (
+                "tail", "cfg")}, **dict(zip(("cpu", "rss"), server_use(
+                    x, s["procs"])))) for x in snap["servers"]],
             "files": snap["stats"]}
 
 
 def cmd_top(a):
-    """A live board of runs on paths and files beside the computer's
-    performance. q quits, up/down choose a run, PgUp/PgDn move the trees,
-    + and - change the refresh time."""
+    """A live board of runs on paths and files, the project's model
+    servers and the computer's performance. q quits, up/down choose a row,
+    PgUp/PgDn move the trees, + and - change the refresh time, L switches
+    Arabic and English; on a server: s start, x stop and r restart (each
+    pressed twice for x and r), t tune, f empty its cache, d the batch
+    command for the running servers."""
     root = a.project
     if getattr(a, "json", False):
         print(json.dumps(snapshot_json(root), ensure_ascii=False, indent=2))
@@ -1043,25 +1363,27 @@ def cmd_top(a):
         None if colour == "never" else "true")
     fancy = _fancy() and not getattr(a, "ascii", False)
     interval = max(0.25, float(getattr(a, "interval", 2.0) or 2.0))
+    lang = "ar" if getattr(a, "arabic", False) else "en"
+    min_free = getattr(a, "min_free", 8000)
     sysm, proj = System(root), Project(root)
     once = getattr(a, "once", False) or not sys.stdout.isatty()
     if once:
-        sysm.sample()
+        snap = proj.snapshot()
+        sysm.sample(watched(snap))
         for _ in range(4):                       # a short CPU history
             time.sleep(0.15)
-            sysm.sample()
-        snap = proj.snapshot()
-        s = sysm.sample([r["pid"] for r in snap["live"] if r.get("pid")])
+            sysm.sample(watched(snap))
+        s = sysm.sample(watched(snap))
         size = shutil.get_terminal_size((110, 34))
         lines, _ = render(s, snap, proj.tree(), a.width or size.columns,
                           a.height or size.lines - 1, 0, None, interval,
-                          paint, fancy, proj.error)
+                          paint, fancy, proj.error, lang, min_free)
         print("\n".join(lines))
         return 0
     _enable_vt()
     out = sys.stdout
     sel, scroll, last, s, snap = 0, None, 0.0, None, None
-    size = None
+    size, msg, msg_t, armed = None, "", 0.0, None
     out.write("\033[?1049h\033[?25l\033[2J")
     try:
         with Keys() as keys:
@@ -1070,17 +1392,18 @@ def cmd_top(a):
                 now = time.monotonic()
                 if s is None or now - last >= interval:
                     snap = proj.snapshot()
-                    s = sysm.sample([r["pid"] for r in snap["live"]
-                                     if r.get("pid")])
+                    s = sysm.sample(watched(snap))
                     last = now
                 ts = shutil.get_terminal_size((110, 34))
                 if ts != size:
                     size = ts
                     out.write("\033[2J")
                 w = ts.columns - (1 if os.name == "nt" else 0)
+                if msg and time.monotonic() - msg_t > 8:
+                    msg = ""
                 lines, scroll = render(s, snap, proj.tree(), w, ts.lines,
                                        sel, scroll, interval, paint, fancy,
-                                       proj.error)
+                                       proj.error, lang, min_free, msg)
                 out.write("\033[H" + "\r\n".join(lines[:ts.lines]))
                 out.flush()
                 key = keys.get(max(0.05, interval - (time.monotonic() -
@@ -1102,6 +1425,26 @@ def cmd_top(a):
                     interval = min(10.0, interval + 0.5)
                 elif key in ("-", "_"):
                     interval = max(0.5, interval - 0.5)
+                elif key == "l":
+                    lang = "en" if lang == "ar" else "ar"
+                    out.write("\033[2J")
+                elif key in ("s", "x", "r", "t", "f", "d") and rows:
+                    row = snap["rows"][min(sel, rows - 1)]
+                    if row["kind"] != "server":
+                        msg = "choose a server (↑↓) for s x r t f d"
+                    elif key in ("x", "r") and armed != (key, row["name"]):
+                        armed = (key, row["name"])
+                        msg = "press %s again to %s %s" % (
+                            key, "stop" if key == "x" else "restart",
+                            row["name"])
+                    else:
+                        armed = None
+                        msg = server_action(root, row, key, lambda q: keys.line(
+                            q, ts.lines))
+                        last = 0.0               # read everything again
+                    msg_t = time.monotonic()
+                if key not in ("x", "r"):
+                    armed = None
     except KeyboardInterrupt:
         pass
     finally:
@@ -1111,4 +1454,5 @@ def cmd_top(a):
 
 
 __all__ = ['Draw', 'Keys', 'Project', 'System', 'alive', 'cmd_top',
-           'fmt_bytes', 'fmt_secs', 'render', 'snapshot_json', 'summary']
+           'fmt_bytes', 'fmt_secs', 'gpu_row', 'render', 'server_action',
+           'snapshot_json', 'summary']
