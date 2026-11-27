@@ -605,6 +605,9 @@ too (English by default; `--arabic` is the same as `--lang ar`).
 
 ![tawjih dashboard in English](docs/images/dashboard-en.png)
 
+The four GPUs in these pictures come from a stand-in for `nvidia-smi`;
+this computer has none.
+
 ## Commands
 
 | Command | Purpose |
