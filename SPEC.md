@@ -1010,12 +1010,15 @@ starts and is never written or shown. The host is `127.0.0.1` unless
 `k8s manifest` writes a Deployment and a Service named `tawjih-NAME`,
 labelled `app.kubernetes.io/name: tawjih-NAME` and
 `app.kubernetes.io/managed-by: tawjih`:
-- the container: the engine's `image` (or `--image`; required for engines
-  without one), its command (the server's argv with host `0.0.0.0`; a key
-  argument `$VAR` becomes `$(VAR)`) and `containerPort`;
+- the container: the engine's `image` (only vLLM has one; else `--image`
+  is required), its command (the server's argv with host `0.0.0.0`) and
+  `containerPort`;
+- the key: with `api_key_env`, `TAWJIH_SERVER_KEY` comes first from the
+  Secret `tawjih-NAME-key`, key `api-key`; the engine's key argument is
+  `$(TAWJIH_SERVER_KEY)` and its key variable has that value. The name of
+  the variable on this computer is not written;
 - environment: the server's environment without `CUDA_VISIBLE_DEVICES` and
-  `HIP_VISIBLE_DEVICES`, and each key variable from the Secret
-  `tawjih-NAME-key`;
+  `HIP_VISIBLE_DEVICES`;
 - resources: `nvidia.com/gpu` limits from `--gpus N` or the count in the
   server's `gpus`;
 - a readiness `httpGet` on the health path;
@@ -1043,8 +1046,11 @@ Changes are noted in `history/servers-DATE.jsonl` (`k8s apply`, `by`,
 - `pip` the engine's package (`--install`; known for vllm, sglang,
   lmdeploy, aphrodite and litellm);
 - create `/var/lib/tawjih`;
-- for each key variable, `/etc/tawjih/NAME.env` (0600, `no_log`) from
-  `lookup('env', VAR)` on the controller;
+- with `api_key_env`, `/etc/tawjih/NAME.env` (0600, `no_log`) holding
+  `TAWJIH_SERVER_KEY` and the engine's key variable, each
+  `lookup('env', tawjih_key_env)` on the controller (`tawjih_key_env` is
+  a play variable); the unit passes `${TAWJIH_SERVER_KEY}` as the key
+  argument;
 - the unit `/etc/systemd/system/tawjih-NAME.service`: `ExecStart=/usr/bin/env`
   and the argv, listening on `--listen` or the server's host, `User=--user`;
 - `systemd` with `daemon_reload`, `enabled` unless stopped, and `state`

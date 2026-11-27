@@ -1416,20 +1416,23 @@ tawjih ansible run big -i hosts.ini --state restarted --yes
 ```
 
 - **The manifest.** It is made from the server's settings:
-  - the engine's image (`--image` for `custom` or another);
+  - the image: vLLM's own by default; give `--image` for the other
+    engines, whose images Tawjih does not pin;
   - its command line listening on `0.0.0.0`;
   - `nvidia.com/gpu` as many as its `--gpus` (or `--gpus N`);
   - a readiness check on its health address;
   - `/dev/shm` in memory;
   - a model volume with `--claim PVC`.
 
-  The key never goes into it: it comes from a Secret, and the manifest's
-  first lines say how to make it.
+  The key never goes into it: it comes from the Secret `tawjih-NAME-key`
+  (`api-key`) as `TAWJIH_SERVER_KEY`, and the manifest's first lines say
+  how to make it.
 - **The playbook.** On each host it:
   - installs the engine with `pip` (`--install`);
   - writes a systemd unit that finds the engine on the host's PATH;
-  - puts the key in `/etc/tawjih/NAME.env`, from the same variable on
-    this computer (mode 0600, kept out of Ansible's output);
+  - puts the key in `/etc/tawjih/NAME.env`, read from the server's
+    `--api-key-env` variable on this computer (mode 0600, kept out of
+    Ansible's output);
   - starts or restarts the service (or stops it, with `--state stopped`);
   - waits until the health address answers.
 

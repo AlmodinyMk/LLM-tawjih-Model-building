@@ -67,9 +67,12 @@ class Manifests(Base2):
         self.assertEqual(dep["spec"]["replicas"], 2)
         self.assertEqual(dep["metadata"]["namespace"], "ml")
         # the key comes from a Secret, never into the manifest
-        keyed = [e for e in box["env"] if "valueFrom" in e]
-        self.assertEqual(keyed[0]["valueFrom"]["secretKeyRef"],
-                         {"name": "tawjih-big-key", "key": "BIG_KEY"})
+        self.assertEqual(box["env"][0], {
+            "name": "TAWJIH_SERVER_KEY", "valueFrom": {"secretKeyRef": {
+                "name": "tawjih-big-key", "key": "api-key"}}})
+        self.assertIn({"name": "VLLM_API_KEY",
+                       "value": "$(TAWJIH_SERVER_KEY)"}, box["env"])
+        self.assertNotIn("BIG_KEY", json.dumps(docs))
         self.assertFalse(any(e["name"] == "CUDA_VISIBLE_DEVICES"
                              for e in box["env"]))
         self.assertEqual(box["readinessProbe"]["httpGet"]["path"], "/health")
@@ -77,6 +80,18 @@ class Manifests(Base2):
         self.assertEqual(claim["persistentVolumeClaim"]["claimName"],
                          "models")
         self.assertEqual(svc["spec"]["ports"][0]["port"], 8000)
+
+    def test_key_as_an_argument(self):
+        self.cli("server", "add", "sg", "--engine", "sglang", "--model", "M",
+                 "--port", "30000", "--api-key-env", "SG_KEY")
+        box = C.manifest("sg", self.cfg("sg"), image="x")[0]["spec"]["template"][
+            "spec"]["containers"][0]
+        i = box["command"].index("--api-key")
+        self.assertEqual(box["command"][i + 1], "$(TAWJIH_SERVER_KEY)")
+        unit = C.remote_unit("sg", self.cfg("sg"), "root")
+        self.assertIn("--api-key ${TAWJIH_SERVER_KEY}", unit)
+        self.assertIn("EnvironmentFile=/etc/tawjih/sg.env", unit)
+        self.assertNotIn("SG_KEY", unit)
 
     @unittest.skipIf(yaml is None, "PyYAML is not installed")
     def test_yaml_reads_back(self):
@@ -105,8 +120,11 @@ class Manifests(Base2):
         names = [t["name"] for t in book["tasks"]]
         self.assertEqual(names[0], "install vllm")
         key = [t for t in book["tasks"] if t.get("no_log")][0]
-        self.assertIn("lookup('env', 'BIG_KEY')",
-                      key["ansible.builtin.copy"]["content"])
+        self.assertEqual(key["ansible.builtin.copy"]["content"],
+                         "TAWJIH_SERVER_KEY={{ lookup('env', tawjih_key_env) "
+                         "}}\nVLLM_API_KEY={{ lookup('env', tawjih_key_env) "
+                         "}}\n")
+        self.assertEqual(book["vars"]["tawjih_key_env"], "BIG_KEY")
         unit = [t for t in book["tasks"] if t["name"] == "the unit"][0][
             "ansible.builtin.copy"]["content"]
         self.assertIn("ExecStart=/usr/bin/env vllm serve Qwen/Qwen3-32B "

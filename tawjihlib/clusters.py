@@ -23,6 +23,9 @@ from .providers import POLICY_FILE, load_policy
 from .serving import ENGINES, _note, command, get_server, health_path
 
 LABEL = "app.kubernetes.io/name"
+# the server's key, under one name in the pod and on a host: the variable
+# that holds it on this computer is never written anywhere
+SERVER_KEY = "TAWJIH_SERVER_KEY"
 MANAGED = "app.kubernetes.io/managed-by"
 
 
@@ -86,30 +89,24 @@ def _image(name, cfg, image):
 def manifest(name, cfg, image=None, replicas=1, namespace=None, gpus=None,
              claim=None):
     """[Deployment, Service] of a server, as dicts."""
+    keyed = bool(cfg.get("api_key_env"))
     c = dict(cfg, host="0.0.0.0", python="python3", exe=None)
-    argv, env = command(c)
+    argv, env = command(c, key_value="$(%s)" % SERVER_KEY if keyed else None)
     port = int(cfg["port"])
     app = "tawjih-" + name
     labels = {LABEL: app, MANAGED: "tawjih"}
     meta = {"name": app, "labels": labels}
     if namespace:
         meta["namespace"] = namespace
-    secret_vars = sorted({w[1:] for w in argv if w.startswith("$")} |
-                         {v[1:] for v in env.values() if v.startswith("$")})
     envs = []
+    if keyed:       # first, so that $(TAWJIH_SERVER_KEY) below is filled
+        envs.append({"name": SERVER_KEY, "valueFrom": {"secretKeyRef": {
+            "name": app + "-key", "key": "api-key"}}})
     for k, v in sorted(env.items()):
         if k in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
             continue          # the cluster gives the pod its GPUs
-        if v.startswith("$"):
-            envs.append({"name": k, "valueFrom": {"secretKeyRef": {
-                "name": app + "-key", "key": v[1:]}}})
-        else:
-            envs.append({"name": k, "value": v})
-    for var in secret_vars:
-        if not any(e["name"] == var for e in envs):
-            envs.append({"name": var, "valueFrom": {"secretKeyRef": {
-                "name": app + "-key", "key": var}}})
-    args = ["$(%s)" % w[1:] if w.startswith("$") else w for w in argv]
+        envs.append({"name": k, "value": v})
+    args = list(argv)
     n = _gpu_count(cfg, gpus)
     box = {"name": cfg["engine"], "image": _image(name, cfg, image),
            "command": args, "ports": [{"containerPort": port,
@@ -150,14 +147,10 @@ def manifest_text(name, cfg, **kw):
     docs = manifest(name, cfg, **kw)
     head = "# Tawjih server %s (%s), from servers.json\n" % (name,
                                                              cfg["engine"])
-    keys = [e["valueFrom"]["secretKeyRef"]["key"] for e in
-            docs[0]["spec"]["template"]["spec"]["containers"][0].get(
-                "env", []) if "valueFrom" in e]
-    if keys:
+    if cfg.get("api_key_env"):
         head += ("# the key comes from a Secret, made once with:\n"
-                 "#   kubectl create secret generic tawjih-%s-key %s\n" % (
-                     name, " ".join("--from-literal=%s=..." % k
-                                    for k in keys)))
+                 "#   kubectl create secret generic tawjih-%s-key "
+                 "--from-literal=api-key=...\n" % name)
     model = cfg.get("model") or ""
     if model and Path(model).exists() and not kw.get("claim"):
         head += ("# %s is a folder on this computer: the pod needs it in "
@@ -318,19 +311,20 @@ ENGINE_PACKAGES = {"vllm": "vllm", "sglang": "sglang[all]",
 
 def remote_unit(name, cfg, user, listen=None):
     """A systemd unit for another machine: the engine found on its PATH."""
+    keyed = bool(cfg.get("api_key_env"))
+    held = "${%s}" % SERVER_KEY
     argv, env = command(dict(cfg, exe=None, python="python3",
-                             host=listen or cfg.get("host") or "127.0.0.1"))
-    var = cfg.get("api_key_env")
+                             host=listen or cfg.get("host") or "127.0.0.1"),
+                        key_value=held if keyed else None)
     lines = ["[Unit]", "Description=Tawjih server %s (%s)" % (
         name, cfg["engine"]), "After=network-online.target", "",
         "[Service]", "Type=simple", "WorkingDirectory=/var/lib/tawjih"]
     for k, v in sorted(env.items()):
-        if not v.startswith("$"):
+        if v != held:       # the key's variables are in the file below
             lines.append("Environment=%s=%s" % (k, v))
-    if var or any(v.startswith("$") for v in env.values()):
+    if keyed:
         lines.append("EnvironmentFile=/etc/tawjih/%s.env" % name)
-    words = ["${%s}" % w[1:] if w.startswith("$") else shlex.quote(w)
-             for w in argv]
+    words = [w if w == held else shlex.quote(w) for w in argv]
     lines += ["ExecStart=/usr/bin/env " + " ".join(words),
               "Restart=on-failure", "RestartSec=10", "User=%s" % user, "",
               "[Install]", "WantedBy=multi-user.target", ""]
@@ -354,16 +348,19 @@ def playbook(name, cfg, hosts="tawjih", user="root", install=False,
                   "ansible.builtin.file": {"path": "/var/lib/tawjih",
                                            "state": "directory",
                                            "owner": user}})
-    keyvars = sorted({v[1:] for v in command(cfg)[1].values()
-                      if v.startswith("$")} |
-                     ({cfg["api_key_env"]} if cfg.get("api_key_env") else
-                      set()))
-    for var in keyvars:
+    if cfg.get("api_key_env"):
+        # the engine reads the key from SERVER_KEY in its command, or from
+        # its own variable: the file holds both, from the variable named
+        # by tawjih_key_env on the computer that runs ansible-playbook
+        names = [SERVER_KEY] + sorted(
+            k for k, v in command(cfg, key_value="${%s}" % SERVER_KEY)[1]
+            .items() if v == "${%s}" % SERVER_KEY)
         tasks.append({
-            "name": "the key, from %s on this computer" % var,
+            "name": "the key, from this computer's environment",
             "ansible.builtin.copy": {
                 "dest": "/etc/tawjih/%s.env" % name, "mode": "0600",
-                "content": "%s={{ lookup('env', '%s') }}\n" % (var, var)},
+                "content": "".join("%s={{ lookup('env', tawjih_key_env) }}\n"
+                                   % k for k in names)},
             "no_log": True})
     tasks.append({"name": "the unit",
                   "ansible.builtin.copy": {
@@ -385,8 +382,10 @@ def playbook(name, cfg, hosts="tawjih", user="root", install=False,
                 "retries": 60, "delay": 10})
     return [{"name": "Tawjih server %s (%s)" % (name, cfg["engine"]),
              "hosts": hosts, "become": True, "tasks": tasks,
-             "vars": {"tawjih_server": name, "tawjih_port": cfg["port"],
-                      "tawjih_kind": eng.get("kind") or ""}}]
+             "vars": dict({"tawjih_server": name, "tawjih_port": cfg["port"],
+                           "tawjih_kind": eng.get("kind") or ""},
+                          **({"tawjih_key_env": cfg["api_key_env"]}
+                             if cfg.get("api_key_env") else {}))}]
 
 
 def _inventory(a, root):
