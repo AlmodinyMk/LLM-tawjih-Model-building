@@ -118,7 +118,9 @@ off.
 
 The model of a step is, in order: `--model` on the command line, the path's
 `USING`, the file's `model` header, the provider's `model` in
-`providers.json`, the `TAWJIH_MODEL` environment variable.
+`providers.json`, the `TAWJIH_MODEL` environment variable. A `USING` that
+names a provider sends the step to that provider (its model, unless
+`--model`), so one path can use several servers.
 
 ## Providers
 
@@ -193,7 +195,7 @@ in brackets.
 | `A TO B` [إلى] | A's output is B's input |
 | `A TO B AND C` [و] | A's output goes to both B and C |
 | `B AND C TO D` | D receives the outputs of B and C together |
-| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`, `key= value` or `key =value`; the word after `=` is always the value, even one spelled like a keyword, such as `pass`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false |
+| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`, `key= value` or `key =value`; the word after `=` is always the value, even one spelled like a keyword, such as `pass`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false. `IF tokens > N` (also `>=`, `<`, `<=`, spaces optional; `chars`, `lines`; Arabic `الرموز`، `الأحرف`، `الأسطر`): the size of A's output, tokens estimated as one per 4 characters (a model's own count differs, more for Arabic), characters and lines counted; it works with `UNTIL` and `ITERATE ... UNTIL` too |
 | `A AMONG B C D` [بين] | A decides: the candidate named first in A's output (by number, id or title) is the only one that runs; if none is named and exactly one candidate's `expects` accepts the output, that one runs |
 | `A AMONG B C D BY key` [حسب] | A's output must be a JSON object; the value of its top-level `key` (case-insensitive) must equal, ignoring case, a candidate's id, number, title or alias, and that one runs. Otherwise the step fails with the reason; nothing is guessed from the rest of the text |
 | `A TO D THROUGH B C` [عبر] | A → B → C → D |
@@ -203,7 +205,7 @@ in brackets.
 | `CALL name` [نفذ] | in place of a file: the saved path `name` is built (from its file, every time) and spliced in. Connections into it go to its files that nothing feeds; connections out of it leave from its final files. A file may not be both in the path and in the called path; a path may not call itself, directly or not. `AMONG` chooses among files only |
 | `EACH A` [لكل] | A's `each` is `yes` in this path |
 | `APPROVE A` [اعتمد] | A is approved before it runs in this path (with `approve: after` in the file: both) |
-| `A USING m` [بواسطة] | A's model in this path: `--model` > `USING` > `model:` > `TAWJIH_MODEL` |
+| `A USING m` [بواسطة] | A's model in this path: `--model` > `USING` > `model:` > `TAWJIH_MODEL`. When m is a provider of the project, A is sent to that provider, with its model unless `--model` is given; a run with `--backend dry` or `manual` stays a preview and calls none |
 | `A RETRY n` [أعد، اعد] | n from 1 to 20: A's retries in this path (`--retries` wins) |
 | `A UNTIL [NOT] w` [حتى] | needs `RETRY n` on A: while the condition (as for `IF`, including `key = value`) does not hold for A's output, A runs again, at most n more times, with its previous answer and the reason appended to its prompt; then the step fails (and its fallback, if any, runs) |
 | `A PICK k` [انتق] | after A's contract and approval, only the value of key `k` of A's JSON object output is kept and passed on (a string as is, anything else as JSON); without that key the step fails. Contract checks skip connections out of A |
@@ -944,6 +946,22 @@ starts and is never written or shown. The host is `127.0.0.1` unless
 | `prepare NAME [STEP] --out DIR [--tool-arg ARG]` | lmdeploy `awq` (`lmdeploy lite auto_awq`), trtllm `build` (`trtllm-build`), run once before serving |
 | `bench NAME` | `--requests N` at `--concurrency C`, with `--prompt`, `--prompt-file` or `--from-file REF` (a file's machine side as it is sent), `--max-tokens`, `--vary` (each prompt different, so none is answered from a cache); time per request (median, 95th percentile), output tokens per second; `history/bench-NAME-STAMP.json` with the GPUs, settings and `by` |
 | `unit NAME [--docker --image IMG]` | a systemd unit (written to `servers/NAME/`) or a `docker run` command, to start it with the computer; not with `--gpus auto` |
+| `unit --all` | a unit for every server (those with `--gpus auto` left out) and `tawjih-servers.target`, which starts, restarts and stops them together, in `servers/units/` |
+| `tune NAME --set KEY=VALUE [--restart]` | change settings by name: a common one (`mem`, `tp`, `pp`, `context`, `kv_cache`, `served_name`) or the engine's own flag without dashes, in its spelling (`schedule-policy=lpm`; trtllm's with underscores); the engine's own name of a common setting changes that setting; `true` is the flag alone, `false` or empty removes it. Engines read these when they start: `--restart` restarts a running server. Ollama is tuned with `--env` |
+| `kill PID` / `kill --port-of PORT` | a process Tawjih did not start (one holding a port): shows its command line; stops it only with `--yes` (never process 1 or Tawjih itself), noted with `by` |
+
+## Batches
+
+`tawjih batch NAME --inputs-dir DIR --backends P1,P2 [--pattern GLOB]
+[--per-backend N] [--out DIR]` (`دفعة`) runs the saved path once for each
+matching file of the folder, as `run NAME --input-file FILE --backend P` in
+a process of its own. The providers share the inputs: each takes the next
+when it is free (`--per-backend` at a time), so one server per GPU works
+through a batch together. Each run writes its ordinary record; its answer
+and messages go to `FILE.out` and `FILE.log` in `--out` (default
+`runs/batch-NAME-STAMP/`), and `batch.json` lists every run (provider,
+status, seconds), the time and `by`. Steps marked `approve` are not asked:
+`--approve deny` (default) or `auto`. Exit status 1 when a run failed.
 
 ## Program layout
 

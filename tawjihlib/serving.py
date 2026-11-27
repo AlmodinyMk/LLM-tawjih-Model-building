@@ -30,7 +30,7 @@ from .core import (
     NAME_RE, Store, alive, die, key_values, kill_tree, spawn_detached, who,
 )
 from .providers import (
-    load_providers,
+    BACKENDS, load_providers,
 )
 from .engine import (
     build_prompt,
@@ -94,6 +94,7 @@ ENGINES = {
     "trtllm": {
         "argv": ["{exe:trtllm-serve}", "{model}", "--host", "{host}",
                  "--port", "{port}"],
+        "underscore": True,             # its flags are --tp_size, ...
         "flags": {"tp": "--tp_size", "pp": "--pp_size",
                   "context": "--max_seq_len",
                   "mem": "--kv_cache_free_gpu_memory_fraction"},
@@ -240,9 +241,122 @@ def command(cfg, key_value=None):
             argv += [where, value]
         else:
             env[where] = value
+    for k, v in (cfg.get("args") or {}).items():    # server tune --set
+        if v is True:
+            argv.append(flag_name(cfg["engine"], k))
+        elif v not in (False, None):
+            argv += [flag_name(cfg["engine"], k),
+                     v if isinstance(v, str) else json.dumps(v)]
     argv += [str(x) for x in cfg.get("pass") or []]
     env.update({k: str(v) for k, v in (cfg.get("env") or {}).items()})
     return argv, env
+
+
+def flag_name(engine, key):
+    """--key in the engine's spelling: dashes (--schedule-policy), or
+    underscores for an engine whose flags have them (trtllm)."""
+    key = key.lstrip("-")
+    if ENGINES[engine].get("underscore"):
+        return "--" + key.replace("-", "_")
+    return "--" + key.replace("_", "-")
+
+
+TUNABLE = ("tp", "pp", "context", "mem", "kv_cache", "served_name")
+
+
+def tune(cfg, changes):
+    """Settings changed by name: a common one (mem, tp, context ...) or
+    one of the engine's own flags, written as KEY=VALUE without the
+    dashes; true is a flag alone, false or empty removes it. The engine's
+    own name of a common setting (sglang mem-fraction-static) changes the
+    common setting. Returns the new settings and what changed."""
+    eng = ENGINES[cfg["engine"]]
+    if cfg["engine"] == "ollama":
+        die("ollama is set by environment variables: server set NAME --env "
+            "OLLAMA_NUM_PARALLEL=4 (and --context, --kv-cache)")
+    cfg = dict(cfg)
+    args = dict(cfg.get("args") or {})
+    done = []
+    own = {flag_name(cfg["engine"], f): k for k, f in eng["flags"].items()
+           if f and f.startswith("--")}
+    for key, value in changes.items():
+        k = key.lstrip("-")
+        common = k.replace("-", "_") if k.replace("-", "_") in TUNABLE \
+            else own.get(flag_name(cfg["engine"], k))
+        if common:
+            if value in (None, False):
+                cfg.pop(common, None)
+            else:
+                cfg[common] = value
+            done.append("%s=%s" % (common, "" if value is None else value))
+        else:
+            if value in (None, False):
+                args.pop(k, None)
+            else:
+                args[k] = value
+            done.append("%s=%s" % (flag_name(cfg["engine"], k),
+                                   "" if value is None else value))
+    if args:
+        cfg["args"] = args
+    else:
+        cfg.pop("args", None)
+    return cfg, done
+
+
+def process_line(pid):
+    """What a process is, for the person to see before stopping it."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid,
+                                  "/FO", "CSV", "/NH"], capture_output=True,
+                                 text=True, timeout=10).stdout.strip()
+            return out.split('","')[0].strip('"') if '"' in out else ""
+        f = Path("/proc/%d/cmdline" % pid)
+        if f.is_file():
+            return f.read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", "replace").strip()
+        return subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                              capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def kill(root, pid, port, yes):
+    """Stop a process Tawjih did not start (one that holds a port, say),
+    after showing what it is; only with --yes, and noted with who."""
+    if port:
+        pid = port_owner(port)
+        if not pid:
+            die("no process is known to listen on port %d" % port)
+    if not pid:
+        die("server kill takes a PID, or --port PORT")
+    if pid <= 1 or pid in (os.getpid(), os.getppid()):
+        die("process %d is not one to stop from here" % pid)
+    if not alive(pid):
+        die("no process %d" % pid)
+    what = process_line(pid) or "(its command line is not readable)"
+    print("process %d: %s" % (pid, what))
+    if not yes:
+        print("stop it with: tawjih server kill %d --yes" % pid)
+        return 1
+    if os.name == "nt":
+        kill_tree(pid)
+    else:
+        import signal
+        try:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(20):
+                if not alive(pid):
+                    break
+                time.sleep(0.5)
+            if alive(pid):
+                os.kill(pid, signal.SIGKILL)
+        except OSError as e:
+            die("could not stop %d: %s" % (pid, e))
+    _note(root, "kill", "-", pid=pid, command=what[:300])
+    print("stopped %d" % pid)
+    return 0
 
 
 def show_command(argv, env):
@@ -804,14 +918,16 @@ def status_line(root, name, cfg):
 
 
 # --------------------------------------------------------------- services
-def systemd_unit(root, name, cfg):
+def systemd_unit(root, name, cfg, group=None):
     argv, env = command(cfg)
     exe = shutil.which(argv[0]) or argv[0]
     argv = [exe] + argv[1:]
     var = cfg.get("api_key_env")
     lines = ["[Unit]", "Description=Tawjih server %s (%s)" % (name,
                                                               cfg["engine"]),
-             "After=network-online.target", "", "[Service]", "Type=simple",
+             "After=network-online.target"] + (
+                 ["PartOf=%s" % group] if group else []) + [
+             "", "[Service]", "Type=simple",
              "WorkingDirectory=%s" % (cfg.get("dir") or Path(root).resolve())]
     for k, v in env.items():
         if not v.startswith("$"):
@@ -832,8 +948,44 @@ def systemd_unit(root, name, cfg):
         lines.append("# %s was not found here: give its full path" % exe)
     lines += ["ExecStart=" + " ".join(words), "Restart=on-failure",
               "RestartSec=10", "User=%s" % getpass.getuser(), "",
-              "[Install]", "WantedBy=multi-user.target", ""]
+              "[Install]", "WantedBy=%s" % (group or "multi-user.target"),
+              ""]
     return "\n".join(lines)
+
+
+GROUP = "tawjih-servers.target"
+
+
+def all_units(root, servers):
+    """A unit for each server and a target that starts and stops them
+    together, in servers/units/."""
+    d = Path(root) / STATE_DIR / "units"
+    d.mkdir(parents=True, exist_ok=True)
+    names = []
+    for name in sorted(servers):
+        cfg = servers[name]
+        if cfg.get("gpus") == "auto":
+            print("# %s left out: --gpus auto needs someone to choose; give "
+                  "its GPUs (server set %s --gpus 0,1)" % (name, name))
+            continue
+        (d / ("tawjih-%s.service" % name)).write_text(
+            systemd_unit(root, name, cfg, GROUP), encoding="utf-8")
+        names.append("tawjih-%s.service" % name)
+    if not names:
+        die("no server to write a unit for")
+    (d / GROUP).write_text("\n".join([
+        "[Unit]", "Description=Tawjih model servers of %s"
+        % Path(root).resolve().name, "Wants=" + " ".join(names), "",
+        "[Install]", "WantedBy=multi-user.target", ""]), encoding="utf-8")
+    print("written to %s: %s and %s" % (d, ", ".join(names), GROUP))
+    print("# to install them:")
+    print("#   sudo cp %s/*.service %s/%s /etc/systemd/system/" % (
+        shlex.quote(str(d)), shlex.quote(str(d)), GROUP))
+    print("#   sudo systemctl daemon-reload && sudo systemctl enable --now "
+          + GROUP)
+    print("#   all together: sudo systemctl restart|stop " + GROUP)
+    print("#   logs: sudo journalctl -u 'tawjih-*' -f")
+    return 0
 
 
 def docker_command(name, cfg, image):
@@ -941,6 +1093,15 @@ def cmd_server(a):
         print("anything else: --pass ARG (repeatable), given to the engine "
               "as it is")
         return 0
+    if act == "kill":
+        pid = None
+        if args:
+            if not args[0].isdigit():
+                die("server kill takes a PID (a number), or --port PORT")
+            pid = int(args[0])
+        return kill(root, pid, a.kill_port, a.yes)
+    if act == "unit" and a.all:
+        return all_units(root, servers)
     if not args:
         die("server %s needs a NAME" % act)
     name = args[0]
@@ -1053,6 +1214,24 @@ def cmd_server(a):
             die("no answer from %s: %s" % (url(cfg, path), text))
         print(text)
         return 0 if 200 <= code < 300 else 1
+    if act == "tune":
+        if not a.tune_set:
+            die("server tune NAME --set KEY=VALUE (repeatable): mem=0.9, "
+                "schedule-policy=lpm, enable-prefix-caching=true ...")
+        new, done = tune(cfg, key_values(a.tune_set, "--set"))
+        check_server(new)
+        servers[name] = new
+        save_servers(root, data)
+        print("%s: %s" % (name, ", ".join(done)))
+        print(show_command(*command(new)))
+        _note(root, "tune", name, changes=done)
+        if read_pid(root, name):
+            if a.restart:
+                stop(root, name)
+                return start(root, name, new, a.wait)
+            print("these apply when it starts again: tawjih server restart "
+                  "%s (or tune with --restart)" % name)
+        return 0
     if act == "unit":
         if cfg.get("gpus") == "auto":
             die("a service starts by itself, with no one to choose GPUs: "
@@ -1108,6 +1287,132 @@ def cmd_server(a):
     die("unknown action %s" % act)
 
 
+# ------------------------------------------------------------------ batch
+def cmd_batch(a):
+    """A saved path run on every input file of a folder, the inputs shared
+    out among providers (one server per GPU, say): each provider takes the
+    next input when it is free, so a faster one takes more. Each run is an
+    ordinary run, with its record; the answers go to --out."""
+    import threading
+    import queue
+    st = Store(a.project)
+    root = st.root
+    if not (root / "paths" / (a.name + ".path")).is_file():
+        die("no saved path %s (tawjih path %s ...)" % (a.name, a.name))
+    src = Path(a.inputs_dir)
+    if not src.is_dir():
+        die("no folder %s" % src)
+    files = sorted(f for f in src.glob(a.pattern) if f.is_file())
+    if not files:
+        die("no input in %s matches %s" % (src, a.pattern))
+    names = [b.strip() for b in a.backends.split(",") if b.strip()]
+    known = load_providers(root)["providers"]
+    for b in names:
+        if b not in known and b not in BACKENDS:
+            die("%s is not a provider of this project (tawjih provider "
+                "list) or a kind" % b)
+    if len(set(names)) != len(names):
+        die("a provider is named twice in --backends")
+    if a.per_backend < 1:
+        die("--per-backend takes 1 or more")
+    out = Path(a.out) if a.out else root / "runs" / (
+        "batch-%s-%s" % (a.name, time.strftime("%Y%m%d-%H%M%S")))
+    out.mkdir(parents=True, exist_ok=True)
+    pkg = str(Path(__file__).resolve().parent.parent)
+    env = dict(os.environ, TAWJIH_NO_SETUP="1", PYTHONPATH=pkg + (
+        os.pathsep + os.environ["PYTHONPATH"]
+        if os.environ.get("PYTHONPATH") else ""))
+    extra = ["--approve", a.approve]
+    if a.allow_code:
+        extra.append("--allow-code")
+    if a.model:
+        extra += ["--model", a.model]
+    if a.retries is not None:
+        extra += ["--retries", str(a.retries)]
+    todo = queue.Queue()
+    for f in files:
+        todo.put(f)
+    results, lock = [], threading.Lock()
+    print("batch %s: %d inputs on %s, %d at a time each; answers in %s" % (
+        a.name, len(files), ", ".join(names), a.per_backend, out))
+
+    def worker(backend):
+        while True:
+            try:
+                f = todo.get_nowait()
+            except queue.Empty:
+                return
+            argv = [sys.executable, "-c", "import sys; from tawjihlib.cli "
+                    "import main; sys.exit(main())", "-p", str(root), "run",
+                    a.name, "--input-file", str(f.resolve()), "--backend",
+                    backend] + extra
+            t0 = time.monotonic()
+            try:
+                r = subprocess.run(argv, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace",
+                                   env=env, timeout=a.timeout or None)
+                code, so, se = r.returncode, r.stdout, r.stderr
+            except subprocess.TimeoutExpired as e:
+                code, so = None, ""
+                se = "stopped after %s s\n%s" % (a.timeout, e.stderr or "")
+            took = round(time.monotonic() - t0, 2)
+            (out / (f.name + ".out")).write_text(so, encoding="utf-8")
+            (out / (f.name + ".log")).write_text(se, encoding="utf-8")
+            row = {"input": f.name, "backend": backend, "ok": code == 0,
+                   "status": code, "seconds": took}
+            with lock:
+                results.append(row)
+                print("[%d/%d] %s on %s: %s, %.1f s" % (
+                    len(results), len(files), f.name, backend,
+                    "ok" if code == 0 else "failed", took))
+    threads = [threading.Thread(target=worker, args=(b,))
+               for b in names for _ in range(a.per_backend)]
+    t0 = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    wall = round(time.monotonic() - t0, 2)
+    results.sort(key=lambda r: r["input"])
+    ok = sum(r["ok"] for r in results)
+    per = {b: sum(1 for r in results if r["backend"] == b) for b in names}
+    (out / "batch.json").write_text(json.dumps({
+        "path": a.name, "inputs": str(src), "pattern": a.pattern,
+        "backends": names, "per_backend": a.per_backend, "by": who(),
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"), "seconds": wall,
+        "ok": ok, "failed": len(results) - ok, "runs": results}, indent=2,
+        ensure_ascii=False), encoding="utf-8")
+    print("%d of %d ok in %.1f s (%s); %s" % (
+        ok, len(results), wall, ", ".join("%s %d" % kv for kv in per.items()),
+        out / "batch.json"))
+    return 0 if ok == len(results) else 1
+
+
+def add_batch_parser(sub):
+    s = sub.add_parser("batch", aliases=["دفعة"], help="run a saved path on "
+                       "every input file of a folder, shared out among "
+                       "providers (one server per GPU, say)")
+    s.add_argument("name", help="a saved path")
+    s.add_argument("--inputs-dir", required=True, metavar="FOLDER")
+    s.add_argument("--pattern", default="*", help="which files (default *)")
+    s.add_argument("--backends", required=True, metavar="P1,P2",
+                   help="the providers that share the inputs")
+    s.add_argument("--per-backend", type=int, default=1, metavar="N",
+                   help="inputs each provider takes at once (default 1)")
+    s.add_argument("--out", metavar="FOLDER", help="for the answers "
+                   "(default runs/batch-NAME-STAMP/)")
+    s.add_argument("--allow-code", action="store_true")
+    s.add_argument("--model")
+    s.add_argument("--retries", type=int, choices=range(10), metavar="N")
+    s.add_argument("--approve", choices=["auto", "deny"], default="deny",
+                   help="steps marked approve: no one is asked in a batch "
+                   "(default deny)")
+    s.add_argument("--timeout", type=float, default=0, metavar="SECONDS",
+                   help="stop a run that takes longer (default: no limit)")
+    s.set_defaults(fn=cmd_batch)
+    return s
+
+
 def add_server_parser(sub):
     s = sub.add_parser("server", aliases=["خادم"], help="model servers: "
                        "start, watch and stop vLLM, SGLang, LMDeploy, "
@@ -1117,7 +1422,7 @@ def add_server_parser(sub):
                                       "start", "stop", "restart", "status",
                                       "logs", "metrics", "api", "unit",
                                       "provider", "rm", "gpus", "prepare",
-                                      "bench"])
+                                      "bench", "tune", "kill"])
     s.add_argument("args", nargs="*", help="NAME (api: NAME METHOD PATH; "
                    "provider: NAME [PROVIDER]; prepare: NAME [STEP])")
     s.add_argument("--engine", dest="srv_engine", choices=list(ENGINES))
@@ -1206,6 +1511,20 @@ def add_server_parser(sub):
                    help="bench: the longest answer (default 256)")
     s.add_argument("--vary", action="store_true", help="bench: make each "
                    "prompt different, so no answer comes from a cache")
+    s.add_argument("--set", dest="tune_set", action="append",
+                   metavar="KEY=VALUE", help="tune: a setting by name: a "
+                   "common one (mem, tp, pp, context, kv_cache) or the "
+                   "engine's own flag without dashes (schedule-policy=lpm); "
+                   "true is the flag alone, an empty value removes it")
+    s.add_argument("--restart", action="store_true",
+                   help="tune: restart it now when it is running")
+    s.add_argument("--port-of", dest="kill_port", type=int, metavar="PORT",
+                   help="kill: the process that listens on this port")
+    s.add_argument("--yes", action="store_true",
+                   help="kill: stop it (without: only show what it is)")
+    s.add_argument("--all", action="store_true", help="unit: a unit for "
+                   "every server and tawjih-servers.target to start and "
+                   "stop them together")
     s.add_argument("--docker", action="store_true",
                    help="unit: a docker run command instead of a systemd "
                    "unit")
@@ -1213,5 +1532,6 @@ def add_server_parser(sub):
     return s
 
 
-__all__ = ['ENGINES', 'add_server_parser', 'cmd_server', 'command',
+__all__ = ['ENGINES', 'add_batch_parser', 'add_server_parser', 'cmd_batch',
+           'cmd_server', 'command',
            'load_servers', 'port_owner']

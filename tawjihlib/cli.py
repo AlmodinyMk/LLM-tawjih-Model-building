@@ -58,7 +58,7 @@ from .script import (
     translate_script,
 )
 from .arch import cmd_arch
-from .serving import add_server_parser
+from .serving import add_batch_parser, add_server_parser
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .monitor import cmd_top
@@ -1197,6 +1197,7 @@ def build_parser():
     s.set_defaults(fn=cmd_runtime)
 
     add_server_parser(sub)
+    add_batch_parser(sub)
 
     s = sub.add_parser("provider", help="named providers (providers.json): "
                        "address, model, key variable, retries, default, "

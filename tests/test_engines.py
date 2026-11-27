@@ -606,3 +606,231 @@ class Servers(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SizeConditions(Base):
+    """IF tokens > N, chars, lines: the size of a step's output decides."""
+    def setUp(self):
+        super().setUp()
+        self.cli("new", "root")
+        for name in ("pass", "long", "short"):
+            self.cli("new", name, "--parent", "1")
+        self.fill("1.1", code="output = input")
+        self.fill("1.2", code="output = 'LONG'")
+        self.fill("1.3", code="output = 'SHORT'")
+
+    def run_path(self, text):
+        code, out, err = self.cli("run", "r", "--input", text,
+                                  "--allow-code", "--backend", "fake")
+        self.assertEqual(code, 0, err)
+        return out
+
+    def test_route_by_tokens(self):
+        code, out, err = self.cli("path", "r", "1.1", "TO", "1.2", "IF",
+                                  "tokens", ">", "100", "ELSE", "1.3")
+        self.assertEqual(code, 0, err + out)
+        self.assertIn("LONG", self.run_path("x" * 404))   # 101 tokens
+        self.assertIn("SHORT", self.run_path("x" * 400))
+        saved = (self.root / "paths" / "r.path").read_text(encoding="utf-8")
+        self.assertIn("tokens>100", saved)
+
+    def test_arabic_and_other_measures(self):
+        for words, long_text, short_text in (
+                (["إذا", "الرموز", ">", "10"], "y" * 44, "y" * 40),
+                (["IF", "lines>=3"], "a\nb\nc", "a\nb"),
+                (["IF", "chars", "<=", "5"], "abc", "abcdef")):
+            code, out, err = self.cli("path", "r", "1.1", "TO", "1.2",
+                                      *words, "ELSE", "1.3")
+            self.assertEqual(code, 0, (words, err))
+            self.assertIn("LONG", self.run_path(long_text), words)
+            self.assertIn("SHORT", self.run_path(short_text), words)
+
+    def test_holds_and_plain_words(self):
+        self.assertTrue(tawjih.condition_holds("x" * 8, "tokens>=2"))
+        self.assertFalse(tawjih.condition_holds("x" * 8, "tokens>2"))
+        self.assertTrue(tawjih.condition_holds("a\nb", "lines<3"))
+        # a word 'tokens' with no number stays a word
+        code, _, err = self.cli("path", "w", "1.1", "TO", "1.2", "IF",
+                                "tokens", "ELSE", "1.3")
+        self.assertEqual(code, 0, err)
+        self.assertIn("SHORT", self.cli("run", "w", "--input", "none here",
+                                        "--allow-code")[1])
+        self.assertIn("LONG", self.cli("run", "w", "--input", "tokens",
+                                       "--allow-code")[1])
+
+    def test_iterate_until_size(self):
+        self.fill("1.1", code="output = input + 'x' * 10")
+        code, _, err = self.cli("path", "it", "1.1", "/", "ITERATE", "9",
+                                "UNTIL", "chars", ">", "35")
+        self.assertEqual(code, 0, err)
+        out = self.cli("run", "it", "--input", "s", "--allow-code")[1]
+        self.assertIn("s" + "x" * 40, out)
+        self.assertNotIn("x" * 41, out)
+
+
+class UsingProvider(Base):
+    """A step whose USING names a provider goes to that provider."""
+    def setUp(self):
+        super().setUp()
+        self.a, self.b = Recorder(), Recorder()
+        self.addCleanup(self.a.close)
+        self.addCleanup(self.b.close)
+        self.cli("provider", "add", "big", "--kind", "openai", "--base-url",
+                 self.a.url + "/v1", "--model", "big-model")
+        self.cli("provider", "add", "small", "--kind", "openai",
+                 "--base-url", self.b.url + "/v1", "--model", "small-model")
+        self.cli("new", "root")
+        self.cli("new", "one", "--parent", "1")
+        self.cli("new", "two", "--parent", "1")
+        self.fill("1.1", instructions="first")
+        self.fill("1.2", instructions="second")
+        self.cli("path", "p", "1.1", "USING", "big", "TO", "1.2",
+                 "بواسطة", "small")
+
+    def test_each_step_to_its_provider(self):
+        code, out, err = self.cli("run", "p", "--input", "q", "--backend",
+                                  "fake")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([b["model"] for _, b in self.a.bodies],
+                         ["big-model"])
+        self.assertEqual([b["model"] for _, b in self.b.bodies],
+                         ["small-model"])
+        self.assertIn("first", self.a.bodies[0][1]["messages"][0]["content"])
+        self.assertEqual(self.prompts, [])           # fake got nothing
+        # --model still overrides the provider's model
+        self.cli("run", "p", "--input", "q2", "--backend", "fake",
+                 "--model", "m9")
+        self.assertEqual(self.a.bodies[-1][1]["model"], "m9")
+
+    def test_a_dry_run_calls_none(self):
+        code, out, err = self.cli("run", "p", "--input", "q", "--backend",
+                                  "dry")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.a.bodies, self.b.bodies), ([], []))
+
+
+class ServerControl(Base):
+    def test_tune(self):
+        self.cli("server", "add", "sg", "--engine", "sglang", "--model", "m",
+                 "--python", "py")
+        code, out, err = self.cli("server", "tune", "sg", "--set",
+                                  "mem-fraction-static=0.8", "--set",
+                                  "schedule_policy=lpm", "--set",
+                                  "enable-prefix-caching=true", "--set",
+                                  "tp=2")
+        self.assertEqual(code, 0, err)
+        cfg = json.loads((self.root / "servers.json").read_text())[
+            "servers"]["sg"]
+        self.assertEqual((cfg["mem"], cfg["tp"]), (0.8, 2))
+        self.assertEqual(cfg["args"], {"schedule_policy": "lpm",
+                                       "enable-prefix-caching": True})
+        self.assertIn("--tp-size 2 --mem-fraction-static 0.8 "
+                      "--schedule-policy lpm --enable-prefix-caching", out)
+        self.cli("server", "tune", "sg", "--set", "schedule_policy=",
+                 "--set", "enable-prefix-caching=false")
+        cfg = json.loads((self.root / "servers.json").read_text())[
+            "servers"]["sg"]
+        self.assertNotIn("args", cfg)
+        # trtllm writes its own flags with underscores
+        self.cli("server", "add", "t", "--engine", "trtllm", "--model", "e")
+        out = self.cli("server", "tune", "t", "--set", "max-batch-size=64")[1]
+        self.assertIn("--max_batch_size 64", out)
+        # settings are still checked
+        code, _, err = self.cli("server", "tune", "sg", "--set", "mem=3")
+        self.assertEqual(code, 1)
+        self.cli("server", "add", "o", "--engine", "ollama")
+        code, _, err = self.cli("server", "tune", "o", "--set", "x=1")
+        self.assertIn("environment variables", err)
+
+    def test_kill_shows_first(self):
+        import subprocess
+        proc = subprocess.Popen([sys.executable, "-c",
+                                 "import time; time.sleep(60)"])
+        self.addCleanup(proc.kill)
+        code, out, err = self.cli("server", "kill", str(proc.pid))
+        self.assertEqual(code, 1)
+        self.assertIn("process %d" % proc.pid, out)
+        self.assertIn("--yes", out)
+        self.assertIsNone(proc.poll())
+        code, out, err = self.cli("server", "kill", str(proc.pid), "--yes")
+        self.assertEqual(code, 0, err)
+        proc.wait(timeout=20)
+        hist = "".join(f.read_text(encoding="utf-8") for f in
+                       (self.root / "history").glob("servers-*.jsonl"))
+        self.assertIn('"action": "kill"', hist)
+        for bad in ("1", str(os.getpid()), "x"):
+            self.assertEqual(self.cli("server", "kill", bad, "--yes")[0], 1)
+
+    def test_all_units(self):
+        self.cli("server", "add", "a", "--engine", "vllm", "--model", "A",
+                 "--gpus", "0")
+        self.cli("server", "add", "b", "--engine", "vllm", "--model", "B",
+                 "--gpus", "1", "--port", "8001")
+        self.cli("server", "add", "c", "--engine", "vllm", "--model", "C",
+                 "--gpus", "auto", "--port", "8002")
+        code, out, err = self.cli("server", "unit", "--all")
+        self.assertEqual(code, 0, err)
+        d = self.root / "servers" / "units"
+        self.assertIn("c left out", out)
+        target = (d / "tawjih-servers.target").read_text()
+        self.assertIn("Wants=tawjih-a.service tawjih-b.service", target)
+        unit = (d / "tawjih-a.service").read_text()
+        self.assertIn("PartOf=tawjih-servers.target", unit)
+        self.assertIn("WantedBy=tawjih-servers.target", unit)
+
+
+class Batch(Base):
+    def test_inputs_shared_among_providers(self):
+        a, b = Recorder(), Recorder()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        self.cli("provider", "add", "g0", "--kind", "openai", "--base-url",
+                 a.url + "/v1", "--model", "m")
+        self.cli("provider", "add", "g1", "--kind", "openai", "--base-url",
+                 b.url + "/v1", "--model", "m")
+        self.cli("new", "root")
+        self.fill("1", instructions="answer")
+        self.cli("path", "p", "1")
+        inputs = self.root / "in"
+        inputs.mkdir()
+        for i in range(6):
+            (inputs / ("q%d.txt" % i)).write_text("question %d" % i,
+                                                  encoding="utf-8")
+        (inputs / "skip.md").write_text("no")
+        out = self.root / "answers"
+        code, text, err = self.cli("batch", "p", "--inputs-dir", str(inputs),
+                                   "--pattern", "*.txt", "--backends",
+                                   "g0,g1", "--out", str(out))
+        self.assertEqual(code, 0, err + text)
+        self.assertIn("6 of 6 ok", text)
+        rep = json.loads((out / "batch.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(r["input"] for r in rep["runs"]),
+                         ["q%d.txt" % i for i in range(6)])
+        self.assertEqual({r["backend"] for r in rep["runs"]}, {"g0", "g1"})
+        self.assertEqual(len(a.bodies) + len(b.bodies), 6)
+        self.assertEqual((out / "q3.txt.out").read_text(encoding="utf-8")
+                         .strip(), "ok")
+        self.assertIn("by", rep)
+        sent = sorted(body["messages"][0]["content"].split()[-1]
+                      for _, body in a.bodies + b.bodies)
+        self.assertEqual(sent, [str(i) for i in range(6)])
+
+    def test_refusals(self):
+        self.cli("new", "root")
+        self.cli("path", "p", "1")
+        d = self.root / "in"
+        d.mkdir()
+        for argv, says in (
+                (["nope", "--inputs-dir", str(d), "--backends", "dry"],
+                 "no saved path"),
+                (["p", "--inputs-dir", str(d), "--backends", "dry"],
+                 "no input"),
+                (["p", "--inputs-dir", str(d / "x"), "--backends", "dry"],
+                 "no folder")):
+            code, _, err = self.cli("batch", *argv)
+            self.assertEqual(code, 1, argv)
+            self.assertIn(says, err, argv)
+        (d / "a.txt").write_text("x")
+        code, _, err = self.cli("batch", "p", "--inputs-dir", str(d),
+                                "--backends", "nobody")
+        self.assertIn("not a provider", err)

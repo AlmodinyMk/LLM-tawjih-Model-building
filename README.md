@@ -1144,6 +1144,38 @@ none is answered from a prefix cache. Each bench is kept in
 preparations and api calls are noted in `history/servers-DATE.jsonl` with
 who did them.
 
+**Changing settings.** `server tune big --set mem=0.85 --set
+schedule-policy=lpm --set enable-prefix-caching=true --restart` changes
+settings by name: the common ones, or the engine's own flags without their
+dashes. Engines read them when they start, so `--restart` restarts a
+running server. `server kill PID` (or `--port-of PORT`) shows a process
+Tawjih did not start, such as one holding a port, and stops it only with
+`--yes`. `server unit --all` writes a unit for every server and
+`tawjih-servers.target`, which starts and stops them all together.
+
+**Several servers in one path.** When `USING` names a provider, that step
+goes to it, so a path can send a long file to a server with a long
+context and the rest to a faster one. Conditions can also test the size of
+a step's output (tokens are estimated as one per 4 characters):
+
+```
+tawjih path route 1.1 TO 1.2 IF tokens > 16000 ELSE 1.3 / 1.2 USING big / 1.3 USING fast
+tawjih path route 1.1 إلى 1.2 إذا الرموز > 16000 وإلا 1.3 ، 1.2 بواسطة big ، 1.3 بواسطة fast
+```
+
+**Batches across GPUs.** With one server on each GPU, each a provider,
+`batch` shares a folder of inputs among them:
+
+```
+tawjih server add g0 --engine vllm --model M --gpus 0 --port 8000 --provider
+tawjih server add g1 --engine vllm --model M --gpus 1 --port 8001 --provider
+tawjih batch route --inputs-dir prompts --backends g0,g1 --out answers
+```
+
+Each server takes the next input when it is free. Every input gets an
+ordinary run with its record, its answer in `answers/NAME.out`, and
+`answers/batch.json` lists them all with who ran the batch.
+
 These command lines follow each engine's documentation; they were tested
 here with a stand-in server, not with the engines themselves.
 

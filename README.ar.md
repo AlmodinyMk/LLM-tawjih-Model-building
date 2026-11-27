@@ -1037,6 +1037,35 @@ tawjih server stop big
 بأربع بتات) أو `trtllm-build` (محرك TensorRT). ويُسجَّل كل تشغيل وإيقاف وتجهيز
 وطلب api في `history/servers-DATE.jsonl` مع من فعله.
 
+**تغيير الإعدادات.** الأمر `server tune big --set mem=0.85 --set
+schedule-policy=lpm --set enable-prefix-caching=true --restart` يغيّر الإعدادات
+بأسمائها: المشتركة، أو خيارات المحرك نفسه بلا الشرطتين. والمحرك يقرأ إعداداته
+عند التشغيل فقط، فـ `--restart` يعيد تشغيل الخادم إن كان يعمل. و`server kill
+PID` (أو `--port-of PORT`) يعرض عملية لم يشغّلها توجيه، كالتي تحجز منفذاً، ولا
+يوقفها إلا مع `--yes`. و`server unit --all` يكتب وحدة لكل خادم و
+`tawjih-servers.target` الذي يشغّلها ويوقفها كلها معاً.
+
+**عدة خوادم في مسار واحد.** حين يسمّي `بواسطة` (USING) مزوّداً، تذهب تلك الخطوة
+إليه، فيرسل المسار الملف الطويل إلى خادم سياقه طويل والباقي إلى خادم أسرع.
+ويمكن للشرط أيضاً أن يقيس حجم مخرج الخطوة (يُقدَّر الرمز بأربعة أحرف):
+
+```
+tawjih path route 1.1 إلى 1.2 إذا الرموز > 16000 وإلا 1.3 ، 1.2 بواسطة big ، 1.3 بواسطة fast
+tawjih path route 1.1 TO 1.2 IF tokens > 16000 ELSE 1.3 / 1.2 USING big / 1.3 USING fast
+```
+
+**دفعات على عدة بطاقات.** إذا كان على كل بطاقة خادم، وكل خادم مزوّد، يوزّع
+`batch` (أو `دفعة`) مجلداً من المدخلات عليها:
+
+```
+tawjih server add g0 --engine vllm --model M --gpus 0 --port 8000 --provider
+tawjih server add g1 --engine vllm --model M --gpus 1 --port 8001 --provider
+tawjih batch route --inputs-dir prompts --backends g0,g1 --out answers
+```
+
+يأخذ كل خادم المدخل التالي حين يفرغ. ولكل مدخل تشغيل عادي بسجله، وجوابه في
+`answers/NAME.out`، ويسرد `answers/batch.json` الجميع مع من شغّل الدفعة.
+
 أسطر التشغيل هذه مكتوبة من وثائق كل محرك؛ واختُبرت هنا بخادم بديل، لا بالمحركات
 نفسها.
 
