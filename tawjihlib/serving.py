@@ -1288,6 +1288,7 @@ def cmd_server(a):
 
 
 # ------------------------------------------------------------------ batch
+RUN_MAIN = "import sys; from tawjihlib.cli import main; sys.exit(main())"
 def cmd_batch(a):
     """A saved path run on every input file of a folder, the inputs shared
     out among providers (one server per GPU, say): each provider takes the
@@ -1342,8 +1343,7 @@ def cmd_batch(a):
                 f = todo.get_nowait()
             except queue.Empty:
                 return
-            argv = [sys.executable, "-c", "import sys; from tawjihlib.cli "
-                    "import main; sys.exit(main())", "-p", str(root), "run",
+            argv = [sys.executable, "-c", RUN_MAIN, "-p", str(root), "run",
                     a.name, "--input-file", str(f.resolve()), "--backend",
                     backend] + extra
             t0 = time.monotonic()
