@@ -1,4 +1,4 @@
-# Tawjih specification (0.16.0)
+# Tawjih specification (0.17.0)
 
 This is the contract the program and the tests follow.
 
