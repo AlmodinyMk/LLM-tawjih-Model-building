@@ -514,7 +514,7 @@ class Window:
         self.board, self.lang, self.every = board, lang, every
         self.state, self.sel_key, self.msg = None, None, ""
         self.q = queue.Queue()
-        self.busy = False
+        self.busy, self.acting = False, None
         self.root = tk.Tk()
         self.x11 = self.root.tk.call("tk", "windowingsystem") == "x11"
         self.root.configure(bg=COLOURS["bg"])
@@ -1003,7 +1003,10 @@ class Window:
         def work():
             code, msg = board.act(name, key, text)
             q.put(("msg", msg))
-        threading.Thread(target=work, daemon=True).start()
+        # kept so a caller can wait: the action swaps sys.stdout while it
+        # runs (server commands print), which is the whole process's
+        self.acting = threading.Thread(target=work, daemon=True)
+        self.acting.start()
         return None
 
     def run(self):

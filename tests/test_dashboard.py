@@ -149,6 +149,8 @@ class Window(Base):
         self.assertTrue(w.sel_key.startswith("server:big"))
         self.assertIn("vllm", w.det.get("1.0", "end"))
         w.act("s")                                   # read: start fails
+        w.acting.join(30)       # it redirects stdout: let it end before
+        self.assertFalse(w.acting.is_alive())       # other tests print
         w.switch()
         self.assertEqual(w.lang, "en")
         self.assertEqual(w.root.title(), "tawjih · dashboard")
