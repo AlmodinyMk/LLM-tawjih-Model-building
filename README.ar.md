@@ -103,6 +103,41 @@ python tawjih.py -p examples/quadratic eval report branch -o eval.md
 مباشرة، و`compare` يعرضهما حالة حالة، و`report` يضيف الزمن وعدد الرموز. ولم
 تُنشر هنا بعد نتيجة مقيسة بنموذج حقيقي.
 
+## ما يعمل معه
+
+توجيه نفسه لا يستعمل إلا مكتبة بايثون القياسية. وكل مكتبة أو أداة في الجدول
+تُثبَّت وحدها حيث تحتاجها. يتصل بها توجيه عبر HTTP، أو يشغّلها، أو يكتب السكربت
+أو سطر الأوامر الذي يشغّلها. لا يضم توجيه أياً منها، ولا يحتاج أياً منها ليعمل
+بقيته.
+
+| المجال | يعمل مع | كيف | كيف اختُبر |
+|---|---|---|---|
+| النماذج (المزوّدون) | Ollama · Anthropic · Google Gemini · OpenAI وكل خادم متوافق معه: vLLM وSGLang وLMDeploy وTensorRT-LLM (`trtllm-serve`) وAphrodite وTabbyAPI (ExLlamaV2) وllama.cpp (`llama-server`) وLiteLLM | عبر HTTP بـ `--backend` أو [`providers.json`](#المزوّدون)؛ ومزوّد مختلف لكل خطوة بـ `بواسطة`؛ وأي إعداد للخادم بـ `--option` | خوادم بديلة تجيب بصيغة كل منها؛ واختبارات حية بـ `TAWJIH_LIVE_TESTS=1` |
+| تقديم النماذج | تلك المحركات وTriton؛ وsystemd وDocker لتشغيلها مع الجهاز؛ و`nvidia-smi` للبطاقات | [`tawjih server`](#خوادم-النماذج-tawjih-server) يكتب سطر التشغيل ويشغّله ويقرأ الصحة والنماذج والمقاييس؛ و`batch` يوزّع المدخلات على الخوادم | خادم بديل، لا المحركات نفسها |
+| التدريب | PyTorch وtransformers وPEFT (LoRA و15 طريقة أخرى) وTRL (SFT وDPO) وdatasets وaccelerate وbitsandbytes (QLoRA) وUnsloth وaxolotl؛ وعبر `--train-arg` و`--model-arg` و`--gpus`: DeepSpeed وFSDP وFlashAttention وLiger وtorchrun وTensorBoard وWeights & Biases وMLflow؛ وأي كود PyTorch أو TRL أو JAX بـ `script` | [`neural_bridge.py`](#تدريب-المحوّلات-الجسر-العصبي) يكتب سكربت التدريب ويشغّله ببايثون التي تسمّيها، هنا أو على بيئة تنفيذ | السكربتات والأوامر، بلا بطاقة رسوميات؛ انظر قسمه |
+| ملفات النماذج | llama.cpp (`convert_hf_to_gguf.py` و`llama-quantize`) وGGUF؛ وHugging Face Hub (`huggingface_hub`)؛ وvLLM في Docker للبطاقات السحابية | `convert` و`quantize` و`push` و`pipeline` و`lora serve --serverless` | أدوات بديلة وخادم Hub بديل |
+| المعماريات | PyTorch وtransformers (إعدادات Llama وMixtral وGPT-2) | [`arch export`](#مختبر-المعماريات) يكتب `config.json`، و`arch build` يبني النموذج | نماذج حقيقية بُنيت على معالج عادي |
+| أين تعمل المهام | هذا الجهاز؛ وجهاز آخر عبر `ssh` و`scp` (بطاقات مستأجرة من RunPod وVast.ai وLambda ...)؛ وأي طابور أو خدمة عبر بيئات `command` | [بيئات التنفيذ](#بيئات-التنفيذ-أين-تعمل-المهام): مجلد مهمة يُرسل ويُتابع وتُجمع نتائجه | خادم ssh على هذا الجهاز؛ وخدمة بديلة |
+| المستندات | LaTeX وMarkdown وHTML وPreTeXt والنص (مدمجة)؛ وWord وEPUB (مدمجة، أو Pandoc)؛ وPDF عبر Docling أو Marker أو `pdftotext` | `deposit` و`ingest` | بدائل لـ Docling وMarker؛ وPandoc على ملف حقيقي |
+| البحث | BM25 (مدمج)؛ ومتجهات من Ollama أو خادم متوافق مع OpenAI | `search` و`index` | خادم متجهات بديل |
+| التتبّع | Langfuse؛ وأي جامع OpenTelemetry | `--trace` يرسل كل تشغيل أثراً | ما ترسله مكتبة Langfuse، وOpenTelemetry Collector حقيقي |
+| مساعدو الذكاء الاصطناعي | Claude Desktop وأي عميل MCP | [`tawjih mcp`](#مساعدو-الذكاء-الاصطناعي-خادم-mcp) | مكتبة MCP الرسمية لبايثون عميلاً |
+| المحررات والنوافذ | Notepad وnano وvim وVS Code أو أي محرر؛ وGTK 3 أو Tkinter على لينكس | `open`، ونوافذ لينكس | محرر بسكربت؛ ونوافذ شُغّلت على شاشة افتراضية |
+| المخططات | Mermaid وGraphviz | `graph` يكتب مصدرها | رُسمت بالاثنين |
+
+**Gemini.** أنشئ مفتاحاً في Google AI Studio وضعه في `GEMINI_API_KEY` (أو
+`GOOGLE_API_KEY`). يُرسل المفتاح في ترويسة الطلب، لا في عنوانه أبداً:
+
+```
+tawjih.py provider add gem --kind gemini --model gemini-2.5-flash
+tawjih.py provider set gem --option 'generationConfig={"temperature": 0.2}'
+tawjih.py run mypath --input "..." --backend gem
+```
+
+يُترك تفكير النموذج خارج جوابه. ويسجّل السجل `modelVersion` الذي تذكره Google،
+ويحسب رموز التفكير مع المخرج. والطلب الذي تحجبه Google تفشل خطوته مع السبب.
+وعنوان Gemini المتوافق مع OpenAI يعمل أيضاً بـ `--kind openai`.
+
 ## المحتويات
 
 [صور البرنامج](#صور-البرنامج-وهو-يعمل) ·
@@ -121,6 +156,8 @@ python tawjih.py -p examples/quadratic eval report branch -o eval.md
 [مراقبة التنفيذ](#مراقبة-التنفيذ-tawjih-top) ·
 [Langfuse](#التتبّع-langfuse-وopentelemetry) ·
 [بيئات التنفيذ](#بيئات-التنفيذ-أين-تعمل-المهام) ·
+[خوادم النماذج](#خوادم-النماذج-tawjih-server) ·
+[ما يعمل معه](#ما-يعمل-معه) ·
 [نوافذ لينكس](#نوافذ-سطح-المكتب-لمستخدمي-لينكس) ·
 [الحدود](#الحدود) ·
 [ما تم التحقق منه](#ما-تم-التحقق-منه) ·
@@ -776,13 +813,40 @@ axolotl` يدرّب `lora` و`dora` و`rslora`. ويرفض DPO طريقتَي `p
 تغييرهما لأوزان الأساس يجعل النموذج المرجعي خاطئاً. و`lora list` يعرض طريقة كل
 محوّل مقروءة من `adapter_config.json`.
 
+### كل ما تقدّمه المكتبات غير ذلك
+
+الأوامر السابقة تغطي العمل الشائع. وكل ما سواه في PyTorch وtransformers وTRL
+يُوصل إليه دون أن يعرفه توجيه:
+
+```
+$B env                         # وأيضاً: DeepSpeed وFlashAttention وLiger وvLLM ...
+$B train big --base-model ... --dataset ... --gpus 4 \
+   --train-arg deepspeed=ds_zero3.json --train-arg gradient_checkpointing=true \
+   --model-arg attn_implementation=flash_attention_2 --run
+$B script my_train.py --data datasets/sft_train.jsonl --set lr=1e-4 \
+   --gpus 2 --runtime gpu --run --yes
+```
+
+- `--train-arg KEY=VALUE` يضبط أي حقل في إعداد التدريب في TRL، وفيه كل حقول
+  `TrainingArguments`: `use_liger_kernel` و`deepspeed` و`fsdp` و`report_to`
+  و`torch_compile` وغيرها. والحقل الذي لا تعرفه نسخة TRL المثبتة يوقف التشغيل
+  قبل التدريب. ومع `--engine axolotl` تكون المفاتيح مفاتيح axolotl.
+- `--model-arg KEY=VALUE` يُمرَّر إلى `from_pretrained` للنموذج.
+- `--gpus N` يشغّل عملية لكل بطاقة بـ torchrun (المحرك `torch`). ومع DeepSpeed
+  أو FSDP يقسم نموذجاً أكبر من بطاقة واحدة. وملف الإعداد المعطى لـ
+  `--train-arg` يذهب مع المهمة إلى الجهاز الآخر.
+- `script FILE` يشغّل برنامج بايثون الخاص بك مهمةً، هنا أو على بيئة تنفيذ. يأخذ
+  `job_config.json` (قيم `--set`، وملفات `--data` و`--with-file`) ويكتب نتائجه
+  في `out/`، فتعود إلى `models/scripts/NAME/`. ويحفظ سجل المهمة بصمة SHA-256
+  للبرنامج وإعداداته ومن شغّله.
+
 و`train` و`merge` يقبلان `--runtime NAME`: يصير العمل مجلد مهمة يعمل هنا أو
 في مكان آخر، وتُجمع نتائجه بـ `tawjih runtime collect` (انظر «بيئات التنفيذ»).
 
 | الأمر | عمله |
 |---|---|
 | `compile` | عبر أمر `dataset` في Tawjih نفسه: `sft_train.jsonl` (ملفات split `train`)، و`sft_eval.jsonl` (split `eval`)، و`dpo_train.jsonl` (زوج لكل سطر `BAD:`)، ولكل منها بيان المصدر؛ وحالة خروج 1 إذا وُجد سؤال في بيانات التدريب والتقييم معاً |
-| `env` | إصدارات torch وtransformers وpeft وtrl وdatasets وbitsandbytes وunsloth وaxolotl في بايثون التدريب، وبطاقة الرسومات، ومكان أدوات llama.cpp |
+| `env` | إصدارات torch وtransformers وpeft وtrl وdatasets وbitsandbytes وunsloth وaxolotl وdeepspeed وflash_attn وliger_kernel وxformers وvllm وsglang وlmdeploy في بايثون التدريب، وما تتيحه (`--gpus` و`--train-arg` و`--model-arg`)، وبطاقة الرسومات، ومكان أدوات llama.cpp |
 | `train NAME` | يكتب `models/adapters/NAME/` وفيه `train_config.json` وبيان البيانات و`train.py` (المحرك `torch`: transformers + PEFT + TRL، وأي طريقة من «طرق PEFT»، وQLoRA عبر bitsandbytes؛ أو `unsloth`) أو `axolotl.yml` (SFT على بيانات المحادثة فقط). يأخذ SFT صفوف محادثة أو prompt/completion، ويأخذ DPO صفوف prompt/chosen/rejected، وتُفحص البيانات أولاً |
 | `merge NAME` | دمج المحوّل في نموذجه الأساسي بدقة 16 بت (`merge_and_unload` في PEFT) تمهيداً للتحويل |
 | `setup [--for train,qlora,push,serve,stream,unsloth,axolotl]` | يثبّت بـ pip ما يحتاجه العمل في بايثون التدريب (`--python`)، أو على بيئة تنفيذ مهمةً (`--runtime`)، ثم يعرض ما فيها. توجيه يجلب المكتبات إلى بايثون التي تعمل، ولا يأخذ منها شيئاً في نفسه |
@@ -969,6 +1033,78 @@ python neural_bridge.py pipeline algebra --base-model Qwen/Qwen2.5-1.5B-Instruct
 vLLM)، فيبقى سطر `model:` في كل ملف يختار محوّله. وإبقاء جهاز واحد دافئاً في الخدمة
 علاج آخر، يكلّف وهو خامل.
 
+## خوادم النماذج: `tawjih server`
+
+الأمر `tawjih server` (أو `خادم`) يشغّل البرامج التي تقدّم النماذج ويراقبها
+ويوقفها: vLLM وSGLang وLMDeploy وTensorRT-LLM وTriton وAphrodite وTabbyAPI
+وLiteLLM وOllama وllama.cpp، أو أي أمر. لا يحتوي توجيه أياً منها. يكتب سطر
+تشغيل كل محرك من إعدادات مشتركة قليلة، ويمرّر أي وسيط آخر كما هو، ويشغّله في
+الخلفية مع سجل، ويقرأ صحته ونماذجه ومقاييسه.
+
+```
+tawjih server gpus                                  # الذاكرة الحرة في كل بطاقة
+tawjih server add big --engine vllm --model Qwen/Qwen3-32B \
+    --gpus auto --tp 4 --context 65536 --mem 0.9 --kv-cache fp8 \
+    --api-key-env VLLM_KEY --pass=--enable-prefix-caching --provider
+tawjih server start big --wait 600                  # حتى يجيب
+tawjih server status big                            # الصحة والنماذج وذاكرة البطاقات
+tawjih server bench big --from-file 1.1.1 --requests 16 --concurrency 4
+tawjih server logs big --follow
+tawjih server metrics big --grep tokens
+tawjih server api big POST /flush_cache              # أي طلب إليه
+tawjih server unit big                              # وحدة systemd، أو --docker
+tawjih server stop big
+```
+
+يعرض `server engines` ما يقبله كل محرك: التوازي بالمصفوفات وبالطبقات (`--tp`
+و`--pp`)، والسياق، ونصيب الذاكرة، وذاكرة سياق أصغر (`--kv-cache fp8` أو `int8`
+أو `q8_0` ...). الإعداد الذي لا يقبله المحرك يُرفض ولا يُخمَّن، و`--pass` يعطي
+المحرك وسائطه الخاصة. و`--gpus auto` يأخذ البطاقات التي فيها أكثر ذاكرة حرة
+عند التشغيل. ومع `--provider` يصير الخادم مزوّداً للمشروع، فيعمل المسار عليه بـ
+`--backend big`.
+
+`bench` يرسل طلبات إلى الخادم ويقيس زمن كل طلب والرموز الخارجة في الثانية. ومع
+`--from-file REF` يكون الطلب هو الجانب الآلي للملف كما يرسله التشغيل تماماً،
+فيظهر ما يقدر عليه هذا الجهاز مع ملف طويل. و`--vary` يجعل كل طلب مختلفاً، فلا
+يُجاب أي منها من ذاكرة البادئة. ويُحفظ كل قياس في
+`history/bench-NAME-STAMP.json` مع البطاقات ومن أجراه.
+
+`prepare` يشغّل خطوة مرة واحدة قبل التقديم: `lmdeploy lite auto_awq` (أوزان AWQ
+بأربع بتات) أو `trtllm-build` (محرك TensorRT). ويُسجَّل كل تشغيل وإيقاف وتجهيز
+وطلب api في `history/servers-DATE.jsonl` مع من فعله.
+
+**تغيير الإعدادات.** الأمر `server tune big --set mem=0.85 --set
+schedule-policy=lpm --set enable-prefix-caching=true --restart` يغيّر الإعدادات
+بأسمائها: المشتركة، أو خيارات المحرك نفسه بلا الشرطتين. والمحرك يقرأ إعداداته
+عند التشغيل فقط، فـ `--restart` يعيد تشغيل الخادم إن كان يعمل. و`server kill
+PID` (أو `--port-of PORT`) يعرض عملية لم يشغّلها توجيه، كالتي تحجز منفذاً، ولا
+يوقفها إلا مع `--yes`. و`server unit --all` يكتب وحدة لكل خادم و
+`tawjih-servers.target` الذي يشغّلها ويوقفها كلها معاً.
+
+**عدة خوادم في مسار واحد.** حين يسمّي `بواسطة` (USING) مزوّداً، تذهب تلك الخطوة
+إليه، فيرسل المسار الملف الطويل إلى خادم سياقه طويل والباقي إلى خادم أسرع.
+ويمكن للشرط أيضاً أن يقيس حجم مخرج الخطوة (يُقدَّر الرمز بأربعة أحرف):
+
+```
+tawjih path route 1.1 إلى 1.2 إذا الرموز > 16000 وإلا 1.3 ، 1.2 بواسطة big ، 1.3 بواسطة fast
+tawjih path route 1.1 TO 1.2 IF tokens > 16000 ELSE 1.3 / 1.2 USING big / 1.3 USING fast
+```
+
+**دفعات على عدة بطاقات.** إذا كان على كل بطاقة خادم، وكل خادم مزوّد، يوزّع
+`batch` (أو `دفعة`) مجلداً من المدخلات عليها:
+
+```
+tawjih server add g0 --engine vllm --model M --gpus 0 --port 8000 --provider
+tawjih server add g1 --engine vllm --model M --gpus 1 --port 8001 --provider
+tawjih batch route --inputs-dir prompts --backends g0,g1 --out answers
+```
+
+يأخذ كل خادم المدخل التالي حين يفرغ. ولكل مدخل تشغيل عادي بسجله، وجوابه في
+`answers/NAME.out`، ويسرد `answers/batch.json` الجميع مع من شغّل الدفعة.
+
+أسطر التشغيل هذه مكتوبة من وثائق كل محرك؛ واختُبرت هنا بخادم بديل، لا بالمحركات
+نفسها.
+
 ## نوافذ سطح المكتب، لمستخدمي لينكس
 
 **لمستخدمي لينكس فقط.** `linux/tawjih_desk.py` يفتح أربع نوافذ مستقلة على
@@ -1038,6 +1174,7 @@ Langfuse. ولجامع آخر (Phoenix أو Jaeger أو OpenTelemetry Collector)
 | `ollama` | خادم Ollama محلي | `OLLAMA_HOST` اختياري |
 | `openai` | أي مزوّد متوافق مع صيغة OpenAI | `TAWJIH_BASE_URL` و`TAWJIH_API_KEY` |
 | `anthropic` | Anthropic | `ANTHROPIC_API_KEY` |
+| `gemini` | واجهة Gemini من Google (`generateContent`) | `GEMINI_API_KEY` أو `GOOGLE_API_KEY`؛ و`GEMINI_BASE_URL` |
 
 اسم النموذج بالخيار `--model NAME` أو في `TAWJIH_MODEL`. المفاتيح تُقرأ من متغيرات البيئة ولا تُكتب
 على القرص.
@@ -1065,7 +1202,21 @@ tawjih.py provider test local                # استدعاء حقيقي؛ وأ�
 سلسلته البديلة بنموذجه هو، ويسجّل التشغيل أيّ مزوّد أجاب وبعد كم محاولة. وملف
 `fallback:` في الخطوة يبقى يعمل إذا فشلت كل المزوّدات. والأمر `provider policy
 NAME --retries ...` يغيّر هذه الإعدادات، و`provider rm` يحذف مزوّداً، و`provider
-test` يكتب كل نتيجة في `runs/provider-tests.jsonl`. والاختبارات الحية:
+test` يكتب كل نتيجة في `runs/provider-tests.jsonl`.
+
+**الملفات الطويلة وOllama.** يحتفظ Ollama من الطلب بقدر ما يتسع له سياقه فقط،
+ويحذف الباقي دون أي خطأ، وسياقه الافتراضي 4096 رمزاً على بطاقات ذاكرتها أقل من
+24 غيغابايت. والملف الذي فيه بضعة آلاف سطر أطول من ذلك بكثير، فأعطِ المزوّد
+سياقاً:
+
+```
+tawjih.py provider set local --num-ctx 32768        # أو TAWJIH_NUM_CTX
+```
+
+وينبّه توجيه على stderr حين يزيد الطلب على نحو 4 أحرف لكل رمز من السياق.
+و`--option KEY=VALUE` يرسل أي إعداد آخر يقبله الخادم كما هو (Ollama:
+`temperature=0.2`، وخادم متوافق مع OpenAI: `top_p=0.9` أو
+`chat_template_kwargs={"enable_thinking": false}`). والاختبارات الحية:
 `TAWJIH_LIVE_TESTS=1 TAWJIH_LIVE_PROJECT=folder python -m unittest
 tests.test_live`.
 
@@ -1201,7 +1352,7 @@ datasets/ بيانات التدريب المترجمة (الجسر العصبي�
 والموافقة والإخفاء (ومنه استدعاءات نوافذ لينكس) والكلفة و`stats`، مع استبدال
 Docling وMarker وPandoc بسكربتات بديلة، ومنذ 0.10 كل أوامر «الحوكمة» (والعزل
 مختبر على لينكس فقط، والتوقيع بـ GnuPG غير مختبر)، ومنذ 0.11 كل كلمات لغة المسار، ومنذ 0.12 جمل
-`do`، ومنذ 0.13 خادم MCP، ومعه مكتبة MCP الرسمية لبايثون عميلاً، ومعها المزوّدون المسمّون وعقود المخطط و`key = value` و`BY` وسياسة المشروع، ومنذ 0.15 ملفات الوجوه الثلاثة، والخطوات في وقت واحد (قيس تداخل أربعة فروع)، و`ITERATE`، وبيئات التنفيذ (مهمة محلية، وبيئة أوامر تدير بديلاً لخدمة بعيدة)، ومختبر المعماريات: بنى `arch build` نماذج حقيقية بـ PyTorch 2.15 وtransformers 5.23 على معالج عادي (Llama مع GQA وMQA، وGPT-2، وMixtral) وطابقت معاملاتها العدد المحسوب، ومنذ 0.16 التشغيل الدائم في MCP (عميل يُقتل أثناء التشغيل وعميل جديد يلتقط التشغيل نفسه، مع نموذج بديل محبوس بإشارة)، و`eval --repeat`، والهوية (أسئلة الاستعمال الأول أُجيبت في طرفية زائفة)، وأهداف الـ fuzzing بأداة Atheris، وخسارة الموجّه وحصص الخبراء في نموذج MoE على Mixtral حقيقي بُني بـ PyTorch 2.15 وtransformers 5.24، والتتبّع (`--trace`) بمقارنته بما ترسله مكتبة Langfuse الرسمية لبايثون 5.2 (المسار والترويسات وأسماء الخصائص نفسها) وبقراءته في OpenTelemetry Collector حقيقي 0.115، مع خادم بديل مكان Langfuse، و`setup` بتثبيت `huggingface_hub` في بايثون نظيفة، و`push` (المحوّل والمدموج والبيانات) و`pipeline` (هنا، ومهمةً واحدة عبر ssh بالتوكن المحفوظ هناك) عبر مكتبة `huggingface_hub` 2.4 الحقيقية إلى خادم Hub بديل، وخيارات `--serverless` بمطابقتها مع شيفرة vLLM 0.32، و`top` برسم لقطاته بأحجام عدة بالألوان وبدونها وتجربة مفاتيحه في طرفية زائفة على لينكس، وللجسر العصبي قسمه الخاص أعلاه، وجُرّب Pandoc نفسه على ملف Word حقيقي فيه صيغ. ورُسمت مخططات
+`do`، ومنذ 0.13 خادم MCP، ومعه مكتبة MCP الرسمية لبايثون عميلاً، ومعها المزوّدون المسمّون وعقود المخطط و`key = value` و`BY` وسياسة المشروع، ومنذ 0.15 ملفات الوجوه الثلاثة، والخطوات في وقت واحد (قيس تداخل أربعة فروع)، و`ITERATE`، وبيئات التنفيذ (مهمة محلية، وبيئة أوامر تدير بديلاً لخدمة بعيدة)، ومختبر المعماريات: بنى `arch build` نماذج حقيقية بـ PyTorch 2.15 وtransformers 5.23 على معالج عادي (Llama مع GQA وMQA، وGPT-2، وMixtral) وطابقت معاملاتها العدد المحسوب، ومنذ 0.17 خيارات المزوّد و`num_ctx` لـ Ollama، ومزوّد Gemini، و`--train-arg` و`--model-arg` و`--gpus` و`script`، وشروط الحجم، ومزوّد لكل خطوة، و`batch`، و`tawjih server` (مع خادم بديل وبدائل لـ `nvidia-smi` و`lmdeploy`)، ومنذ 0.16 التشغيل الدائم في MCP (عميل يُقتل أثناء التشغيل وعميل جديد يلتقط التشغيل نفسه، مع نموذج بديل محبوس بإشارة)، و`eval --repeat`، والهوية (أسئلة الاستعمال الأول أُجيبت في طرفية زائفة)، وأهداف الـ fuzzing بأداة Atheris، وخسارة الموجّه وحصص الخبراء في نموذج MoE على Mixtral حقيقي بُني بـ PyTorch 2.15 وtransformers 5.24، والتتبّع (`--trace`) بمقارنته بما ترسله مكتبة Langfuse الرسمية لبايثون 5.2 (المسار والترويسات وأسماء الخصائص نفسها) وبقراءته في OpenTelemetry Collector حقيقي 0.115، مع خادم بديل مكان Langfuse، و`setup` بتثبيت `huggingface_hub` في بايثون نظيفة، و`push` (المحوّل والمدموج والبيانات) و`pipeline` (هنا، ومهمةً واحدة عبر ssh بالتوكن المحفوظ هناك) عبر مكتبة `huggingface_hub` 2.4 الحقيقية إلى خادم Hub بديل، وخيارات `--serverless` بمطابقتها مع شيفرة vLLM 0.32، و`top` برسم لقطاته بأحجام عدة بالألوان وبدونها وتجربة مفاتيحه في طرفية زائفة على لينكس، وللجسر العصبي قسمه الخاص أعلاه، وجُرّب Pandoc نفسه على ملف Word حقيقي فيه صيغ. ورُسمت مخططات
 `graph` فعلياً بأداة Mermaid وبـ Graphviz.
 
 الاختبارات نفسها تنجح على ويندوز ولينكس وبايثون 3.11 و3.13 في GitHub Actions
@@ -1213,7 +1364,7 @@ Docling وMarker وPandoc بسكربتات بديلة، ومنذ 0.10 كل أو�
 لم يتم بعد: المحررات والنوافذ بيد مستخدم حقيقي، والمزوّدون الحقيقيون، وخادم Langfuse حقيقي، وHugging Face Hub الحقيقي (والملفات الكبيرة التي يرسلها بطريق آخر)، وتشغيل vLLM وبناء Docker، وبيئة
 ssh مع حاسوب آخر (جُرّبت مع خادم ssh على هذا الحاسوب نفسه، على المنفذ 2222 عبر اسم في
 `~/.ssh/config`: `train` بـ DoRA و`merge` و`arch build`، كل منها أُرسل وتوبع وجُمعت
-نتائجه)، وبطاقة رسوميات حقيقية، وأي خدمة سحابية. وإعادة
+نتائجه)، وبطاقة رسوميات حقيقية، وأي خدمة سحابية، ومحركات خوادم النماذج نفسها (أسطر تشغيلها مكتوبة من وثائق كل محرك). وإعادة
 المحاولة والسلاسل البديلة جُرّبت على خادم وهمي محلي يقلّد الصيغ وحالات الانشغال.
 
 ## الترخيص

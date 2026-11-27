@@ -96,12 +96,69 @@ def backend_dry(prompt, model=""):
         m_tag, len(prompt))
 
 
+def _options():
+    """Settings sent to the server as they are (providers.json "options"):
+    anything the server takes that Tawjih has no word for."""
+    opts = _setting("options") or {}
+    return dict(opts) if isinstance(opts, dict) else {}
+
+
+def _extra(body):
+    """The request body with the provider's options added; the model and
+    the messages stay Tawjih's."""
+    for k, v in _options().items():
+        if k not in ("model", "messages", "stream"):
+            body[k] = v
+    return body
+
+
+_told_ctx = set()
+
+
+def _context_warning(prompt, num_ctx, where):
+    """Ollama keeps only as many tokens as its context holds and drops the
+    rest without an error. A token is about 4 characters of English (fewer
+    for Arabic), so a prompt of more than 4 characters per token of context
+    may not fit. Said once per provider and size."""
+    est = len(prompt) // 4
+    limit = int(num_ctx) if num_ctx else 4096
+    if est <= limit:
+        return
+    key = (where, limit)
+    if key in _told_ctx:
+        return
+    _told_ctx.add(key)
+    if num_ctx:
+        msg = ("the prompt is about %d tokens or more, and num_ctx is %d: "
+               "Ollama keeps only the last %d tokens, so the model may not "
+               "see all of it. Raise num_ctx (tawjih provider set NAME "
+               "--num-ctx N)" % (est, limit, limit))
+    else:
+        msg = ("the prompt is about %d tokens or more. Ollama's context is "
+               "4096 tokens by default on GPUs with less than 24 GiB, and a "
+               "longer prompt is cut without an error. Set num_ctx (tawjih "
+               "provider set NAME --num-ctx N, or TAWJIH_NUM_CTX)" % est)
+    print("warning: %s: %s" % (where, msg), file=sys.stderr)
+
+
 def backend_ollama(prompt, model=""):
     host = _setting("base_url", "OLLAMA_HOST",
                     "http://localhost:11434").rstrip("/")
-    data = _post(host + "/api/chat",
-                 {"model": _model(model), "stream": False,
-                  "messages": [{"role": "user", "content": prompt}]}, {})
+    if not re.match(r"https?://", host):
+        host = "http://" + host         # OLLAMA_HOST is often host:port
+    opts = _options()
+    num_ctx = _setting("num_ctx", "TAWJIH_NUM_CTX") or opts.get("num_ctx")
+    if num_ctx:
+        try:
+            opts["num_ctx"] = int(num_ctx)
+        except (TypeError, ValueError):
+            die("num_ctx must be a whole number, not %r" % num_ctx)
+    _context_warning(prompt, opts.get("num_ctx"), "ollama at " + host)
+    body = {"model": _model(model), "stream": False,
+            "messages": [{"role": "user", "content": prompt}]}
+    if opts:
+        body["options"] = opts
+    data = _post(host + "/api/chat", body, {})
     _note_usage(data.get("prompt_eval_count"), data.get("eval_count"),
                 data.get("model"))
     return data["message"]["content"]
@@ -113,14 +170,58 @@ def backend_anthropic(prompt, model=""):
     base = _setting("base_url", "ANTHROPIC_BASE_URL",
                     "https://api.anthropic.com")
     data = _post(base.rstrip("/") + "/v1/messages",
-                 {"model": _model(model),
-                  "max_tokens": int(os.environ.get("TAWJIH_MAX_TOKENS", "4096")),
-                  "messages": [{"role": "user", "content": prompt}]},
+                 _extra({"model": _model(model),
+                         "max_tokens": int(os.environ.get(
+                             "TAWJIH_MAX_TOKENS", "4096")),
+                         "messages": [{"role": "user", "content": prompt}]}),
                  {"x-api-key": key, "anthropic-version": "2023-06-01"})
     u = data.get("usage") or {}
     _note_usage(u.get("input_tokens"), u.get("output_tokens"),
                 data.get("model"))
     return "".join(b.get("text", "") for b in data.get("content", []))
+
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def backend_gemini(prompt, model=""):
+    """Google's Gemini API (a key from Google AI Studio): generateContent,
+    the key in the x-goog-api-key header, never in the address."""
+    key = _api_key("GEMINI_API_KEY") or (
+        "" if _setting("api_key_env") else os.environ.get("GOOGLE_API_KEY",
+                                                          "")) or die(
+        "set %s" % (_setting("api_key_env") or "GEMINI_API_KEY (or "
+                    "GOOGLE_API_KEY)"))
+    base = _setting("base_url", "GEMINI_BASE_URL", GEMINI_URL)
+    name = _model(model)
+    if not name:
+        die("gemini needs a model: --model gemini-2.5-flash, or the "
+            "provider's model")
+    name = name if name.startswith("models/") else "models/" + name
+    if not re.fullmatch(r"models/[\w.\-]+", name):
+        die("%s is not a Gemini model name" % name[7:])
+    data = _post(base.rstrip("/") + "/%s:generateContent" % name,
+                 _extra({"contents": [{"role": "user",
+                                       "parts": [{"text": prompt}]}]}),
+                 {"x-goog-api-key": key})
+    blocked = (data.get("promptFeedback") or {}).get("blockReason")
+    if blocked:
+        raise RuntimeError("Gemini did not answer: the prompt was blocked "
+                           "(%s)" % blocked)
+    cands = data.get("candidates") or []
+    if not cands:
+        raise RuntimeError("Gemini gave no answer")
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    if not text.strip() and cands[0].get("finishReason") not in (None, "STOP"):
+        raise RuntimeError("Gemini stopped without an answer (%s)"
+                           % cands[0]["finishReason"])
+    u = data.get("usageMetadata") or {}
+    _note_usage(u.get("promptTokenCount"),
+                (u.get("candidatesTokenCount") or 0) +
+                (u.get("thoughtsTokenCount") or 0) or None,
+                data.get("modelVersion"))
+    return text
 
 
 def backend_openai(prompt, model=""):
@@ -130,8 +231,9 @@ def backend_openai(prompt, model=""):
     key = _api_key("TAWJIH_API_KEY")
     headers = {"Authorization": "Bearer " + key} if key else {}
     data = _post(base.rstrip("/") + "/chat/completions",
-                 {"model": _model(model),
-                  "messages": [{"role": "user", "content": prompt}]}, headers)
+                 _extra({"model": _model(model),
+                         "messages": [{"role": "user", "content": prompt}]}),
+                 headers)
     u = data.get("usage") or {}
     _note_usage(u.get("prompt_tokens"), u.get("completion_tokens"),
                 data.get("model"))
@@ -156,13 +258,14 @@ def backend_manual(prompt, model=""):
 
 BACKENDS = {"dry": backend_dry, "manual": backend_manual,
             "openai": backend_openai, "ollama": backend_ollama,
-            "anthropic": backend_anthropic}
-NETWORK_KINDS = ("ollama", "openai", "anthropic")
+            "anthropic": backend_anthropic, "gemini": backend_gemini}
+NETWORK_KINDS = ("ollama", "openai", "anthropic", "gemini")
 DEFAULT_POLICY = {"timeout": 600, "retries": 2,
                   "retry_status": [429, 500, 502, 503, 504],
                   "backoff": "exponential", "backoff_seconds": 2.0}
 PROVIDER_KEYS = ("kind", "base_url", "model", "api_key_env", "timeout",
-                 "retries", "retry_status", "backoff", "backoff_seconds")
+                 "retries", "retry_status", "backoff", "backoff_seconds",
+                 "num_ctx", "options")
 
 
 # ---------------------------------------------------------------- providers
@@ -452,7 +555,8 @@ def check_network(root, chain):
             "openai": os.environ.get("TAWJIH_BASE_URL",
                                      "https://api.openai.com/v1"),
             "anthropic": os.environ.get("ANTHROPIC_BASE_URL",
-                                        "https://api.anthropic.com")}[kind]
+                                        "https://api.anthropic.com"),
+            "gemini": os.environ.get("GEMINI_BASE_URL", GEMINI_URL)}[kind]
         if not _is_local(url):
             die("the project's policy (%s) allows only providers on this "
                 "computer; %s is at %s" % (POLICY_FILE, name, url))
@@ -465,6 +569,7 @@ __all__ = [
     'default_backend', 'load_policy', 'load_providers', 'provider_chain',
     'providers_file', 'REDACT_PATTERNS', 'REDACT_TEMPLATE', 'Redactor', '_luhn',
     '_model', '_note_usage', '_post', '_usage', 'backend_anthropic',
+    'backend_gemini',
     'backend_dry', 'backend_manual', 'backend_ollama', 'backend_openai',
     'call_model', 'use_model',
 ]

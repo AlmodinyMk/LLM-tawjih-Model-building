@@ -344,11 +344,14 @@ def print_plan(store, name, plan, out):
             trees.append(p["tree_title"])
     print("'%s': %d step(s) across %d tree(s): %s" % (
         name, len(plan), len(trees), " | ".join(trees)), file=out)
+    named = load_providers(store.root).get("providers") or {}
     for p in plan:
         kind = "+".join(k for k in ("instructions", "code") if p[k]) or "EMPTY"
         flags = []
         ps = p.get("path", {})
-        if ps.get("using") or p["model"]:
+        if ps.get("using") in named:
+            flags.append("provider=" + ps["using"])
+        elif ps.get("using") or p["model"]:
             flags.append("model=" + (ps.get("using") or p["model"]))
         for k in ("each", "approve", "retry", "pick"):
             if ps.get(k):
@@ -702,6 +705,11 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                rec, hint))
 
     outputs, chosen, shared = {}, {}, {}
+    # A USING name that is a provider of the project sends that step to it
+    # (its own model unless --model says otherwise); a dry or manual run
+    # stays a preview and calls none of them.
+    named = load_providers(store.root).get("providers") or {}
+    preview = backend_kind(store.root, backend) in ("dry", "manual")
 
     def active(e):
         if e["src"] not in outputs:
@@ -756,8 +764,15 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
         ins, code, _ = machine_side(n)
         ps = settings(p, n)
         # --model > USING > the file's model: > the provider's > TAWJIH_MODEL
-        step_model = model_override or ps.get("using") or n.model or \
-            default_model
+        using, step_backend = ps.get("using"), backend
+        if using and using in named and not preview:
+            step_backend = using
+            step_model = model_override or named[using].get("model") or \
+                n.model or default_model
+            p["provider"] = using
+        else:
+            step_model = model_override or using or n.model or \
+                default_model
         p["model"] = step_model
         if n.expects:
             prev, cerr = conform(prev, n.expects, "input", store.root)
@@ -782,7 +797,7 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
             prompt = build_prompt(store, n, prev, code_out, text) + note
             print("  prompt: %d characters" % len(prompt), file=sys.stderr)
             log.append("### Prompt\n" + prompt)
-            cfile = (cache_file(store, backend, step_model, prompt)
+            cfile = (cache_file(store, step_backend, step_model, prompt)
                      if use_cache else None)
             kept = None
             if resume and cfile is not None and cfile.is_file() \
@@ -815,8 +830,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                                "following the instructions exactly.")
                     t_call = time.time()
                     try:
-                        out, usage = call_model(store.root, backend, ask,
-                                                step_model)
+                        out, usage = call_model(store.root, step_backend,
+                                                ask, step_model)
                     except Die:
                         raise
                     except Exception as e:
@@ -863,7 +878,8 @@ def _run_once(store, name, text, backend, allow_code, flow, resume=False,
                 if cfile is not None:
                     cfile.parent.mkdir(exist_ok=True)
                     cfile.write_text(json.dumps({
-                        "answer": out, "prompt": prompt, "backend": backend,
+                        "answer": out, "prompt": prompt,
+                        "backend": step_backend,
                         "model": step_model,
                         "step": n.id, "machine_sha": p["machine_sha"],
                         "saved": time.strftime("%Y-%m-%d %H:%M:%S")},

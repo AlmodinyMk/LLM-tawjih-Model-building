@@ -43,6 +43,7 @@ import time
 
 from .core import (
     Die, FlowError, SECTIONS, EXTRA, Store, __version__, alive,
+    kill_tree,
 )
 from .providers import (
     backend_kind,
@@ -966,15 +967,7 @@ def _expires(run):
 
 def _kill_tree(pid):
     """Stop a worker and what it started (a sandboxed code step)."""
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
-                           capture_output=True, timeout=30)
-        else:
-            import signal
-            os.killpg(int(pid), signal.SIGTERM)  # its own session's group
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+    kill_tree(pid)
 
 
 def _error_reply(code, message, **extra):

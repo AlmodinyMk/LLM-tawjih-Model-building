@@ -22,6 +22,8 @@ is given.
                job on a runtime
     convert    a merged model, or an adapter, to GGUF (llama.cpp)
     quantize   a GGUF model to Q4_K_M, Q8_0, ... (llama.cpp)
+    script     your own program (any PyTorch, TRL, JAX ... code) run as a
+               job, here or on a runtime, with its data and a record
     lora       the project's adapters: add, rm, list, bind, unbind, route,
                apply (sets each file's model: line), fuse, serve
                (--serverless: vLLM set up for cold starts), lineage
@@ -43,6 +45,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -153,7 +156,8 @@ ENV_PROBE = r"""
 import importlib, json, shutil, sys
 out = {"python": sys.version.split()[0], "modules": {}}
 for m in ("torch", "transformers", "peft", "trl", "datasets", "accelerate",
-          "bitsandbytes", "unsloth", "axolotl"):
+          "bitsandbytes", "unsloth", "axolotl", "deepspeed", "flash_attn",
+          "liger_kernel", "xformers", "vllm", "sglang", "lmdeploy"):
     try:
         mod = importlib.import_module(m)
         out["modules"][m] = getattr(mod, "__version__", "installed")
@@ -212,9 +216,34 @@ def cmd_env(a):
              "axolotl": bool(info["modules"]["axolotl"])}
     print("engines ready: %s" % (", ".join(k for k, v in ready.items() if v)
                                  or "none"))
+    mods = info["modules"]
+    feats = []
+    if len(info.get("gpus") or []) > 1 and mods.get("torch"):
+        feats.append("train on %d GPUs (--gpus %d)" % (len(info["gpus"]),
+                                                        len(info["gpus"])))
+    for mod, how in FEATURES:
+        if mods.get(mod):
+            feats.append(how)
+    if feats:
+        print("you can also use:")
+        for f in feats:
+            print("  " + f)
     if not (info["cuda"] or info["mps"]):
         print("note: without a GPU only very small models can be trained")
     return 0
+
+
+# libraries found by env, and how a training run uses them: any argument
+# of transformers' from_pretrained (--model-arg) or of TRL's configuration,
+# which holds every TrainingArguments field (--train-arg), reaches them
+FEATURES = (
+    ("flash_attn", "FlashAttention: --model-arg "
+     "attn_implementation=flash_attention_2"),
+    ("liger_kernel", "Liger kernels: --train-arg use_liger_kernel=true"),
+    ("deepspeed", "DeepSpeed ZeRO: --gpus N --train-arg deepspeed=ds.json"),
+    ("accelerate", "FSDP: --gpus N --train-arg fsdp='full_shard auto_wrap'"),
+    ("xformers", "xformers attention (used by Unsloth when present)"),
+)
 
 
 # -------------------------------------------------------------------- train
@@ -350,14 +379,23 @@ evald = load_dataset("json", data_files=CFG["eval"], split="train") \
 
 
 def config(cls, **kw):
-    """Only the arguments this version of TRL knows (names have changed)."""
+    """Only the arguments this version of TRL knows (names have changed);
+    the person's own --train-arg must all be known, or nothing starts."""
     names = {f.name for f in dataclasses.fields(cls)}
     if "max_length" not in names and "max_seq_length" in names:
         kw["max_seq_length"] = kw.pop("max_length")
+    mine = CFG.get("train_args") or {}
+    unknown = sorted(k for k in mine if k not in names)
+    if unknown:
+        sys.exit("--train-arg: %s %s not a field of %s in TRL %s" % (
+            ", ".join(unknown), "is" if len(unknown) == 1 else "are",
+            cls.__name__, getattr(trl, "__version__", "")))
     dropped = sorted(k for k in kw if k not in names)
     if dropped:
         print("not known to this TRL, left out:", ", ".join(dropped))
-    return cls(**{k: v for k, v in kw.items() if k in names})
+    kw = {k: v for k, v in kw.items() if k in names}
+    kw.update(mine)                               # --train-arg, as given
+    return cls(**kw)
 
 
 ARGS = dict(output_dir=CFG["output_dir"], num_train_epochs=CFG["epochs"],
@@ -423,10 +461,18 @@ if CFG["qlora"]:
 tok = AutoTokenizer.from_pretrained(CFG["base_model"])
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
-model = AutoModelForCausalLM.from_pretrained(
-    CFG["base_model"], quantization_config=quant,
-    torch_dtype=torch.bfloat16 if BF16 else torch.float16 if GPU
-    else torch.float32, device_map="auto" if GPU else None)
+import os
+import re
+# several processes (--gpus N): each holds the model on its own GPU, and
+# DeepSpeed or FSDP (--train-arg) shard it; one process spreads it
+SPREAD = int(os.environ.get("WORLD_SIZE", "1")) > 1
+device_map = ({"": int(os.environ.get("LOCAL_RANK", "0"))} if SPREAD and
+              CFG["qlora"] else None if SPREAD else "auto" if GPU else None)
+load = dict(quantization_config=quant, device_map=device_map,
+            torch_dtype=torch.bfloat16 if BF16 else torch.float16 if GPU
+            else torch.float32)
+load.update(CFG.get("model_args") or {})      # --model-arg, as given
+model = AutoModelForCausalLM.from_pretrained(CFG["base_model"], **load)
 if CFG["qlora"]:
     from peft import prepare_model_for_kbit_training
     model = prepare_model_for_kbit_training(model)
@@ -442,7 +488,8 @@ BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 FP16 = torch.cuda.is_available() and not BF16
 model, tok = FastLanguageModel.from_pretrained(
     model_name=CFG["base_model"], max_seq_length=CFG["max_seq_len"],
-    load_in_4bit=CFG["qlora"], dtype=None)
+    load_in_4bit=CFG["qlora"], dtype=None,
+    **(CFG.get("model_args") or {}))          # --model-arg, as given
 model = FastLanguageModel.get_peft_model(
     model, r=CFG["lora_r"], lora_alpha=CFG["lora_alpha"], lora_dropout=0,
     target_modules=%r, use_gradient_checkpointing="unsloth",
@@ -504,6 +551,7 @@ def axolotl_config(cfg):
                                "type": "chat_template",
                                "field_messages": "messages",
                                "split": "train"}]
+    y.update(cfg.get("train_args") or {})     # axolotl's own keys, as given
     return _yaml(y) + "\n"
 
 
@@ -546,15 +594,27 @@ def prepare_train(a):
     if engine_peft and a.peft not in engine_peft:
         fail("--engine %s trains %s; --peft %s needs --engine torch" % (
             a.engine, ", ".join(engine_peft), a.peft))
-    peft_args = {}
-    for item in a.peft_arg or []:
-        key, eq, value = item.partition("=")
-        if not eq or not key.strip().isidentifier():
-            fail("--peft-arg takes KEY=VALUE, not %s" % item)
-        try:
-            peft_args[key.strip()] = json.loads(value)
-        except ValueError:
-            peft_args[key.strip()] = value
+    peft_args = pairs(a.peft_arg, "--peft-arg")
+    train_args = pairs(getattr(a, "train_arg", None), "--train-arg")
+    model_args = pairs(getattr(a, "model_arg", None), "--model-arg")
+    for k in ("output_dir",):
+        if k in train_args:
+            fail("--train-arg %s: the adapter's folder is set by its name"
+                 % k)
+    if "pretrained_model_name_or_path" in model_args:
+        fail("--model-arg: the model is --base-model")
+    for k, v in list(train_args.items()):
+        if isinstance(v, str) and Path(v).is_file():
+            train_args[k] = str(Path(v).resolve())   # a config file
+    gpus = getattr(a, "gpus", 1) or 1
+    if gpus < 1:
+        fail("--gpus takes 1 or more")
+    if gpus > 1 and a.engine != "torch":
+        fail("--gpus with --engine %s is not set up here; use --engine "
+             "torch (or %s's own launcher)" % (a.engine, a.engine))
+    if a.engine == "axolotl" and model_args:
+        fail("--model-arg is for --engine torch or unsloth; give axolotl "
+             "its settings with --train-arg (its YAML keys)")
     if a.virtual_tokens and a.peft not in NO_MERGE:
         fail("--virtual-tokens is for --peft prompt or ptuning")
     if a.target and a.peft in NO_MERGE:
@@ -584,6 +644,8 @@ def prepare_train(a):
            "grad_accum": a.grad_accum, "max_seq_len": a.max_seq_len,
            "beta": a.beta, "seed": a.seed, "peft": a.peft,
            "target": a.target or "", "peft_args": peft_args,
+           "train_args": train_args, "model_args": model_args,
+           "gpus": gpus,
            "virtual_tokens": a.virtual_tokens or 20,
            "dataset": str(ds.resolve()),
            "eval": str(Path(a.eval).resolve()) if a.eval else "",
@@ -607,14 +669,43 @@ def prepare_train(a):
         (adir / "train.py").write_text(
             TRAIN_TORCH if a.engine == "torch" else TRAIN_UNSLOTH,
             encoding="utf-8")
-        cmd = [a.python, adir / "train.py", adir / "train_config.json"]
+        cmd = [a.python] + launch_args(cfg, adir / "train.py",
+                                       adir / "train_config.json")
     size = ("%d virtual tokens" % cfg["virtual_tokens"]
             if a.peft in NO_MERGE else "r=%d alpha=%d" % (
                 cfg["lora_r"], cfg["lora_alpha"]))
-    print("adapter %s: %s, %s %s, %s data, %s%s" % (
+    print("adapter %s: %s, %s %s, %s data, %s%s%s" % (
         a.name, a.engine, a.method.upper(), PEFT_METHODS[a.peft].split(":")[0],
-        fmt, size, ", 4-bit (QLoRA)" if a.qlora else ""))
+        fmt, size, ", 4-bit (QLoRA)" if a.qlora else "",
+        ", %d GPUs" % gpus if gpus > 1 else ""))
+    for label, d in (("training", train_args), ("model", model_args)):
+        if d:
+            print("  %s arguments as given: %s" % (label, ", ".join(
+                "%s=%s" % (k, json.dumps(v)) for k, v in d.items())))
     return cfg, ds, adir, cmd
+
+
+def pairs(items, flag):
+    """KEY=VALUE options as a dict (JSON values read as JSON)."""
+    out = {}
+    for item in items or []:
+        key, eq, value = item.partition("=")
+        if not eq or not key.strip().isidentifier():
+            fail("%s takes KEY=VALUE, not %s" % (flag, item))
+        try:
+            out[key.strip()] = json.loads(value)
+        except ValueError:
+            out[key.strip()] = value
+    return out
+
+
+def launch_args(cfg, script, config_file):
+    """What follows the Python: the script, or torchrun with one process
+    per GPU."""
+    if cfg.get("gpus", 1) > 1:
+        return ["-m", "torch.distributed.run", "--standalone",
+                "--nproc_per_node", str(cfg["gpus"]), script, config_file]
+    return [script, config_file]
 
 
 def train_job_parts(a, cfg, ds, adir, out="out"):
@@ -624,6 +715,12 @@ def train_job_parts(a, cfg, ds, adir, out="out"):
                    base_model=job_base(a, a.base_model),
                    eval="data/eval-" + Path(a.eval).name if a.eval else "")
     files = {"data/" + ds.name: ds}
+    targs = dict(cfg.get("train_args") or {})
+    for k, v in targs.items():
+        if isinstance(v, str) and Path(v).is_file():   # e.g. deepspeed=
+            files["conf/" + Path(v).name] = Path(v)
+            targs[k] = "conf/" + Path(v).name
+    job_cfg["train_args"] = targs
     if a.eval:
         files["data/eval-" + Path(a.eval).name] = Path(a.eval)
     texts = {"train_config.json": json.dumps(job_cfg, indent=2)}
@@ -635,8 +732,14 @@ def train_job_parts(a, cfg, ds, adir, out="out"):
 
 
 def train_record(a, cfg, adir):
-    return {"kind": "train", "adapter": a.name, "path": rel(a, adir),
-            "base": a.base_model, "rank": cfg["lora_r"], "peft": a.peft}
+    rec = {"kind": "train", "adapter": a.name, "path": rel(a, adir),
+           "base": a.base_model, "rank": cfg["lora_r"], "peft": a.peft}
+    for k in ("train_args", "model_args"):
+        if cfg.get(k):
+            rec[k] = cfg[k]
+    if cfg.get("gpus", 1) > 1:
+        rec["gpus"] = cfg["gpus"]
+    return rec
 
 
 def cmd_train(a):
@@ -646,8 +749,8 @@ def cmd_train(a):
     cfg, ds, adir, cmd = prepare_train(a)
     if getattr(a, "runtime", None):
         prog, files, texts = train_job_parts(a, cfg, ds, adir)
-        return job(a, "train " + a.name, prog, ["train.py",
-                                                 "train_config.json"],
+        return job(a, "train " + a.name, prog,
+                   launch_args(cfg, "train.py", "train_config.json"),
                    files, texts, adir, train_record(a, cfg, adir))
     code = run_or_plan(a, cmd, "train")
     reg = load_registry(a)
@@ -1297,7 +1400,6 @@ def check_hub_allowed(a):
 
 
 def _repo_ok(repo):
-    import re
     if not repo or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         fail("--repo takes OWNER/NAME on the Hugging Face Hub, not %r"
              % repo)
@@ -1460,7 +1562,8 @@ def cmd_pipeline(a):
     if prog:
         fail("pipeline on a runtime uses --engine torch or unsloth")
     lines = ["set -e", "PY=%s" % shlex.quote(py),
-             '"$PY" train.py train_config.json']
+             '"$PY" ' + " ".join(shlex.quote(x) for x in launch_args(
+                 cfg, "train.py", "train_config.json"))]
     merged_dir = "out/merged" if a.fetch_merged else "merged"
     if merge:
         texts["merge.py"] = MERGE_SCRIPT
@@ -1512,7 +1615,6 @@ def serverless(a, base, items):
     start cold (serverless GPUs): start.sh with the flags that shorten the
     start, a Dockerfile that puts the weights in the image, warmup.sh that
     fills the compile cache once, and README.md explaining each choice."""
-    import re
     tag = re.sub(r"[^\w.-]+", "-", base.split("/")[-1]) or "model"
     out = Path(a.out_dir) if a.out_dir else models_dir(a) / "serve" / tag
     (out / "adapters").mkdir(parents=True, exist_ok=True)
@@ -1715,6 +1817,60 @@ def job(a, what, prog, args, files, texts, collect_to, extra):
     return 0
 
 
+# ------------------------------------------------------------ your script
+def cmd_script(a):
+    """Your own program for what the other commands do not cover (any
+    PyTorch, TRL, JAX ... code): it runs as a job, here or on a runtime,
+    with the data and settings you give, and its results come back to
+    models/scripts/NAME/ with a record of who ran what."""
+    src = Path(a.file)
+    if not src.is_file() or src.suffix != ".py":
+        fail("script takes a Python file, not %s" % a.file)
+    name = a.name or src.stem
+    if not re.fullmatch(tawjih.NAME_RE, name):
+        fail("a script's name is letters, digits, _ and -")
+    if (a.gpus or 1) < 1:
+        fail("--gpus takes 1 or more")
+    files, data = {}, []
+    for f in a.data or []:
+        f = Path(f)
+        if not f.is_file():
+            fail("no data file %s" % f)
+        rel_name = "data/" + f.name
+        if rel_name in files:
+            fail("two data files are named %s" % f.name)
+        files[rel_name] = f
+        data.append(rel_name)
+    extra = []
+    for f in a.with_file or []:
+        f = Path(f)
+        if not f.is_file():
+            fail("no file %s" % f)
+        files["files/" + f.name] = f
+        extra.append("files/" + f.name)
+    args = pairs(a.set, "--set")
+    conf = {"args": args, "data": data, "files": extra, "output_dir": "out",
+            "name": name}
+    texts = {src.name: src.read_text(encoding="utf-8"),
+             "job_config.json": json.dumps(conf, indent=2,
+                                           ensure_ascii=False)}
+    out = models_dir(a) / "scripts" / name
+    out.mkdir(parents=True, exist_ok=True)
+    rec = {"kind": "script", "script": src.name, "sha256": hashlib.sha256(
+        src.read_bytes()).hexdigest(), "args": args, "data": data,
+        "path": rel(a, out)}
+    if (a.gpus or 1) > 1:
+        rec["gpus"] = a.gpus
+    print("script %s: %s with %d data file(s)%s; it reads job_config.json "
+          "(args, data, files) and writes its results in out/" % (
+              name, src.name, len(data),
+              ", %d GPUs" % a.gpus if (a.gpus or 1) > 1 else ""))
+    return job(a, "script " + name, None,
+               launch_args({"gpus": a.gpus or 1}, src.name,
+                           "job_config.json"),
+               files, texts, out, rec)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="neural_bridge.py",
                                 description=__doc__.split("\n")[0])
@@ -1766,6 +1922,22 @@ def build_parser():
         s.add_argument("--peft-arg", action="append", metavar="KEY=VALUE",
                        help="any argument of the method's PEFT configuration, "
                        "e.g. init_lora_weights=gaussian (repeatable)")
+        s.add_argument("--train-arg", action="append", metavar="KEY=VALUE",
+                       help="any field of TRL's training configuration (all "
+                       "of transformers' TrainingArguments too), passed as "
+                       "it is: gradient_checkpointing=true, "
+                       "use_liger_kernel=true, deepspeed=ds.json, "
+                       "report_to=tensorboard, torch_compile=true "
+                       "(repeatable); an unknown field stops the run")
+        s.add_argument("--model-arg", action="append", metavar="KEY=VALUE",
+                       help="any argument of the model's from_pretrained, "
+                       "passed as it is: attn_implementation="
+                       "flash_attention_2, trust_remote_code=true, "
+                       "revision=main (repeatable)")
+        s.add_argument("--gpus", type=int, default=1, metavar="N",
+                       help="processes, one per GPU, started with torchrun "
+                       "(engine torch); add DeepSpeed or FSDP with "
+                       "--train-arg to share a model too big for one GPU")
         s.add_argument("--rank", type=int, default=16)
         s.add_argument("--alpha", type=int, help="default: 2 x rank")
         s.add_argument("--dropout", type=float, default=0.05)
@@ -1797,6 +1969,26 @@ def build_parser():
     on_runtime(s)
     runnable(s)
     s.set_defaults(fn=cmd_train)
+
+    s = sub.add_parser("script", help="run your own Python program (any "
+                       "PyTorch, TRL, JAX ... code) as a job, here or on a "
+                       "runtime, with its data, settings and a record")
+    s.add_argument("file", help="the program; it is run as: python FILE "
+                   "job_config.json")
+    s.add_argument("--name", help="its results go to models/scripts/NAME/ "
+                   "(default: the file's name)")
+    s.add_argument("--data", action="append", metavar="FILE",
+                   help="a data file, sent as data/FILE (repeatable)")
+    s.add_argument("--with-file", action="append", metavar="FILE",
+                   help="another file it needs, sent as files/FILE "
+                   "(repeatable)")
+    s.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="a setting, in job_config.json's args (repeatable)")
+    s.add_argument("--gpus", type=int, default=1, metavar="N",
+                   help="one process per GPU, started with torchrun")
+    on_runtime(s)
+    runnable(s)
+    s.set_defaults(fn=cmd_script)
 
     s = sub.add_parser("setup", help="install what the work needs into the "
                        "training Python, here or on a runtime")

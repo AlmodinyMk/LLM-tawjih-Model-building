@@ -58,6 +58,7 @@ from .script import (
     translate_script,
 )
 from .arch import cmd_arch
+from .serving import add_batch_parser, add_server_parser
 from .runtimes import KINDS as RUNTIME_KINDS, TEMPLATES as RUNTIME_TEMPLATES, cmd_runtime  # noqa: E501
 from .home import TOPICS, cmd_home
 from .monitor import cmd_top
@@ -1195,6 +1196,9 @@ def build_parser():
                        "its id, {workdir}" % t)
     s.set_defaults(fn=cmd_runtime)
 
+    add_server_parser(sub)
+    add_batch_parser(sub)
+
     s = sub.add_parser("provider", help="named providers (providers.json): "
                        "address, model, key variable, retries, default, "
                        "fallback chain, and a test call")
@@ -1205,7 +1209,7 @@ def build_parser():
                    help="fallback: the providers to try after NAME, in "
                    "order (none clears the chain)")
     s.add_argument("--kind", help="dry, manual, ollama, openai (any "
-                   "OpenAI-compatible server) or anthropic")
+                   "OpenAI-compatible server), anthropic or gemini (Google)")
     s.add_argument("--base-url", help="the server's address")
     s.add_argument("--model", help="model (test: this model)")
     s.add_argument("--api-key-env", metavar="VARIABLE", help="the NAME of "
@@ -1218,6 +1222,15 @@ def build_parser():
                    help="HTTP statuses tried again (429,500,502,503,504)")
     s.add_argument("--backoff", choices=["exponential", "fixed"])
     s.add_argument("--backoff-seconds", type=float)
+    s.add_argument("--num-ctx", type=int, metavar="TOKENS", help="ollama: "
+                   "the context to load the model with; without it Ollama "
+                   "may cut a long prompt without an error (0 removes it)")
+    s.add_argument("--option", action="append", metavar="KEY=VALUE",
+                   help="any setting the server takes, sent as it is "
+                   "(ollama: in options, e.g. temperature=0.2; openai and "
+                   "anthropic, gemini: in the request, e.g. top_p=0.9 or "
+                   "generationConfig={\"temperature\": 0.2}); an empty "
+                   "value removes it (repeatable)")
     s.add_argument("--json", action="store_true", help="test: one JSON line")
     s.add_argument("--yes", action="store_true",
                    help="rm: also remove it from fallback chains")

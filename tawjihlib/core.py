@@ -304,6 +304,44 @@ def _same(v, want):
     return str(v).strip().casefold() == w.casefold()
 
 
+# size conditions: IF tokens > 16000, IF lines <= 40 (Arabic words too)
+MEASURES = {"tokens": "tokens", "token": "tokens", "الرموز": "tokens",
+            "رموز": "tokens", "chars": "chars", "characters": "chars",
+            "الأحرف": "chars", "أحرف": "chars", "الاحرف": "chars",
+            "احرف": "chars", "lines": "lines", "الأسطر": "lines",
+            "أسطر": "lines", "الاسطر": "lines", "اسطر": "lines"}
+SIZE_RE = re.compile(r"(tokens|chars|lines)(>=|<=|>|<)(\d+)")
+
+
+def size_condition(tokens):
+    """A size condition at the start of tokens, as its one-word form
+    ('tokens>16000') and how many tokens it took; or (None, 0)."""
+    if not tokens or tokens[0].casefold().split(">")[0].split("<")[0] \
+            not in MEASURES:
+        return None, 0
+    head = re.split(r"(?=[<>])", tokens[0], 1)
+    measure = MEASURES[head[0].casefold()]
+    joined, used = "".join(head[1:]), 1
+    while used < len(tokens) and used <= 2 and \
+            not re.fullmatch(r"(>=|<=|>|<)\d+", joined):
+        joined += tokens[used]
+        used += 1
+    m = re.fullmatch(r"(>=|<=|>|<)(\d+)", joined)
+    if not m:
+        return None, 0
+    return measure + m.group(1) + m.group(2), used
+
+
+def text_size(text, measure):
+    """tokens: an estimate of about 4 characters a token (a model's own
+    count differs, more so for Arabic); chars and lines: counted."""
+    if measure == "lines":
+        return len(text.splitlines())
+    if measure == "chars":
+        return len(text)
+    return (len(text) + 3) // 4
+
+
 def condition_holds(text, word):
     """Whether 'IF word' holds for a step's output. 'key=value': the output
     is a JSON object whose key has that value (a missing key or no JSON:
@@ -311,7 +349,13 @@ def condition_holds(text, word):
     top-level key, the key's value decides: true, non-zero and non-empty
     hold; false, 0, null, empty, and the strings "false", "no", "0", "none",
     "null", "لا" and "خطأ" do not. Otherwise the word must appear in the
-    text (case-insensitive)."""
+    text (case-insensitive). 'tokens>N', 'chars<=N', 'lines>N': the size
+    of the output."""
+    m = SIZE_RE.fullmatch(word)
+    if m:
+        size, n = text_size(text, m.group(1)), int(m.group(3))
+        return {">": size > n, "<": size < n, ">=": size >= n,
+                "<=": size <= n}[m.group(2)]
     obj, _ = _json_in(text)
     if "=" in word.strip("="):
         key, want = word.split("=", 1)
@@ -1223,6 +1267,11 @@ class Flow:
             nonlocal pos
             if pos >= len(tokens) or _kw(tokens[pos]):
                 raise FlowError("%s needs a word in: %s" % (what, text))
+            sized, used = size_condition(tokens[pos:])
+            if sized:
+                pos += used
+                norm.append(sized)
+                return sized
             w = tokens[pos]
             pos += 1
             # after '=' comes a value, even one spelled like a keyword
@@ -1458,6 +1507,9 @@ def parse_iterate(tokens):
     t = t[1:]
     neg = bool(t) and _kw(t[0]) == "NOT"
     t = t[1:] if neg else t
+    sized, used = size_condition(t)
+    if sized and used == len(t):
+        return n, (neg, sized)
     word = "".join(t)
     if not word or ("=" not in word and len(t) > 1) or \
             word.startswith("=") or word.endswith("="):
@@ -1568,8 +1620,8 @@ def flow_condition_notes(store, flow):
             continue
         kind, keys = _parse_contract(store.nodes[e["src"]].produces) or ("", [])
         word = e["cond"][1].split("=", 1)[0].strip()
-        if "=" in e["cond"][1]:
-            continue                    # key=value never searches the text
+        if "=" in e["cond"][1] or SIZE_RE.fullmatch(e["cond"][1]):
+            continue            # key=value and sizes never search the text
         if kind == "json" and keys and word.casefold() not in (
                 k.casefold() for k in keys):
             out.append("IF %s on %s: not one of its JSON keys (%s), so it is "
@@ -1602,6 +1654,59 @@ def path_file(folder, name, suffix):
 
 
 # ------------------------------------------------------------------ process
+def key_values(items, flag="--set"):
+    """KEY=VALUE pairs given on the command line, as a dict: a value that
+    reads as JSON (a number, true, a list, an object) is that value, any
+    other is text, and an empty value or null is None (removes the key)."""
+    out = {}
+    for item in items or []:
+        key, eq, value = str(item).partition("=")
+        key = key.strip()
+        if not eq or not re.fullmatch(r"[A-Za-z_][\w.\-]*", key):
+            die("%s takes KEY=VALUE, not %s" % (flag, item))
+        value = value.strip()
+        if value in ("", "null"):
+            out[key] = None
+            continue
+        try:
+            out[key] = json.loads(value)
+        except ValueError:
+            out[key] = value
+    return out
+
+
+def kill_tree(pid):
+    """Stop a process and what it started: its process group (it was
+    started in a session of its own), or taskkill /T on Windows."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        else:
+            import signal
+            os.killpg(int(pid), signal.SIGTERM)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass    # already ended, or not ours to stop: nothing more to do
+
+
+def spawn_detached(argv, cwd=None, log=None, env=None):
+    """Start a program in a session of its own (a detached process on
+    Windows), so it goes on after Tawjih ends; its output goes to log."""
+    out = open(log, "ab") if log else subprocess.DEVNULL
+    kw = {"stdin": subprocess.DEVNULL, "stdout": out,
+          "stderr": subprocess.STDOUT if log else subprocess.DEVNULL,
+          "close_fds": True, "cwd": cwd, "env": env}
+    if os.name == "nt":
+        kw["creationflags"] = 0x00000008 | 0x00000200   # detached, new group
+    else:
+        kw["start_new_session"] = True
+    try:
+        return subprocess.Popen([str(x) for x in argv], **kw)
+    finally:
+        if log:
+            out.close()
+
+
 def alive(pid):
     """Whether a process still runs."""
     if not pid:
@@ -1740,7 +1845,7 @@ def who_label(by):
 
 
 __all__ = [
-    'NAME_RE', 'inside', 'path_file', 'alive', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
+    'NAME_RE', 'inside', 'path_file', 'alive', 'key_values', 'kill_tree', 'spawn_detached', 'RECORD_WHO', 'user_config_dir', 'identity_file', 'load_identity',
     'first_identity', 'who', 'who_label',
     'FACE_FILES', 'FACE_SIDES', 'FACE_WORDS', 'HEAD_FILE', 'face_of',
     'parse_iterate',

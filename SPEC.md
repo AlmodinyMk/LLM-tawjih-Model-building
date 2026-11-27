@@ -118,12 +118,14 @@ off.
 
 The model of a step is, in order: `--model` on the command line, the path's
 `USING`, the file's `model` header, the provider's `model` in
-`providers.json`, the `TAWJIH_MODEL` environment variable.
+`providers.json`, the `TAWJIH_MODEL` environment variable. A `USING` that
+names a provider sends the step to that provider (its model, unless
+`--model`), so one path can use several servers.
 
 ## Providers
 
 `--backend NAME` names a built-in kind (`dry`, `manual`, `ollama`, `openai`,
-`anthropic`) or a provider in `providers.json`; without it, the file's
+`anthropic`, `gemini`) or a provider in `providers.json`; without it, the file's
 `default`, else `dry`. An unknown name is an error.
 
 ```
@@ -139,8 +141,10 @@ The model of a step is, in order: `--model` on the command line, the path's
 ```
 
 A provider's settings come before the environment variables of its kind
-(`OLLAMA_HOST`, `TAWJIH_BASE_URL`, `ANTHROPIC_BASE_URL`); its key is read
-from the variable named by `api_key_env`, else the kind's usual variable.
+(`OLLAMA_HOST`, `TAWJIH_BASE_URL`, `ANTHROPIC_BASE_URL`, `GEMINI_BASE_URL`);
+its key is read from the variable named by `api_key_env`, else the kind's
+usual variable (`TAWJIH_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`
+then `GOOGLE_API_KEY`).
 No key is ever written to a file. A built-in kind without an entry uses the
 defaults shown. A call that fails with no connection, a timeout or a status
 in `retry_status` is made again up to `retries` times; the wait is
@@ -152,6 +156,30 @@ first provider gets the step's model, or its own when the step names none; a
 fallback gets its own model, else the step's. When every provider fails, the
 step fails as for any model call (and its `fallback:` file runs). Usage
 records `provider` and `attempts`.
+
+`options` is an object sent to the server as it is: for `ollama` in the
+request's `options` (`temperature`, `num_predict` ...), for `openai`,
+`anthropic` and `gemini` in the request itself (`top_p`, `max_tokens`,
+`chat_template_kwargs`, Gemini's `generationConfig` ...), never over
+`model`, `messages` or `stream`.
+
+`gemini` calls Google's Gemini API: `POST
+{base}/models/MODEL:generateContent` (base
+`https://generativelanguage.googleapis.com/v1beta`), with the key in the
+`x-goog-api-key` header and never in the address. The answer is the text of
+the first candidate without its thought parts; usage counts
+`promptTokenCount` in, and `candidatesTokenCount` plus `thoughtsTokenCount`
+out; `served` is `modelVersion`. A prompt blocked (`promptFeedback.
+blockReason`), no candidate, or a stop other than `STOP` with no text fails
+the call with the reason.
+`num_ctx` (or `$TAWJIH_NUM_CTX`) is Ollama's context in tokens. Ollama keeps
+only that many tokens of a prompt and drops the rest without an error, and
+its default is 4096 on GPUs with less than 24 GiB; so a prompt of more than
+4 characters per token of that context is warned about on stderr, once per
+provider and size. `provider add|set` takes `--num-ctx N` (0 removes it) and
+`--option KEY=VALUE` (repeatable; the value is read as JSON when it is
+JSON, an empty value removes the key). An option whose name looks like a key
+or password is refused.
 
 ## Policy
 
@@ -180,7 +208,7 @@ in brackets.
 | `A TO B` [إلى] | A's output is B's input |
 | `A TO B AND C` [و] | A's output goes to both B and C |
 | `B AND C TO D` | D receives the outputs of B and C together |
-| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`, `key= value` or `key =value`; the word after `=` is always the value, even one spelled like a keyword, such as `pass`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false |
+| `A TO B IF word` [إذا] | the connection is active only if `word` holds for A's output: when the output is a JSON object with `word` as a top-level key (case-insensitive), its value is true, non-zero and non-empty (the strings `false`, `no`, `0`, `none`, `null`, `لا` and `خطأ` count as false); otherwise the output contains `word` (case-insensitive). `IF NOT word` [ليس] for the opposite. `IF key = value` (also written `key=value`, `key= value` or `key =value`; the word after `=` is always the value, even one spelled like a keyword, such as `pass`): the output is a JSON object whose top-level `key` (case-insensitive) equals `value`; `true` and `false` compare with booleans and with those strings, `null` and `none` with null, a number numerically, anything else as case-insensitive text; no JSON object or no such key: false. `IF tokens > N` (also `>=`, `<`, `<=`, spaces optional; `chars`, `lines`; Arabic `الرموز`، `الأحرف`، `الأسطر`): the size of A's output, tokens estimated as one per 4 characters (a model's own count differs, more for Arabic), characters and lines counted; it works with `UNTIL` and `ITERATE ... UNTIL` too |
 | `A AMONG B C D` [بين] | A decides: the candidate named first in A's output (by number, id or title) is the only one that runs; if none is named and exactly one candidate's `expects` accepts the output, that one runs |
 | `A AMONG B C D BY key` [حسب] | A's output must be a JSON object; the value of its top-level `key` (case-insensitive) must equal, ignoring case, a candidate's id, number, title or alias, and that one runs. Otherwise the step fails with the reason; nothing is guessed from the rest of the text |
 | `A TO D THROUGH B C` [عبر] | A → B → C → D |
@@ -190,7 +218,7 @@ in brackets.
 | `CALL name` [نفذ] | in place of a file: the saved path `name` is built (from its file, every time) and spliced in. Connections into it go to its files that nothing feeds; connections out of it leave from its final files. A file may not be both in the path and in the called path; a path may not call itself, directly or not. `AMONG` chooses among files only |
 | `EACH A` [لكل] | A's `each` is `yes` in this path |
 | `APPROVE A` [اعتمد] | A is approved before it runs in this path (with `approve: after` in the file: both) |
-| `A USING m` [بواسطة] | A's model in this path: `--model` > `USING` > `model:` > `TAWJIH_MODEL` |
+| `A USING m` [بواسطة] | A's model in this path: `--model` > `USING` > `model:` > `TAWJIH_MODEL`. When m is a provider of the project, A is sent to that provider, with its model unless `--model` is given; a run with `--backend dry` or `manual` stays a preview and calls none |
 | `A RETRY n` [أعد، اعد] | n from 1 to 20: A's retries in this path (`--retries` wins) |
 | `A UNTIL [NOT] w` [حتى] | needs `RETRY n` on A: while the condition (as for `IF`, including `key = value`) does not hold for A's output, A runs again, at most n more times, with its previous answer and the reason appended to its prompt; then the step fails (and its fallback, if any, runs) |
 | `A PICK k` [انتق] | after A's contract and approval, only the value of key `k` of A's JSON object output is kept and passed on (a string as is, anything else as JSON); without that key the step fails. Contract checks skip connections out of A |
@@ -884,13 +912,77 @@ to where the job's results go. Starting a job whose runtime is not this
 computer needs `--yes`, and is refused when the project's policy has
 `allow_network` other than true.
 
+## Model servers
+
+`tawjih server` (`خادم`) starts, watches and stops the programs that serve
+models. They are not part of Tawjih: it writes their command line, runs it
+in the background and reads their HTTP addresses. Servers are kept in the
+project's `servers.json`; a running server's process id, its log and
+`started.json` (command, time, who) are in `servers/NAME/`, and each start,
+stop, prepare and api call is a line of `history/servers-DATE.jsonl` with
+`by`.
+
+| Engine | Program | Common settings it takes | KV cache |
+|---|---|---|---|
+| `vllm` | `vllm serve` | tp, pp, context, mem, served-name; key in `VLLM_API_KEY` | fp8, fp8_e4m3, fp8_e5m2 |
+| `sglang` | `python -m sglang.launch_server --enable-metrics` | tp, pp, context, mem, served-name; `--api-key` | fp8, fp8_e5m2, fp8_e4m3 |
+| `lmdeploy` | `lmdeploy serve api_server` | tp, context, mem, served-name; `--api-keys` | int8, int4 (`--quant-policy`) |
+| `trtllm` | `trtllm-serve` | tp, pp, context, mem | |
+| `triton` | `tritonserver` (the model repository) | | |
+| `aphrodite` | `aphrodite run` | tp, pp, context, mem, served-name; `--api-keys` | fp8 |
+| `tabby` | `python main.py` in `--dir` | context | fp16, q8, q6, q4 |
+| `litellm` | `litellm --config` | key in `LITELLM_MASTER_KEY` | |
+| `ollama` | `ollama serve` (`OLLAMA_HOST`, `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_KV_CACHE_TYPE`) | context | f16, q8_0, q4_0 |
+| `llamacpp` | `llama-server --metrics` | context, served-name; `--api-key` | f16, q8_0, q4_0 |
+| `custom` | `--command "PROG ARGS"`, `{model}` `{host}` `{port}` filled in | | |
+
+A setting an engine does not take is refused; any argument of the engine
+goes to it as it is with `--pass ARG` (repeatable), and a variable with
+`--env KEY=VALUE` (not for keys). `--gpus 0,1` sets `CUDA_VISIBLE_DEVICES`
+and `HIP_VISIBLE_DEVICES`; `--gpus auto` chooses, when the server starts,
+as many GPUs as tp x pp with the most free memory and at least `--min-free`
+MiB, from `nvidia-smi`; without it, or without enough GPUs, nothing starts.
+A key is read from the variable named by `--api-key-env` when the server
+starts and is never written or shown. The host is `127.0.0.1` unless
+`--host` says otherwise.
+
+| Action | Does |
+|---|---|
+| `engines`, `gpus` | the engines and what they take; the GPUs and their free memory |
+| `add NAME`, `set NAME` | keep a server's settings (`--provider`: also a provider) |
+| `list`, `show NAME`, `rm NAME` | the servers; one's command line and addresses |
+| `start NAME [--wait S]`, `stop`, `restart` | run it in its own session, its output to its log; refused when its port is used (with the process that holds it); `--wait` waits for its health; `stop` ends it and what it started |
+| `status [NAME]` | running or not, health, models, GPU memory of its processes |
+| `logs NAME [--lines N] [--follow]`, `metrics NAME [--grep W]` | its log; its Prometheus metrics |
+| `api NAME METHOD PATH [--data JSON]` | any request to it (flush a cache, load a model, reload a config, make a key), with `--key-env VAR` and `--key-header NAME` |
+| `provider NAME [PROVIDER]` | a provider of this project at its address |
+| `prepare NAME [STEP] --out DIR [--tool-arg ARG]` | lmdeploy `awq` (`lmdeploy lite auto_awq`), trtllm `build` (`trtllm-build`), run once before serving |
+| `bench NAME` | `--requests N` at `--concurrency C`, with `--prompt`, `--prompt-file` or `--from-file REF` (a file's machine side as it is sent), `--max-tokens`, `--vary` (each prompt different, so none is answered from a cache); time per request (median, 95th percentile), output tokens per second; `history/bench-NAME-STAMP.json` with the GPUs, settings and `by` |
+| `unit NAME [--docker --image IMG]` | a systemd unit (written to `servers/NAME/`) or a `docker run` command, to start it with the computer; not with `--gpus auto` |
+| `unit --all` | a unit for every server (those with `--gpus auto` left out) and `tawjih-servers.target`, which starts, restarts and stops them together, in `servers/units/` |
+| `tune NAME --set KEY=VALUE [--restart]` | change settings by name: a common one (`mem`, `tp`, `pp`, `context`, `kv_cache`, `served_name`) or the engine's own flag without dashes, in its spelling (`schedule-policy=lpm`; trtllm's with underscores); the engine's own name of a common setting changes that setting; `true` is the flag alone, `false` or empty removes it. Engines read these when they start: `--restart` restarts a running server. Ollama is tuned with `--env` |
+| `kill PID` / `kill --port-of PORT` | a process Tawjih did not start (one holding a port): shows its command line; stops it only with `--yes` (never process 1 or Tawjih itself), noted with `by` |
+
+## Batches
+
+`tawjih batch NAME --inputs-dir DIR --backends P1,P2 [--pattern GLOB]
+[--per-backend N] [--out DIR]` (`دفعة`) runs the saved path once for each
+matching file of the folder, as `run NAME --input-file FILE --backend P` in
+a process of its own. The providers share the inputs: each takes the next
+when it is free (`--per-backend` at a time), so one server per GPU works
+through a batch together. Each run writes its ordinary record; its answer
+and messages go to `FILE.out` and `FILE.log` in `--out` (default
+`runs/batch-NAME-STAMP/`), and `batch.json` lists every run (provider,
+status, seconds), the time and `by`. Steps marked `approve` are not asked:
+`--approve deny` (default) or `auto`. Exit status 1 when a run failed.
+
 ## Program layout
 
 `tawjih.py` adds its folder to `sys.path`, imports the package `tawjihlib`,
 copies every name of its modules into its own namespace and runs `main()`.
 The modules, in order: `core`, `providers`, `tracing`, `engine`, `commands`,
 `library`, `manage`, `outputs`, `evaluate`, `governance`, `runtimes`,
-`arch`, `script`, `mcpserver`, `home`, `monitor`, `cli`. A module
+`serving`, `arch`, `script`, `mcpserver`, `home`, `monitor`, `cli`. A module
 imports only from those before it, by name, and only the standard library
 from outside; each lists its names in `__all__`.
 
