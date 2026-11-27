@@ -1008,8 +1008,29 @@ asks: on a chosen server `s` starts it, `x` stops and `r` restarts it
 it as `server tune`, `f` empties SGLang's cache (`POST /flush_cache`), `d`
 shows the `batch` command for the running servers that are providers;
 each is noted in `history/servers-DATE.jsonl` with `by`. `L` switches
-English and Arabic (`--arabic` starts in Arabic): Arabic words, the two
+English and Arabic (`--lang ar` starts in Arabic): Arabic words, the two
 columns swapped. `top --json` lists the servers too.
+
+## Dashboard
+
+`tawjih dashboard [--host H] [--port P] [--token T] [--min-free MIB]
+[--read-only] [--lang ar|en]` (`لوحة`) serves the board of `top` from Tawjih's own HTTP
+server (the standard library's `http.server`), on `127.0.0.1:8765` by
+default; another host is warned about.
+
+| Address | Answers |
+|---|---|
+| `GET /` | the page: one file, its styles and script inside it, no outside address; `Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:` |
+| `GET /api/state` | the system (CPU, memory, disk, each GPU's free memory, the GPUs at or above `--min-free`), the rows of `top` (runs with their steps, jobs, servers with their health, settings, CPU, RAM, GPU memory, command and log), the files of the trees with their runs, and the last servers' actions; sampled at most once a second |
+| `POST /api/action` | `{"server": NAME, "key": "s"\|"x"\|"r"\|"t"\|"f"\|"d", "text": "KEY=VALUE ..."}`: the key acts as in `top`; 403 with `--read-only`, 404 for no such server, 400 for another key, 409 when the action failed |
+
+Every `/api/` request needs `Authorization: Bearer TOKEN` (401 without).
+The token is printed after `#t=` in the address, which a browser keeps to
+itself; it is `--token`, else `$TAWJIH_TOKEN`, else a new random one. The
+page is Arabic (right to left) or English: `--lang` chooses it when the
+board starts and comes first; without it the browser's last choice (`L`,
+remembered in the browser), else Arabic. `top` takes `--lang ar|en` too
+(English by default; `--arabic` is `--lang ar`).
 
 ## Traces
 

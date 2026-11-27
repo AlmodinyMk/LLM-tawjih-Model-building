@@ -530,7 +530,7 @@ over the files of the trees.
   its log.
 
 Up and down choose a row, PgUp and PgDn move the trees, + and - change the
-refresh time, L switches between English and Arabic (`--arabic` starts in
+refresh time, L switches between English and Arabic (`--lang ar` starts in
 Arabic), q quits. On a server:
 
 | Key | Does |
@@ -559,6 +559,46 @@ right to left is the terminal's own choice.
 
 The server in these pictures is a stand-in, and this computer has no GPU,
 so no GPU bars show.
+
+### The board as a web page: `tawjih dashboard`
+
+`tawjih dashboard` (Arabic `لوحة`) serves the same board as a web page from
+Tawjih itself, on this computer. It shows:
+
+- the processor, memory and each GPU's free memory;
+- the model servers, the trees with each file's runs, and the runs;
+- the chosen run with its steps, or the chosen server with its health,
+  settings, CPU, RAM and log;
+- the servers' actions with who did them.
+
+The page runs in Arabic, right to left, or English (`L`). The keys are the
+same as in `top`. `x` and `r` ask before they act, and `t` asks for
+`KEY=VALUE`.
+
+```
+tawjih dashboard                  # http://127.0.0.1:8765/#t=TOKEN
+tawjih dashboard --lang en        # start in English (--lang ar: Arabic)
+tawjih dashboard --read-only      # show only: no key acts on a server
+```
+
+The language is chosen when the board starts, with `--lang ar` or
+`--lang en`. Without it, the page uses the browser's last choice, else
+Arabic. `L` switches it at any time. `top` takes `--lang` too (English by
+default; `--arabic` is the same as `--lang ar`).
+
+- **Nothing from outside.** No script, font or style comes from another
+  address. The page says so itself (`Content-Security-Policy:
+  default-src 'none'`), so it works with no network.
+- **This computer only.** It listens on `127.0.0.1` unless `--host` says
+  otherwise, and then it warns.
+- **A token.** Every request needs the token, which is printed with the
+  address after `#t=`. The browser never sends that part of the address,
+  and the page sends the token in a header. Give your own with `--token`
+  or `TAWJIH_TOKEN`.
+
+![tawjih dashboard in Arabic, right to left](docs/images/dashboard-ar.png)
+
+![tawjih dashboard in English](docs/images/dashboard-en.png)
 
 ## Commands
 
