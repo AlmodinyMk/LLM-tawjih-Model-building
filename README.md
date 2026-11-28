@@ -15,12 +15,12 @@ Runs on your computer with Ollama, or with any OpenAI-compatible or
 Anthropic provider. Python, standard library only; Linux and Windows.
 [العربية](README.ar.md)
 
-> **Status: 0.17.1, experimental.** The test suite passes on Linux and Windows.
+> **Status: 0.18.0, experimental.** The test suite passes on Linux and Windows.
 > No real AI provider has been used with it yet, and the Linux desktop
 > windows have not been used by a person; see
 > [What is and is not verified](#what-is-and-is-not-verified).
 
-![The home screen: the sprout logo, the project at a glance and the commands as cards](docs/images/home-screen-0.17.png)
+![The home screen: the sprout logo, the project at a glance and the commands as cards](docs/images/home-screen-0.18.png)
 
 ## What it gives you
 
@@ -501,7 +501,7 @@ Colours appear on terminals that show them (Windows Terminal, most Linux
 and macOS terminals); `NO_COLOR` turns them off. The screen is in English,
 because terminals do not lay out right-to-left text reliably.
 
-![The home screen](docs/images/home-screen-0.17.png)
+![The home screen](docs/images/home-screen-0.18.png)
 
 ## Watching runs: `tawjih top`
 
@@ -1810,7 +1810,12 @@ to overlap), `ITERATE`, the runtimes (a local job, and a command runtime
 driving a stand-in for a remote service), and the architecture lab: `arch
 build` built real models with PyTorch 2.15 and transformers 5.23 on a CPU
 (Llama with GQA and MQA, GPT-2, Mixtral), and their parameters matched the
-counts; since 0.17 provider options and Ollama's `num_ctx`, the Gemini
+counts; since 0.18 rate limits, breakers and `--chaos` (real
+calls through the provider chain, timed), `health` (against servers that
+do not answer and a policy that refuses), and `k8s` and `ansible` (the
+playbook with ansible-core's `--syntax-check` and a `--check` run on this
+machine, the manifest read back with PyYAML, both tools as stand-ins in
+the tests; no real cluster or fleet); since 0.17 provider options and Ollama's `num_ctx`, the Gemini
 backend, `--train-arg`, `--model-arg`, `--gpus` and `script`, size
 conditions, a provider per step, `batch`, and `tawjih server` (with a
 stand-in server and stand-ins for `nvidia-smi` and `lmdeploy`); since 0.16 durable MCP runs (a client killed mid-run and a fresh one
