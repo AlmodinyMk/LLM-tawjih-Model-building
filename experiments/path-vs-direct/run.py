@@ -324,7 +324,7 @@ def main(argv=None):
         try:
             f.reconfigure(errors="replace")
         except (AttributeError, ValueError):
-            pass
+            pass    # not a real console (a test's buffer): say() copes
     host = a.host if a.host.startswith("http") else "http://" + a.host
     chosen = [m.strip() for m in a.models.split(",") if m.strip()]
     arms = [x.strip() for x in a.arms.split(",") if x.strip()]
