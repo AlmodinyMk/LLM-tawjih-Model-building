@@ -96,22 +96,34 @@ Use `-p FOLDER` before the command to work on a project elsewhere.
 
 ## Measure it on your own computer
 
-Does the path beat the model asked directly? The example project carries
-20 test cases (quadratic equations in Arabic and English, some rearranged),
-so you can measure it with any model you have:
+Does the path beat the model asked directly? No measured result with a real
+model is published here yet, so the claim is open. One command measures it
+with your own models through Ollama:
 
 ```
 ollama pull qwen2.5:3b
+python experiments/path-vs-direct/run.py --models qwen2.5:3b
+```
+
+It asks 60 quadratic equations (the example's 20 and generated harder ones,
+in Arabic and English) three ways, three times each:
+- `path`: the example's path;
+- `direct`: the model asked directly;
+- `steps`: the model asked to work step by step.
+
+It writes a report with the share of right answers, 95% intervals,
+McNemar's test, and the time and tokens spent. What it shows, and what it
+cannot show, is in
+[experiments/path-vs-direct](experiments/path-vs-direct/README.md). Please
+send the report back: whatever it says goes here and into the paper.
+
+The same by hand, case by case:
+
+```
 python tawjih.py -p examples/quadratic eval branch --backend ollama --model qwen2.5:3b --allow-code
 python tawjih.py -p examples/quadratic eval branch --direct --backend ollama --model qwen2.5:3b
 python tawjih.py -p examples/quadratic eval compare branch
-python tawjih.py -p examples/quadratic eval report branch -o eval.md
 ```
-
-The first run sends each case through the path; the second sends the same
-question straight to the model; `compare` lists them case by case, and
-`report` adds time and tokens. No measured result with a real model is
-published here yet.
 
 ## What it works with
 

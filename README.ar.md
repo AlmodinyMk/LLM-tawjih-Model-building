@@ -87,21 +87,32 @@ tawjih produce myprod 1.1 TO 1.2 --input "..." --backend ollama --model llama3.2
 
 ## قِسْه على حاسوبك
 
-هل يتفوق المسار على سؤال النموذج مباشرة؟ مشروع المثال فيه 20 حالة اختبار
-(معادلات تربيعية بالعربية والإنجليزية، بعضها مكتوب بترتيب مختلف)، فتستطيع
-قياس ذلك بأي نموذج عندك:
+هل يتفوق المسار على سؤال النموذج مباشرة؟ لم تُنشر هنا بعد نتيجة مقيسة بنموذج
+حقيقي، فالادعاء مفتوح. وأمر واحد يقيسه بنماذجك أنت عبر Ollama:
 
 ```
 ollama pull qwen2.5:3b
+python experiments/path-vs-direct/run.py --models qwen2.5:3b
+```
+
+يسأل 60 معادلة تربيعية (معادلات المثال العشرين ومعادلات مولّدة أصعب، بالعربية
+والإنجليزية) بثلاث طرق، ثلاث مرات لكل منها:
+- `path`: مسار المثال؛
+- `direct`: سؤال النموذج مباشرة؛
+- `steps`: سؤاله الحل خطوة بخطوة.
+
+ويكتب تقريراً فيه نسبة الإجابات الصحيحة، ومجالات ثقة 95%، واختبار McNemar،
+والوقت والرموز. وما يُثبته وما لا يستطيع إثباته في
+[experiments/path-vs-direct](experiments/path-vs-direct/README.ar.md). أرسل
+التقرير: أياً كانت نتيجته، تدخل هنا وفي الورقة.
+
+والشيء نفسه يدوياً، حالةً حالة:
+
+```
 python tawjih.py -p examples/quadratic eval branch --backend ollama --model qwen2.5:3b --allow-code
 python tawjih.py -p examples/quadratic eval branch --direct --backend ollama --model qwen2.5:3b
 python tawjih.py -p examples/quadratic eval compare branch
-python tawjih.py -p examples/quadratic eval report branch -o eval.md
 ```
-
-الأمر الأول يمرّر كل حالة عبر المسار، والثاني يرسل السؤال نفسه إلى النموذج
-مباشرة، و`compare` يعرضهما حالة حالة، و`report` يضيف الزمن وعدد الرموز. ولم
-تُنشر هنا بعد نتيجة مقيسة بنموذج حقيقي.
 
 ## ما يعمل معه
 
