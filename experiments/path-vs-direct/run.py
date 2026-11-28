@@ -292,6 +292,15 @@ def environment(host, models, chosen):
     return env
 
 
+def say(text):
+    """Print, replacing what the console cannot show (the files keep it)."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(enc, "replace").decode(enc))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--models", default="qwen2.5:3b",
@@ -311,6 +320,11 @@ def main(argv=None):
     p.add_argument("--out", default="results",
                    help="the folder for the report (results)")
     a = p.parse_args(argv)
+    for f in (sys.stdout, sys.stderr):    # Arabic and − on any console
+        try:
+            f.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     host = a.host if a.host.startswith("http") else "http://" + a.host
     chosen = [m.strip() for m in a.models.split(",") if m.strip()]
     arms = [x.strip() for x in a.arms.split(",") if x.strip()]
@@ -382,7 +396,7 @@ def main(argv=None):
             "cases; McNemar compares the cases each way gets right in most "
             "of its repeats.\n")
     (out / "summary.md").write_text(text, encoding="utf-8")
-    print("\n" + text)
+    say("\n" + text)
     print("written: %s and %s; every run's log and record are in %s" % (
         out / "summary.md", out / "results.json", work))
     return 0

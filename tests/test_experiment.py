@@ -35,6 +35,19 @@ def coefficients(eq):
     return a1 - a2, b1 - b2, c1 - c2
 
 
+def equation(text):
+    """The 'LHS = RHS' around the first '=' of a text, read without a
+    regular expression."""
+    allowed = set("0123456789x²+−- ")
+    i = text.index("=")
+    lo, hi = i, i + 1
+    while lo > 0 and text[lo - 1] in allowed:
+        lo -= 1
+    while hi < len(text) and text[hi] in allowed:
+        hi += 1
+    return text[lo:hi].strip()
+
+
 class Ollama(BaseHTTPRequestHandler):
     """Extracts a, b, c correctly, explains from the computed roots, and
     answers a direct question wrongly: the path should win every case."""
@@ -57,14 +70,12 @@ class Ollama(BaseHTTPRequestHandler):
         n = int(self.headers["Content-Length"])
         prompt = json.loads(self.rfile.read(n))["messages"][0]["content"]
         if '"roots"' in prompt:                  # the explanation step
-            roots = json.loads(re.search(r'\{"a".*?\]\}', prompt).group(0))[
-                "roots"]
+            obj, _ = json.JSONDecoder().raw_decode(prompt,
+                                                   prompt.index('{"a"'))
             text = " و ".join("x = %d" % round(complex(r).real)
-                              for r in roots)
+                              for r in obj["roots"])
         elif '{"a"' in prompt:                   # the extraction step
-            m = re.search(r"([−\-\d x²+]+=[−\-\d x²+]+)", prompt.split(
-                "# Input")[-1])
-            a, b, c = coefficients(m.group(1).strip())
+            a, b, c = coefficients(equation(prompt.split("# Input")[-1]))
             text = json.dumps({"a": a, "b": b, "c": c})
         else:                                    # asked directly
             text = "x = 99"
